@@ -1,0 +1,14 @@
+# Everything below can contain real ticket keys, names and email addresses.
+# Nothing here belongs in a public repository.
+*.duckdb
+*.duckdb.wal
+*.html
+.env
+
+# Captured API responses, kept only while debugging. Test fixtures are
+# hand-written and synthetic; see tests/fixtures/README.md.
+*.raw.json
+
+__pycache__/
+.ruff_cache/
+.pytest_cache/
