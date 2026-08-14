@@ -2,7 +2,7 @@ import json
 import os
 import pathlib
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 
 import urd
 
@@ -37,7 +37,7 @@ def load_fixtures(con, *names):
         issue = json.loads(raw)
         con.execute(
             "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
-            [issue["key"], issue["fields"]["updated"], datetime.now(timezone.utc), raw],  # noqa: UP017
+            [issue["key"], issue["fields"]["updated"], urd._now(), raw],
         )
     con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
     con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
@@ -720,16 +720,18 @@ def test_stored_timestamps_do_not_depend_on_the_machines_timezone():
     naive UTC value. An aware one gets shifted to local wall time, which makes any
     span crossing a DST change an hour wrong and makes CI disagree with a laptop."""
     con = urd.open_db(_tmpdb())
+    con.execute("SET TimeZone='America/Los_Angeles'")
     load_fixtures(con, "reopened")
     urd.derive_issues(con)
     created = con.execute("SELECT created FROM issues WHERE key = 'PROJ-1'").fetchone()[0]
     # The fixture has "created": "2026-01-05T09:00:00.000+0000"
     # This should be stored as naive UTC 09:00:00, not shifted to local wall time
+    # even when DuckDB's timezone is set to Los_Angeles
     assert created == datetime(2026, 1, 5, 9, 0, 0)
 
 
 def test_ts_normalizes_all_input_formats():
-    """Verify _ts handles all four cases: +0000, Z, -0500, and None."""
+    """Verify _ts handles +0000, Z, -0500, None, and empty string."""
     # Test 1: Standard Jira format with +0000
     ts1 = urd._ts("2026-01-05T09:00:00.000+0000")
     assert ts1 == datetime(2026, 1, 5, 9, 0, 0)
@@ -747,6 +749,10 @@ def test_ts_normalizes_all_input_formats():
     ts4 = urd._ts(None)
     assert ts4 is None
 
+    # Test 5: Empty string
+    ts5 = urd._ts("")
+    assert ts5 is None
+
 
 def test_derive_issues_returns_zero_on_empty_input():
     """Running derive_issues on an empty raw_issues table must return 0, not raise."""
@@ -758,11 +764,12 @@ def test_derive_issues_returns_zero_on_empty_input():
 
 
 def test_missing_assignee_and_reporter_does_not_abort():
-    """An issue with both assignee and reporter null must complete the derive."""
+    """An issue with no assignee must complete the derive. This tests the
+    if people: guard, which prevents executemany from raising on empty input."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "skipped_progress")
     urd.derive_issues(con)
-    # Verify the row was written despite null assignee/reporter
+    # Verify the row was written despite null assignee
     assert con.execute("SELECT count(*) FROM issues WHERE key = 'PROJ-2'").fetchone()[0] == 1
 
 
@@ -794,7 +801,7 @@ def test_missing_accountid_is_skipped():
     })
     con.execute(
         "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
-        ["PROJ-4", "2026-01-05T09:00:00.000+0000", datetime.now(timezone.utc), raw],  # noqa: UP017
+        ["PROJ-4", "2026-01-05T09:00:00.000+0000", urd._now(), raw],
     )
     con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
     con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
@@ -811,7 +818,8 @@ def test_missing_accountid_is_skipped():
 
 
 def test_people_idempotence():
-    """Running derive_issues twice must not double the people table row count."""
+    """Running derive_issues twice must leave the people table unchanged, proving
+    that CREATE OR REPLACE TABLE empties it each run and repopulates from the data."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened", "two_sprints")
     urd.derive_issues(con)
@@ -819,6 +827,17 @@ def test_people_idempotence():
     urd.derive_issues(con)
     count2 = con.execute("SELECT count(*) FROM people").fetchone()[0]
     assert count1 == count2
+
+
+def test_project_comes_from_the_key_not_a_constant():
+    """--project takes a comma separated list, so rows can carry different project
+    values and this column is what separates them. No fixture uses a second key
+    prefix, so the constant-folding mutation survives without this."""
+    con = urd.open_db(_tmpdb())
+    con.execute("INSERT INTO raw_issues VALUES ('OTHER-1', 'u', ?, ?)",
+                [urd._now(), json.dumps({"fields": {}})])
+    urd.derive_issues(con)
+    assert con.execute("SELECT project FROM issues").fetchone() == ("OTHER",)
 
 
 if __name__ == "__main__":

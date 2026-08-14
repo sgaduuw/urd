@@ -29,6 +29,13 @@ RETRY_STATUSES = (429, 500, 502, 503, 504, TRANSPORT_ERROR_STATUS)
 DB_DEFAULT = "urd.duckdb"
 
 
+def _now():
+    """Naive UTC, to match the naive TIMESTAMP columns. Same reason as _ts: an
+    aware value gets shifted to the machine's local wall time and the zone
+    dropped, so the same database reads differently on a laptop and in CI."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)  # noqa: UP017
+
+
 def token(env=None):
     """Token from URD_TOKEN, else the macOS keychain. The email is not a secret
     and lives in sync_state, so only the token is stored here."""
@@ -281,7 +288,7 @@ def sync(con, jira):
             con.execute(
                 'INSERT INTO sync_errors VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE '
                 'SET "at" = excluded."at", error = excluded.error',
-                [key, datetime.now(timezone.utc), str(err)],  # noqa: UP017
+                [key, _now(), str(err)],
             )
             print(f"  {key}: {err}", file=sys.stderr)
             continue
@@ -289,14 +296,14 @@ def sync(con, jira):
             "INSERT INTO raw_issues VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE "
             "SET updated = excluded.updated, fetched_at = excluded.fetched_at, "
             "json = excluded.json",
-            [key, updated, datetime.now(timezone.utc), json.dumps(issue)],  # noqa: UP017
+            [key, updated, _now(), json.dumps(issue)],
         )
         con.execute("DELETE FROM sync_errors WHERE key = ?", [key])
         if n % 50 == 0:
             print(f"  {n}/{len(wanted)}")
 
     _refresh_lookups(con, jira)
-    save_scope(con, last_sync_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))  # noqa: UP017
+    save_scope(con, last_sync_at=_now().isoformat(timespec="seconds") + "Z")
     errors = con.execute("SELECT count(*) FROM sync_errors").fetchone()[0]
     print(f"synced. {errors} error(s) outstanding" if errors else "synced, no errors")
     return 0
@@ -352,6 +359,10 @@ def _ts(value):
     would read differently on a laptop and in CI, and any span crossing a DST
     change would come out an hour wrong.
 
+    The string-normalization branches (Z to +00:00 and adding : in the offset) are
+    redundant on Python 3.11, which accepts those formats natively in fromisoformat,
+    but are load-bearing on Python 3.10, which rejects them. ruff.toml targets 3.10.
+
     ponytail: assumes Jira always sends an offset, which it does. A naive input
     would be treated as local time by astimezone. Upgrade path if that ever
     changes: reject a value with no offset rather than guessing one.
@@ -400,8 +411,7 @@ def derive_issues(con):
     if rows:
         con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
     if people:
-        con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
-                        list(people.items()))
+        con.executemany("INSERT INTO people VALUES (?, ?)", list(people.items()))
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])
