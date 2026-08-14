@@ -19,7 +19,7 @@
   },
   "changelog": {
     "histories": [
-      {"created": "2026-02-02T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+      {"id": "200", "created": "2026-02-02T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
        "items": [{"field": "status", "from": "1", "fromString": "To Do", "to": "5", "toString": "Done"}]}
     ]
   }

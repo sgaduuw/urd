@@ -22,16 +22,16 @@
   },
   "changelog": {
     "histories": [
-      {"created": "2026-01-06T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+      {"id": "100", "created": "2026-01-06T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
        "items": [{"field": "status", "from": "1", "fromString": "To Do", "to": "3", "toString": "In Progress"}]},
-      {"created": "2026-01-08T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+      {"id": "101", "created": "2026-01-08T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
        "items": [{"field": "status", "from": "3", "fromString": "In Progress", "to": "4", "toString": "Review"},
                  {"field": "assignee", "from": "acct-1", "fromString": "Alder", "to": "acct-2", "toString": "Birch"}]},
-      {"created": "2026-01-09T09:00:00.000+0000", "author": {"accountId": "acct-2", "displayName": "Birch"},
+      {"id": "102", "created": "2026-01-09T09:00:00.000+0000", "author": {"accountId": "acct-2", "displayName": "Birch"},
        "items": [{"field": "status", "from": "4", "fromString": "Review", "to": "3", "toString": "In Progress"}]},
-      {"created": "2026-01-15T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+      {"id": "103", "created": "2026-01-15T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
        "items": [{"field": "status", "from": "3", "fromString": "In Progress", "to": "4", "toString": "Review"}]},
-      {"created": "2026-01-20T17:00:00.000+0000", "author": {"accountId": "acct-2", "displayName": "Birch"},
+      {"id": "104", "created": "2026-01-20T17:00:00.000+0000", "author": {"accountId": "acct-2", "displayName": "Birch"},
        "items": [{"field": "status", "from": "4", "fromString": "Review", "to": "5", "toString": "Done"}]}
     ]
   }

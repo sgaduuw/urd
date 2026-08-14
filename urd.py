@@ -451,8 +451,10 @@ def derive_issues(con):
     if rows:
         con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
     if people:
-        con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
-                        list(people.items()))
+        con.executemany(
+            "INSERT INTO people VALUES (?, ?) "
+            "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",
+            list(people.items()))
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])
@@ -485,8 +487,10 @@ def derive_changes(con):
     if rows:
         con.executemany(f"INSERT INTO changes VALUES ({','.join(['?'] * 9)})", rows)
     if people:
-        con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
-                        list(people.items()))
+        con.executemany(
+            "INSERT INTO people VALUES (?, ?) "
+            "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",
+            list(people.items()))
     con.execute(VIEWS_CHANGES)
     return len(rows)
 

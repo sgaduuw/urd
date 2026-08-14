@@ -24,7 +24,7 @@
   },
   "changelog": {
     "histories": [
-      {"created": "2026-01-07T09:00:00.000+0000", "author": {"accountId": "acct-3", "displayName": "Cedar"},
+      {"id": "300", "created": "2026-01-07T09:00:00.000+0000", "author": {"accountId": "acct-3", "displayName": "Cedar"},
        "items": [{"field": "status", "from": "1", "fromString": "To Do", "to": "3", "toString": "In Progress"}]}
     ]
   }

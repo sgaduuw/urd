@@ -908,6 +908,29 @@ def test_status_durations_cover_the_whole_life_of_the_issue():
     assert reopened_spans[-1][0] == "Done"  # final span is open
 
 
+def test_status_durations_columns_are_both_naive():
+    """DuckDB's now() is TIMESTAMPTZ, and a UNION ALL would silently make left_at
+    a different type from entered. That shifts every open span by the machine's
+    offset while leaving the span sum exactly right, so no arithmetic assertion
+    can see it: assert the type instead."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    types = {r[0]: r[1] for r in con.execute("DESCRIBE status_durations").fetchall()}
+    assert types["entered"] == "TIMESTAMP", types["entered"]
+    assert types["left_at"] == "TIMESTAMP", types["left_at"]
+
+    # Assert the open span's left_at is within 2 seconds of now, not shifted by timezone
+    open_span = con.execute(
+        """
+        SELECT date_diff('second', now() AT TIME ZONE 'UTC', left_at)
+        FROM status_durations WHERE key = 'PROJ-1' AND status = 'Done'
+        """
+    ).fetchone()[0]
+    assert abs(open_span) <= 2, f"open span left_at off by {open_span} seconds"
+
+
 def test_the_first_span_is_the_status_the_issue_started_in():
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened")
@@ -997,18 +1020,18 @@ def test_same_timestamp_transitions_use_history_id_tiebreaker():
                 "changelog": {
                     "histories": [
                         {
-                            "id": "100",
-                            "created": "2026-03-01T10:00:00.000+0000",
-                            "author": {"accountId": "a1", "displayName": "A"},
-                            "items": [{"field": "status", "from": "1", "fromString": "To Do",
-                                      "to": "3", "toString": "In Progress"}],
-                        },
-                        {
                             "id": "101",
                             "created": "2026-03-01T10:00:00.000+0000",
                             "author": {"accountId": "a2", "displayName": "B"},
                             "items": [{"field": "status", "from": "3", "fromString": "In Progress",
                                       "to": "5", "toString": "Done"}],
+                        },
+                        {
+                            "id": "100",
+                            "created": "2026-03-01T10:00:00.000+0000",
+                            "author": {"accountId": "a1", "displayName": "A"},
+                            "items": [{"field": "status", "from": "1", "fromString": "To Do",
+                                      "to": "3", "toString": "In Progress"}],
                         },
                     ]
                 },
@@ -1078,6 +1101,12 @@ def test_first_transition_predating_created_does_not_produce_negative_span():
         "WHERE key = 'PROJ-6' AND left_at < entered"
     ).fetchall()
     assert backwards == []
+    # No span may start before the issue was created
+    early = con.execute(
+        "SELECT count(*) FROM status_durations d JOIN issues i USING (key) "
+        "WHERE d.key = 'PROJ-6' AND d.entered < i.created"
+    ).fetchone()[0]
+    assert early == 0
 
 
 def test_derive_changes_return_value_matches_rows_inserted():
@@ -1118,6 +1147,101 @@ def test_derive_changes_handles_empty_changelog():
     urd.derive_issues(con)
     count = urd.derive_changes(con)
     assert count == 0
+
+
+def test_people_persists_across_derive_functions():
+    """A changelog-only author must survive re-running derive_issues alone."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    # Verify the author is present and can be joined from changes
+    count_before = con.execute("SELECT count(*) FROM people").fetchone()[0]
+    assert count_before > 0
+
+    # Re-run derive_issues to verify it does not drop people
+    urd.derive_issues(con)
+    count_after = con.execute("SELECT count(*) FROM people").fetchone()[0]
+    assert count_after == count_before, "people table was not preserved across derives"
+
+    # Verify people can still be joined from changes
+    joined = con.execute(
+        "SELECT count(*) FROM changes c JOIN people p ON c.author_id = p.account_id"
+    ).fetchone()[0]
+    assert joined > 0
+
+
+def test_person_display_name_propagates_on_rename():
+    """A renamed person must update their name on re-derive."""
+    con = urd.open_db(_tmpdb())
+    # Insert an issue with an author
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "TEST-1",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "TEST-1",
+                "fields": {
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-02T09:00:00.000+0000",
+                },
+                "changelog": {
+                    "histories": [{
+                        "id": "100",
+                        "created": "2026-03-01T10:00:00.000+0000",
+                        "author": {"accountId": "renamed", "displayName": "Old Name"},
+                        "items": [{"field": "status", "from": "1", "fromString": "To Do",
+                                  "to": "5", "toString": "Done"}]
+                    }]
+                }
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20001", "Story Points"])
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20002", "Sprint"])
+    for status, category in [("To Do", "new"), ("Done", "done")]:
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(con, status_order="To Do,Done", start_status="To Do", review_status="Done")
+
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    name_before = con.execute(
+        "SELECT display_name FROM people WHERE account_id = 'renamed'"
+    ).fetchone()[0]
+    assert name_before == "Old Name"
+
+    # Change the author's name in raw_issues and re-derive
+    con.execute(
+        "UPDATE raw_issues SET json = ? WHERE key = 'TEST-1'",
+        [json.dumps({
+            "key": "TEST-1",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                "created": "2026-03-01T09:00:00.000+0000",
+                "updated": "2026-03-02T09:00:00.000+0000",
+            },
+            "changelog": {
+                "histories": [{
+                    "id": "100",
+                    "created": "2026-03-01T10:00:00.000+0000",
+                    "author": {"accountId": "renamed", "displayName": "New Name"},
+                    "items": [{"field": "status", "from": "1", "fromString": "To Do",
+                              "to": "5", "toString": "Done"}]
+                }]
+            }
+        })],
+    )
+
+    urd.derive_changes(con)
+    name_after = con.execute(
+        "SELECT display_name FROM people WHERE account_id = 'renamed'"
+    ).fetchone()[0]
+    assert name_after == "New Name", f"Expected 'New Name', got '{name_after}'"
 
 
 if __name__ == "__main__":
