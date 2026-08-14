@@ -1488,7 +1488,8 @@ def test_sprint_field_is_resolved_by_name_not_hardcoded_by_id():
 
 def test_ordinal_follows_array_order_not_date_order():
     """Ordinal must follow array position even when sprints are out of chronological
-    order. A mutation that sorts by startDate would scramble the ordinal."""
+    order. A mutation that sorts by startDate would scramble the ordinal. The later
+    sprint is active (still open) while the earlier is closed, so state varies."""
     con = urd.open_db(_tmpdb())
     con.execute(
         "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
@@ -1512,7 +1513,7 @@ def test_ordinal_follows_array_order_not_date_order():
                         },
                         {
                             "id": 10, "name": "Sprint Y",
-                            "state": "closed",
+                            "state": "active",
                             "startDate": "2026-01-01T09:00:00.000Z",
                             "endDate": "2026-01-15T09:00:00.000Z",
                         },
@@ -1526,14 +1527,15 @@ def test_ordinal_follows_array_order_not_date_order():
     con.execute("INSERT INTO statuses VALUES ('To Do', 'new')")
     urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
     urd.derive_issues(con)
-    urd.derive_sprints(con)
+    count = urd.derive_sprints(con)
+    assert count == 2
     rows = con.execute(
-        "SELECT sprint_id, sprint_name, ordinal FROM issue_sprints "
+        "SELECT sprint_id, sprint_name, state, ordinal FROM issue_sprints "
         "WHERE key = 'PROJ-OUT-OF-ORDER' ORDER BY ordinal"
     ).fetchall()
-    # Array order is [Z id=20, Y id=10] (out of date order)
-    # Ordinal must be [1, 2] (array position), not [2, 1] (date order)
-    assert rows == [(20, "Sprint Z", 1), (10, "Sprint Y", 2)]
+    # Array [Z closed Feb, Y active Jan] is out of date order
+    # Ordinal [1, 2] follows array, not date [2, 1] or state variation
+    assert rows == [(20, "Sprint Z", "closed", 1), (10, "Sprint Y", "active", 2)]
 
 
 def test_resolve_field_returns_exact_match_not_lexicographic_largest():
