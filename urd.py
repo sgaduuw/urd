@@ -536,8 +536,6 @@ def derive_changes(con):
     return len(rows)
 
 
-UNRANKED = 9999  # statuses absent from status_order sort last, and are reported
-
 VIEWS_METRICS = """
 CREATE OR REPLACE VIEW closures AS
 SELECT t.key, t.ts, t.author_id
@@ -562,22 +560,40 @@ LEFT JOIN status_order st ON st.status = t.to_status
 WHERE st.pos IS NOT NULL AND sf.pos IS NOT NULL
   AND st.pos < sf.pos;
 """
+# ponytail: a status not in status_order is excluded from rework entirely, not positioned.
+# Upgrade path: infer position from observed transition frequency to handle partially configured
+# workflows.
 
 
 def derive(con, status_order, start_status, review_status):
+    """Build metric views from raw_issues. Metric views are late-bound to sync_state, so
+    they reflect the current configuration without re-derive when config changes. A NULL
+    start_status empties cycle_times rather than raising; this permits experimentation
+    with --start-status without loss of other data."""
     if not status_order or not start_status:
         raise SystemExit(
             "derive needs --status-order and --start-status on the first run, for example:\n"
             '  urd derive --status-order "To Do,In Progress,Review,Done" '
             '--start-status "In Progress" --review-status "Review"'
         )
+
+    # Validate status_order before persisting: no duplicates, no empties
+    statuses = [s.strip() for s in status_order.split(",")]
+    if not statuses or any(not s for s in statuses):
+        raise SystemExit(
+            "--status-order must be a non-empty comma-separated list with no "
+            "empty items"
+        )
+    if len(statuses) != len(set(statuses)):
+        raise SystemExit(f"--status-order contains duplicates: {status_order}")
+
     save_scope(con, status_order=status_order, start_status=start_status,
                review_status=review_status)
 
     con.execute("CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
     con.executemany(
         "INSERT INTO status_order VALUES (?, ?)",
-        [(s.strip(), i) for i, s in enumerate(status_order.split(","))],
+        [(s, i) for i, s in enumerate(statuses)],
     )
 
     issues = derive_issues(con)
@@ -591,7 +607,7 @@ def derive(con, status_order, start_status, review_status):
         "WHERE to_status NOT IN (SELECT status FROM status_order) ORDER BY 1"
     ).fetchall()
     if unknown:
-        print("statuses not in --status-order, ranked last: "
+        print("statuses not in --status-order, so their transitions are excluded from rework: "
               + ", ".join(u[0] for u in unknown if u[0]))
     for field, rate in con.execute(
         "SELECT name, null_rate FROM fields WHERE null_rate IS NOT NULL"

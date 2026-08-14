@@ -93,7 +93,7 @@ def test_cycle_time_starts_at_the_start_status():
 
 
 def test_a_ticket_that_never_started_is_absent_from_cycle_times():
-    con = _derived("reopened", "skipped_progress")
+    con = _derived("reopened", "skipped_progress", "two_sprints")
     keys = {r[0] for r in con.execute("SELECT key FROM cycle_times").fetchall()}
     assert keys == {"PROJ-1"}
 
@@ -106,24 +106,33 @@ def test_closures_are_transitions_into_a_done_category_status():
 
 def test_derive_is_idempotent():
     con = _derived("reopened", "two_sprints")
+    issues_before = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    changes_before = con.execute("SELECT count(*) FROM changes").fetchone()[0]
     scope = urd.load_scope(con)
     urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"])
-    assert con.execute("SELECT count(*) FROM issues").fetchone()[0] == 2
+    issues_after = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    changes_after = con.execute("SELECT count(*) FROM changes").fetchone()[0]
+    assert issues_before == issues_after == 2, (
+        f"issues count changed: {issues_before} -> {issues_after}"
+    )
+    assert changes_before == changes_after, (
+        f"changes count changed: {changes_before} -> {changes_after}"
+    )
 
 
 def test_cycle_times_respects_configured_start_status():
     """Changing start_status must change which transitions count as the cycle start."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened")
-    # Derive with To Do as start_status instead of In Progress
-    urd.derive(con, "To Do,In Progress,Review,Done", "To Do", "Review")
+    # Derive with Review as start_status instead of In Progress
+    urd.derive(con, "To Do,In Progress,Review,Done", "Review", "Done")
     row = con.execute("SELECT started, cycle_days FROM cycle_times WHERE key = 'PROJ-1'").fetchone()
-    if row:
-        started, days = row
-        # Should start at creation (Jan 5) with "To Do" as start_status
-        assert started == datetime(2026, 1, 5, 9, 0, 0), f"Expected start Jan 5, got {started}"
-        # Cycle time should be from Jan 5 to Jan 20 at 17:00, about 15.33 days
-        assert 15.0 < days < 16.0, f"Expected cycle_days ~15.33, got {days}"
+    assert row is not None, "Expected cycle_times row for PROJ-1 with Review start_status"
+    started, days = row
+    # PROJ-1 first enters Review on Jan 8, resolves on Jan 20
+    assert started == datetime(2026, 1, 8, 9, 0, 0), f"Expected start Jan 8, got {started}"
+    # Cycle time should be from Jan 8 to Jan 20 at 17:00, about 12.33 days
+    assert 12.0 < days < 13.0, f"Expected cycle_days ~12.33, got {days}"
 
 
 def test_unknown_statuses_are_found_by_query():
@@ -158,11 +167,117 @@ def test_derive_reports_unknown_statuses_to_output():
     finally:
         sys_module.stdout = old_stdout
 
-    # The output must mention that Review is ranked last
+    # The output must mention that unknown statuses are excluded
     assert "statuses not in --status-order" in output, (
         f"Expected unknown status report in output, got: {output}"
     )
     assert "Review" in output, f"Expected 'Review' in output, got: {output}"
+    assert "excluded" in output, f"Expected 'excluded' not 'ranked' in: {output}"
+
+
+def test_main_wiring_honors_derive_arguments():
+    """main() must pass derive arguments through and respect config precedence."""
+    db = _tmpdb()
+    con = urd.open_db(db)
+    load_fixtures(con, "reopened")
+    con.close()
+
+    # Call main with explicit derive arguments
+    result = urd.main(
+        [
+            "--db", db, "derive",
+            "--status-order", "To Do,In Progress,Done",
+            "--start-status", "In Progress",
+            "--review-status", "Done"
+        ]
+    )
+    assert result == 0, "main() derive should return 0 on success"
+
+    # Verify the config was saved and used
+    con = urd.open_db(db)
+    scope = urd.load_scope(con)
+    assert scope["status_order"] == "To Do,In Progress,Done"
+    assert scope["start_status"] == "In Progress"
+    con.close()
+
+
+def test_main_derive_uses_stored_config_when_no_arguments():
+    """main() must use stored config when no --status-order flag is given."""
+    db = _tmpdb()
+    con = urd.open_db(db)
+    load_fixtures(con, "reopened")
+    con.close()
+
+    # First call with explicit config
+    urd.main(
+        [
+            "--db", db, "derive",
+            "--status-order", "To Do,In Progress,Done",
+            "--start-status", "In Progress",
+            "--review-status", "Done"
+        ]
+    )
+
+    # Second call with no config should reuse stored config
+    result = urd.main(["--db", db, "derive"])
+    assert result == 0, "main() derive should succeed with stored config"
+
+
+def test_metric_views_have_correct_timestamp_types():
+    """All timestamp columns in metric views must be TIMESTAMP, not TIMESTAMPTZ."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+
+    for view_name in ("closures", "cycle_times", "rework"):
+        types = {name: dtype for name, dtype, *_ in con.execute(
+            f"DESCRIBE {view_name}"
+        ).fetchall()}
+
+        if view_name == "closures":
+            assert types["ts"] == "TIMESTAMP", (
+                f"{view_name}.ts should be TIMESTAMP, got {types['ts']}"
+            )
+        elif view_name == "cycle_times":
+            assert types["started"] == "TIMESTAMP", (
+                f"{view_name}.started should be TIMESTAMP, got {types['started']}"
+            )
+        elif view_name == "rework":
+            assert types["ts"] == "TIMESTAMP", (
+                f"{view_name}.ts should be TIMESTAMP, got {types['ts']}"
+            )
+
+
+def test_derive_rejects_duplicate_statuses():
+    """Duplicate statuses in --status-order must be rejected before persistence."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    original_order = urd.load_scope(con)["status_order"]
+
+    try:
+        urd.derive(con, "To Do,To Do,In Progress,Done", "In Progress", "Done")
+        raise AssertionError("Expected SystemExit for duplicate statuses")
+    except SystemExit as e:
+        assert "duplicate" in str(e).lower(), f"Error should mention duplicates: {e}"
+
+    # Verify the bad config was NOT persisted - config unchanged
+    scope = urd.load_scope(con)
+    assert scope["status_order"] == original_order, "Bad config should not overwrite saved config"
+
+
+def test_derive_rejects_empty_statuses():
+    """Empty items in --status-order must be rejected before persistence."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    original_order = urd.load_scope(con)["status_order"]
+
+    try:
+        urd.derive(con, "To Do,,In Progress,Done", "In Progress", "Done")
+        raise AssertionError("Expected SystemExit for empty status")
+    except SystemExit as e:
+        assert "empty" in str(e).lower(), f"Error should mention empty items: {e}"
+
+    # Verify the bad config was NOT persisted - config unchanged
+    scope = urd.load_scope(con)
+    assert scope["status_order"] == original_order, "Bad config should not overwrite saved config"
 
 
 def test_token_prefers_the_environment_over_the_keychain():
