@@ -6,11 +6,116 @@ that writes raw_issues. `derive` and `report` are offline and repeatable, which
 is what makes changing a metric definition cheap.
 """
 import argparse
+import base64
+import json
+import os
+import subprocess
 import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import duckdb
 
+KEYCHAIN_SERVICE = "urd"
+PAGE_SIZE = 100
+TIMEOUT_S = 30
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+
 DB_DEFAULT = "urd.duckdb"
+
+
+def token(env=None):
+    """Token from URD_TOKEN, else the macOS keychain. The email is not a secret
+    and lives in sync_state, so only the token is stored here."""
+    env = os.environ if env is None else env
+    if env.get("URD_TOKEN"):
+        return env["URD_TOKEN"]
+    found = subprocess.run(
+        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if found.returncode != 0:
+        raise SystemExit(
+            "no API token. Either export URD_TOKEN, or store one once with:\n"
+            f"  security add-generic-password -s {KEYCHAIN_SERVICE} -a <email> -w"
+        )
+    return found.stdout.strip()
+
+
+class Jira:
+    """Read only Jira Cloud client. GET requests only, by construction."""
+
+    def __init__(self, site, email, token, opener=None):
+        self.base = f"https://{site}/rest/api/3"
+        self.auth = base64.b64encode(f"{email}:{token}".encode()).decode()
+        self._open = opener or self._urlopen
+
+    @staticmethod
+    def _urlopen(url, headers):
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as err:
+            return err.code, err.read()
+
+    def get(self, path, params=None):
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        headers = {"Authorization": f"Basic {self.auth}", "Accept": "application/json"}
+        for attempt in (1, 2):
+            status, body = self._open(url, headers)
+            if status == 200:
+                return json.loads(body or b"{}")
+            if status in RETRY_STATUSES and attempt == 1:
+                # ponytail: one flat retry, no backoff curve. A backfill that
+                # trips a rate limit is meant to be resumed, not waited out.
+                time.sleep(5)
+                continue
+            raise SystemExit(f"GET {url} returned {status}: {body[:200]!r}")
+        raise SystemExit(f"GET {url} failed twice")
+
+    def search(self, jql):
+        """Yield (key, updated) for every issue matching jql, following pages."""
+        params = {"jql": jql, "fields": "updated", "maxResults": PAGE_SIZE}
+        while True:
+            page = self.get("/search/jql", params)
+            for issue in page.get("issues", []):
+                yield issue["key"], issue["fields"]["updated"]
+            nxt = page.get("nextPageToken")
+            if page.get("isLast") or not nxt:
+                return
+            params = dict(params, nextPageToken=nxt)
+
+    def issue(self, key, fields):
+        got = self.get(f"/issue/{key}", {"expand": "changelog", "fields": fields})
+        log = got.get("changelog") or {}
+        histories = log.get("histories", [])
+        # Jira truncates an inline changelog. Losing the early history of a
+        # long lived ticket would quietly corrupt every duration it appears in.
+        while len(histories) < log.get("total", 0):
+            page = self.get(
+                f"/issue/{key}/changelog",
+                {"startAt": len(histories), "maxResults": PAGE_SIZE},
+            )
+            values = page.get("values", [])
+            if not values:
+                break
+            histories.extend(values)
+        got["changelog"] = {"histories": histories, "total": len(histories)}
+        return got
+
+    def fields(self):
+        return self.get("/field")
+
+    def statuses(self):
+        return self.get("/status")
+
 
 # One row, upserted. Settings live with the scope because there is no second
 # thing to configure, and two tables holding one row each is one table too many.
