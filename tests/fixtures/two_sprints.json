@@ -1,0 +1,31 @@
+{
+  "key": "PROJ-3",
+  "fields": {
+    "summary": "Carried over",
+    "issuetype": {"name": "Story"},
+    "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+    "assignee": {"accountId": "acct-3", "displayName": "Cedar"},
+    "reporter": {"accountId": "acct-3", "displayName": "Cedar"},
+    "created": "2026-01-06T09:00:00.000+0000",
+    "updated": "2026-02-10T09:00:00.000+0000",
+    "resolutiondate": null,
+    "timespent": 7200,
+    "parent": {"key": "PROJ-100"},
+    "fixVersions": [{"name": "R2"}],
+    "labels": [],
+    "components": [{"name": "TEAM"}],
+    "customfield_20001": 3,
+    "customfield_20002": [
+      {"id": 1, "name": "Sprint 1", "state": "closed",
+       "startDate": "2026-01-05T09:00:00.000Z", "endDate": "2026-01-19T09:00:00.000Z"},
+      {"id": 2, "name": "Sprint 2", "state": "closed",
+       "startDate": "2026-01-19T09:00:00.000Z", "endDate": "2026-02-02T09:00:00.000Z"}
+    ]
+  },
+  "changelog": {
+    "histories": [
+      {"created": "2026-01-07T09:00:00.000+0000", "author": {"accountId": "acct-3", "displayName": "Cedar"},
+       "items": [{"field": "status", "from": "1", "fromString": "To Do", "to": "3", "toString": "In Progress"}]}
+    ]
+  }
+}

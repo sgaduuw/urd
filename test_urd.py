@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import tempfile
+from datetime import datetime, timezone
 
 import urd
 
@@ -23,6 +24,30 @@ class FakeOpener:
             if fragment in url:
                 return 200, json.dumps(payload).encode()
         raise AssertionError(f"unexpected request: {url}")
+
+
+FIXTURES = pathlib.Path(__file__).parent / "tests" / "fixtures"
+
+
+def load_fixtures(con, *names):
+    """Insert fixtures as if sync had fetched them, plus the lookup rows sync
+    would have populated from /field and /status."""
+    for name in names:
+        raw = (FIXTURES / f"{name}.json").read_text()
+        issue = json.loads(raw)
+        con.execute(
+            "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+            [issue["key"], issue["fields"]["updated"], datetime.now(timezone.utc), raw],  # noqa: UP017
+        )
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    for status, category in (
+        ("To Do", "new"), ("In Progress", "indeterminate"),
+        ("Review", "indeterminate"), ("Done", "done"),
+    ):
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(con, status_order="To Do,In Progress,Review,Done",
+                   start_status="In Progress", review_status="Review")
 
 
 def test_token_prefers_the_environment_over_the_keychain():
@@ -605,6 +630,83 @@ def test_urd_email_is_used_when_no_flag_is_given():
             os.environ.pop("URD_EMAIL", None)
         else:
             os.environ["URD_EMAIL"] = real_env
+
+
+def test_resolve_field_finds_story_points_by_name():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    assert urd.resolve_field(con, "Story Points") == "customfield_20001"
+
+
+def test_derive_issues_flattens_every_fixture():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
+    assert urd.derive_issues(con) == 3
+    row = con.execute(
+        "SELECT type, status_category, assignee_id, story_points, parent, fix_versions "
+        "FROM issues WHERE key = 'PROJ-1'"
+    ).fetchone()
+    assert row == ("Story", "done", "acct-2", 5.0, "PROJ-100", ["R1"])
+
+
+def test_derive_issues_tolerates_missing_optional_fields():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "skipped_progress")
+    urd.derive_issues(con)
+    row = con.execute(
+        "SELECT assignee_id, story_points, parent, fix_versions FROM issues WHERE key = 'PROJ-2'"
+    ).fetchone()
+    assert row == (None, None, None, [])
+
+
+def test_people_are_discovered_from_the_data_not_a_roster():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "two_sprints")
+    urd.derive_issues(con)
+    names = {r[0] for r in con.execute("SELECT display_name FROM people").fetchall()}
+    assert {"Alder", "Birch", "Cedar"} <= names
+
+
+def test_null_rate_is_measured_for_optional_fields():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress")
+    urd.derive_issues(con)
+    rate = con.execute("SELECT null_rate FROM fields WHERE name = 'Story Points'").fetchone()[0]
+    assert rate == 0.5
+
+
+def test_resolve_field_returns_none_for_missing_field():
+    """When the instance has no Story Points field, resolve_field returns None."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    # Delete the Story Points field to simulate it not existing on the instance
+    con.execute("DELETE FROM fields WHERE name = 'Story Points'")
+    assert urd.resolve_field(con, "Story Points") is None
+
+
+def test_derive_issues_completes_with_no_story_points_field():
+    """Even with no Story Points field, derive_issues must complete and leave
+    story_points null on every row, not raise."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress")
+    # Delete the Story Points field to simulate it not existing
+    con.execute("DELETE FROM fields WHERE name = 'Story Points'")
+    count = urd.derive_issues(con)
+    assert count == 2
+    rows = con.execute("SELECT story_points FROM issues").fetchall()
+    assert all(r[0] is None for r in rows)
+
+
+def test_derive_issues_is_idempotent():
+    """Running derive_issues twice must leave the same row count, not double it."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
+    count1 = urd.derive_issues(con)
+    count2 = urd.derive_issues(con)
+    assert count1 == count2 == 3
+    # Verify the final row count is still 3, not 6
+    total_rows = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    assert total_rows == 3
 
 
 if __name__ == "__main__":

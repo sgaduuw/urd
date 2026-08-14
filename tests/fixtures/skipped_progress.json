@@ -1,0 +1,26 @@
+{
+  "key": "PROJ-2",
+  "fields": {
+    "summary": "Closed without starting",
+    "issuetype": {"name": "Task"},
+    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+    "assignee": null,
+    "reporter": {"accountId": "acct-1", "displayName": "Alder"},
+    "created": "2026-02-01T09:00:00.000+0000",
+    "updated": "2026-02-02T09:00:00.000+0000",
+    "resolutiondate": "2026-02-02T09:00:00.000+0000",
+    "timespent": null,
+    "parent": null,
+    "fixVersions": [],
+    "labels": [],
+    "components": [{"name": "TEAM"}],
+    "customfield_20001": null,
+    "customfield_20002": null
+  },
+  "changelog": {
+    "histories": [
+      {"created": "2026-02-02T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+       "items": [{"field": "status", "from": "1", "fromString": "To Do", "to": "5", "toString": "Done"}]}
+    ]
+  }
+}

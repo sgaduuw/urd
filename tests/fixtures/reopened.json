@@ -1,0 +1,38 @@
+{
+  "key": "PROJ-1",
+  "fields": {
+    "summary": "Reopened once",
+    "issuetype": {"name": "Story"},
+    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+    "assignee": {"accountId": "acct-2", "displayName": "Birch"},
+    "reporter": {"accountId": "acct-1", "displayName": "Alder"},
+    "created": "2026-01-05T09:00:00.000+0000",
+    "updated": "2026-01-20T17:00:00.000+0000",
+    "resolutiondate": "2026-01-20T17:00:00.000+0000",
+    "timespent": 3600,
+    "parent": {"key": "PROJ-100"},
+    "fixVersions": [{"name": "R1"}],
+    "labels": ["infra"],
+    "components": [{"name": "TEAM"}],
+    "customfield_20001": 5,
+    "customfield_20002": [
+      {"id": 1, "name": "Sprint 1", "state": "closed",
+       "startDate": "2026-01-05T09:00:00.000Z", "endDate": "2026-01-19T09:00:00.000Z"}
+    ]
+  },
+  "changelog": {
+    "histories": [
+      {"created": "2026-01-06T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+       "items": [{"field": "status", "from": "1", "fromString": "To Do", "to": "3", "toString": "In Progress"}]},
+      {"created": "2026-01-08T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+       "items": [{"field": "status", "from": "3", "fromString": "In Progress", "to": "4", "toString": "Review"},
+                 {"field": "assignee", "from": "acct-1", "fromString": "Alder", "to": "acct-2", "toString": "Birch"}]},
+      {"created": "2026-01-09T09:00:00.000+0000", "author": {"accountId": "acct-2", "displayName": "Birch"},
+       "items": [{"field": "status", "from": "4", "fromString": "Review", "to": "3", "toString": "In Progress"}]},
+      {"created": "2026-01-15T09:00:00.000+0000", "author": {"accountId": "acct-1", "displayName": "Alder"},
+       "items": [{"field": "status", "from": "3", "fromString": "In Progress", "to": "4", "toString": "Review"}]},
+      {"created": "2026-01-20T17:00:00.000+0000", "author": {"accountId": "acct-2", "displayName": "Birch"},
+       "items": [{"field": "status", "from": "4", "fromString": "Review", "to": "5", "toString": "Done"}]}
+    ]
+  }
+}

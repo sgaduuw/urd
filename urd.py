@@ -317,6 +317,75 @@ def _refresh_lookups(con, jira):
         )
 
 
+ISSUES_SCHEMA = """
+CREATE OR REPLACE TABLE issues (
+    key VARCHAR PRIMARY KEY, project VARCHAR, type VARCHAR, status VARCHAR,
+    status_category VARCHAR, assignee_id VARCHAR, reporter_id VARCHAR,
+    created TIMESTAMP, updated TIMESTAMP, resolved TIMESTAMP,
+    story_points DOUBLE, timespent_s BIGINT, parent VARCHAR,
+    fix_versions VARCHAR[], labels VARCHAR[], components VARCHAR[]
+);
+CREATE OR REPLACE TABLE people (account_id VARCHAR PRIMARY KEY, display_name VARCHAR);
+"""
+
+
+def resolve_field(con, name):
+    """Custom field ids differ per instance, so they are looked up by name and
+    never compiled in. Returns None when the instance has no such field."""
+    row = con.execute("SELECT id FROM fields WHERE name = ? ORDER BY id LIMIT 1", [name]).fetchone()
+    return row[0] if row else None
+
+
+def _ts(value):
+    """Jira sends '2026-01-05T09:00:00.000+0000', which fromisoformat rejects
+    before Python 3.11 and accepts after. Normalise the colonless offset anyway
+    so the parse does not depend on the interpreter's minor version."""
+    if not value:
+        return None
+    if len(value) > 5 and value[-5] in "+-" and ":" not in value[-5:]:
+        value = value[:-2] + ":" + value[-2:]
+    return datetime.fromisoformat(value)
+
+
+def _names(items, attr="name"):
+    return [i[attr] for i in (items or []) if i.get(attr)]
+
+
+def derive_issues(con):
+    con.execute(ISSUES_SCHEMA)
+    points_field = resolve_field(con, "Story Points")
+    rows, people, missing_points = [], {}, 0
+
+    for key, raw in con.execute("SELECT key, json FROM raw_issues ORDER BY key").fetchall():
+        f = json.loads(raw)["fields"]
+        for who in (f.get("assignee"), f.get("reporter")):
+            if who:
+                people[who["accountId"]] = who.get("displayName")
+        points = f.get(points_field) if points_field else None
+        missing_points += points is None
+        rows.append(
+            [
+                key, key.split("-")[0], (f.get("issuetype") or {}).get("name"),
+                (f.get("status") or {}).get("name"),
+                ((f.get("status") or {}).get("statusCategory") or {}).get("key"),
+                (f.get("assignee") or {}).get("accountId"),
+                (f.get("reporter") or {}).get("accountId"),
+                _ts(f.get("created")), _ts(f.get("updated")), _ts(f.get("resolutiondate")),
+                points, f.get("timespent"), (f.get("parent") or {}).get("key"),
+                _names(f.get("fixVersions")), f.get("labels") or [],
+                _names(f.get("components")),
+            ]
+        )
+
+    con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
+    con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
+                    list(people.items()))
+    if points_field and rows:
+        con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
+                    [missing_points / len(rows), points_field])
+    return len(rows)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="urd", description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DB_DEFAULT)
