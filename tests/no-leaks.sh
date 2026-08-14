@@ -41,14 +41,27 @@ trap 'rm -f "$list"' EXIT
 not_self='\(^\|/\)no-leaks\.sh$'
 not_license='\(^\|/\)LICENSE$'
 
-# Piping straight into xargs, with no shell variable ever holding the
-# filenames, means a zero length list invokes grep zero times rather than a
-# grep left blocking on an unexpected stdin.
-if grep -z -v -e "$not_self" -- "$list" | (cd "$target" && xargs -0 grep -niIH -e "$loose" --); then
+# Decide on grep's OUTPUT, never its exit status. grep exits 1 for a batch
+# with no match, an ordinary no-op rather than a failure, and when the file
+# list is long enough that xargs splits it across several grep invocations,
+# one empty batch next to one real hit aggregates their exit statuses into a
+# false "nothing found", even though the hit was already printed. The mirror
+# break is an empty or fully excluded file list: xargs then runs grep zero
+# times and exits 0 for "nothing to do", which reads as a false "found
+# something" if exit status were the signal instead. Capturing output
+# sidesteps both: `|| true` stops the ordinary no-match case from tripping
+# `set -e`, and it is the presence of output, not either program's exit
+# code, that decides `hits`.
+loose_hits=$(grep -z -v -e "$not_self" -- "$list" \
+		| (cd "$target" && xargs -0 grep -niIH -e "$loose" --) || true)
+if [ -n "$loose_hits" ]; then
+	printf '%s\n' "$loose_hits"
 	hits=1
 fi
-if grep -z -v -e "$not_self" -e "$not_license" -- "$list" \
-		| (cd "$target" && xargs -0 grep -nIH -e "$strict" --); then
+strict_hits=$(grep -z -v -e "$not_self" -e "$not_license" -- "$list" \
+		| (cd "$target" && xargs -0 grep -nIH -e "$strict" --) || true)
+if [ -n "$strict_hits" ]; then
+	printf '%s\n' "$strict_hits"
 	hits=1
 fi
 if git -C "$target" log --format='%H %s%n%b' 2>/dev/null | grep -ni -e "$loose" -e "$strict"; then
