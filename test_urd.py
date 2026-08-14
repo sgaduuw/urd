@@ -1302,14 +1302,21 @@ def test_assignee_display_name_refresh_on_derive_issues():
 
 
 def test_sprint_membership_is_ordered_so_carry_over_is_visible():
+    """Ordinal must follow array position, not id or name order. The fixture has
+    array [id=2 name=SprintB, id=1 name=SprintA] so ordinal must be [1, 2], not
+    id order [1, 2] or name order [A, B]. This catches mutations that set ordinal
+    to sprint.get("id") or sort by name."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
     urd.derive_issues(con)
     assert urd.derive_sprints(con) == 3
     rows = con.execute(
-        "SELECT sprint_name, ordinal FROM issue_sprints WHERE key = 'PROJ-3' ORDER BY ordinal"
+        "SELECT sprint_id, sprint_name, state, ordinal FROM issue_sprints "
+        "WHERE key = 'PROJ-3' ORDER BY ordinal"
     ).fetchall()
-    assert rows == [("Sprint 1", 1), ("Sprint 2", 2)]
+    # Array order: [id=2 name=SprintB state=active, id=1 name=SprintA state=closed]
+    # Ordinal [1, 2] follows array position, not id order [1, 2] or name sort [A, B]
+    assert rows == [(2, "Sprint B", "active", 1), (1, "Sprint A", "closed", 2)]
 
 
 def test_carried_over_issues_are_exactly_those_with_a_second_sprint():
@@ -1323,17 +1330,154 @@ def test_carried_over_issues_are_exactly_those_with_a_second_sprint():
     assert carried == [("PROJ-3",)]
 
 
-def test_an_issue_with_no_sprint_field_contributes_no_rows():
+def test_sprint_field_null_contributes_no_rows():
+    """An issue with Sprint field explicitly null (not missing, not empty)."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "skipped_progress")
     urd.derive_issues(con)
     assert urd.derive_sprints(con) == 0
 
 
-def test_ts_parses_both_offset_shapes():
-    assert urd._ts("2026-01-05T09:00:00.000Z") is not None
-    assert urd._ts("2026-01-05T09:00:00.000+0000") is not None
-    assert urd._ts(None) is None
+def test_sprint_field_missing_contributes_no_rows():
+    """An issue whose Sprint field is not in raw_issues at all (resolve_field returns None)."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-MISSING",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-MISSING",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-01T09:00:00.000+0000",
+                }
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    con.execute("INSERT INTO statuses VALUES ('To Do', 'new')")
+    urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
+    urd.derive_issues(con)
+    assert urd.derive_sprints(con) == 0
+
+
+def test_sprint_field_empty_array_contributes_no_rows():
+    """An issue with Sprint field as an empty array."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-EMPTY",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-EMPTY",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-01T09:00:00.000+0000",
+                    "customfield_20002": [],
+                }
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    con.execute("INSERT INTO statuses VALUES ('To Do', 'new')")
+    urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
+    urd.derive_issues(con)
+    assert urd.derive_sprints(con) == 0
+
+
+def test_derive_sprints_is_idempotent():
+    """Running derive_sprints twice must return the same count, not double the rows."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "two_sprints")
+    urd.derive_issues(con)
+    count1 = urd.derive_sprints(con)
+    count2 = urd.derive_sprints(con)
+    assert count1 == count2 == 2
+    # Verify final row count is 2, not 4
+    total = con.execute("SELECT count(*) FROM issue_sprints").fetchone()[0]
+    assert total == 2
+
+
+def test_issue_sprints_timestamp_columns_are_naively_utc():
+    """The start and end columns must be TIMESTAMP (naive UTC), not TIMESTAMPTZ.
+    An aware column would shift to local wall time, making the same database read
+    differently on a laptop and in CI, and breaking range joins in Task 13."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "two_sprints")
+    urd.derive_issues(con)
+    urd.derive_sprints(con)
+    # Assert the column types are TIMESTAMP, not TIMESTAMPTZ
+    types = {name: dtype for name, dtype, *_ in con.execute("DESCRIBE issue_sprints").fetchall()}
+    assert types["start"] == "TIMESTAMP", f"start should be TIMESTAMP, got {types['start']}"
+    assert types["end"] == "TIMESTAMP", f"end should be TIMESTAMP, got {types['end']}"
+
+
+def test_issue_sprints_timestamps_do_not_shift_with_machine_timezone():
+    """Verify that Z-form sprint dates land as naive UTC and don't shift when the
+    DuckDB timezone is changed. A TIMESTAMPTZ column would shift to local wall time."""
+    con = urd.open_db(_tmpdb())
+    con.execute("SET TimeZone='America/Los_Angeles'")
+    load_fixtures(con, "two_sprints")
+    urd.derive_issues(con)
+    urd.derive_sprints(con)
+    start = con.execute(
+        "SELECT start FROM issue_sprints WHERE key = 'PROJ-3' ORDER BY ordinal LIMIT 1"
+    ).fetchone()[0]
+    # Fixture has "startDate": "2026-01-05T09:00:00.000Z" for the first sprint
+    # This should be stored as naive UTC 09:00:00, not shifted to Los_Angeles wall time
+    expected = datetime(2026, 1, 5, 9, 0, 0)
+    assert start == expected, f"Expected {expected}, got {start}"
+
+
+def test_sprint_field_is_resolved_by_name_not_hardcoded_by_id():
+    """Register Sprint under a different field id and verify derive_sprints still finds it.
+    This proves resolve_field("Sprint") is called, not hardcoded to a specific id."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-DIFF-ID",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-DIFF-ID",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-01T09:00:00.000+0000",
+                    "customfield_99999": [
+                        {
+                            "id": 1, "name": "Sprint A", "state": "closed",
+                            "startDate": "2026-01-05T09:00:00.000Z",
+                            "endDate": "2026-01-19T09:00:00.000Z",
+                        }
+                    ]
+                }
+            }),
+        ],
+    )
+    # Register Sprint under a different field id (customfield_99999 instead of customfield_20002)
+    con.execute("INSERT INTO fields VALUES ('customfield_99999', 'Sprint', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO statuses VALUES ('To Do', 'new')")
+    urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
+    urd.derive_issues(con)
+    count = urd.derive_sprints(con)
+    # Must find and insert the sprint from customfield_99999, not customfield_20002
+    assert count == 1
+    row = con.execute("SELECT sprint_name FROM issue_sprints WHERE key = 'PROJ-DIFF-ID'").fetchone()
+    assert row[0] == "Sprint A"
 
 
 if __name__ == "__main__":

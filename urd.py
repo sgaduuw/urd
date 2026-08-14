@@ -477,6 +477,11 @@ def derive_sprints(con):
     """The Sprint field holds every sprint an issue has belonged to, in order, so
     carry-over is ordinal > 1. The changelog's Sprint items carry comma joined
     names rather than ids and are not needed.
+
+    ponytail: assumes each array element is a dict with .get() methods. Legacy
+    Greenhopper serialised Sprint values as strings, which would raise AttributeError.
+    Jira Cloud returns dicts, so this is a house convention gap rather than a bug.
+    Upgrade path: detect and reject string elements, or stash both and fail the derive.
     """
     con.execute(SPRINTS_SCHEMA)
     sprint_field = resolve_field(con, "Sprint")
