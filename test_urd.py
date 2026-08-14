@@ -1301,6 +1301,41 @@ def test_assignee_display_name_refresh_on_derive_issues():
     assert name_after == "New Assignee Name", f"Expected 'New Assignee Name', got '{name_after}'"
 
 
+def test_sprint_membership_is_ordered_so_carry_over_is_visible():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
+    urd.derive_issues(con)
+    assert urd.derive_sprints(con) == 3
+    rows = con.execute(
+        "SELECT sprint_name, ordinal FROM issue_sprints WHERE key = 'PROJ-3' ORDER BY ordinal"
+    ).fetchall()
+    assert rows == [("Sprint 1", 1), ("Sprint 2", 2)]
+
+
+def test_carried_over_issues_are_exactly_those_with_a_second_sprint():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "two_sprints")
+    urd.derive_issues(con)
+    urd.derive_sprints(con)
+    carried = con.execute(
+        "SELECT key FROM issue_sprints GROUP BY key HAVING max(ordinal) > 1"
+    ).fetchall()
+    assert carried == [("PROJ-3",)]
+
+
+def test_an_issue_with_no_sprint_field_contributes_no_rows():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "skipped_progress")
+    urd.derive_issues(con)
+    assert urd.derive_sprints(con) == 0
+
+
+def test_ts_parses_both_offset_shapes():
+    assert urd._ts("2026-01-05T09:00:00.000Z") is not None
+    assert urd._ts("2026-01-05T09:00:00.000+0000") is not None
+    assert urd._ts(None) is None
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

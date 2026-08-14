@@ -343,6 +343,13 @@ CREATE OR REPLACE TABLE changes (
 );
 """
 
+SPRINTS_SCHEMA = """
+CREATE OR REPLACE TABLE issue_sprints (
+    key VARCHAR, sprint_id BIGINT, sprint_name VARCHAR, state VARCHAR,
+    start TIMESTAMP, "end" TIMESTAMP, ordinal INTEGER
+);
+"""
+
 # One general table beats two specific ones: status transitions are a view over
 # it, and assignee history then comes free, which is what the handoff matrix
 # needs.
@@ -463,6 +470,30 @@ def derive_issues(con):
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])
+    return len(rows)
+
+
+def derive_sprints(con):
+    """The Sprint field holds every sprint an issue has belonged to, in order, so
+    carry-over is ordinal > 1. The changelog's Sprint items carry comma joined
+    names rather than ids and are not needed.
+    """
+    con.execute(SPRINTS_SCHEMA)
+    sprint_field = resolve_field(con, "Sprint")
+    if not sprint_field:
+        return 0
+    rows = []
+    for key, raw in con.execute("SELECT key, json FROM raw_issues ORDER BY key").fetchall():
+        sprints = json.loads(raw)["fields"].get(sprint_field) or []
+        for ordinal, sprint in enumerate(sprints, start=1):
+            rows.append(
+                [
+                    key, sprint.get("id"), sprint.get("name"), sprint.get("state"),
+                    _ts(sprint.get("startDate")), _ts(sprint.get("endDate")), ordinal,
+                ]
+            )
+    if rows:
+        con.executemany(f"INSERT INTO issue_sprints VALUES ({','.join(['?'] * 7)})", rows)
     return len(rows)
 
 
