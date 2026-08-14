@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 import duckdb
 
@@ -215,6 +216,91 @@ def load_scope(con):
     return dict(zip(SCOPE_COLUMNS, row, strict=True))
 
 
+# worklog rides along unused: it is free on a request already being made, and a
+# future logged-time chart then needs no refetch.
+# ponytail: fetch it, derive nothing. Upgrade path is a worklogs table in derive.
+FETCH_FIELDS = ",".join(
+    (
+        "summary", "issuetype", "status", "statuscategorychangedate", "priority",
+        "labels", "components", "assignee", "reporter", "created", "updated",
+        "resolutiondate", "resolution", "parent", "fixVersions", "timespent",
+        "timeoriginalestimate", "worklog",
+    )
+)
+
+
+def keys_to_fetch(stored, remote):
+    """One rule, both directions: fetch a key we lack, or whose `updated` moved.
+
+    This is why extending --since backwards costs only the issues not already
+    held, with no window arithmetic to get wrong.
+    """
+    return [key for key, updated in remote if stored.get(key) != updated]
+
+
+def build_jql(project, component, since):
+    clauses = [f"project in ({project})"]
+    if component:
+        quoted = ",".join(f'"{c.strip()}"' for c in component.split(","))
+        clauses.append(f"component in ({quoted})")
+    clauses.append(f'updated >= "{since}"')
+    return " AND ".join(clauses) + " ORDER BY key"
+
+
+def sync(con, jira):
+    scope = load_scope(con)
+    if not scope["project"] or not scope["earliest_since"]:
+        raise SystemExit("first run needs --site, --email, --project and --since")
+
+    jql = build_jql(scope["project"], scope["component"], scope["earliest_since"])
+    remote = list(jira.search(jql))
+    stored = dict(con.execute("SELECT key, updated FROM raw_issues").fetchall())
+    wanted = keys_to_fetch(stored, remote)
+    print(f"{len(remote)} in scope, {len(wanted)} to fetch")
+
+    for n, key in enumerate(wanted, start=1):
+        try:
+            issue = jira.issue(key, FETCH_FIELDS)
+        except SystemExit as err:
+            con.execute(
+                'INSERT INTO sync_errors VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE '
+                'SET "at" = excluded."at", error = excluded.error',
+                [key, datetime.now(timezone.utc), str(err)],  # noqa: UP017
+            )
+            print(f"  {key}: {err}", file=sys.stderr)
+            continue
+        con.execute(
+            "INSERT INTO raw_issues VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE "
+            "SET updated = excluded.updated, fetched_at = excluded.fetched_at, "
+            "json = excluded.json",
+            [key, issue["fields"]["updated"], datetime.now(timezone.utc), json.dumps(issue)],  # noqa: UP017
+        )
+        con.execute("DELETE FROM sync_errors WHERE key = ?", [key])
+        if n % 50 == 0:
+            print(f"  {n}/{len(wanted)}")
+
+    _refresh_lookups(con, jira)
+    save_scope(con, last_sync_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))  # noqa: UP017
+    errors = con.execute("SELECT count(*) FROM sync_errors").fetchone()[0]
+    print(f"synced. {errors} error(s) outstanding" if errors else "synced, no errors")
+    return 0
+
+
+def _refresh_lookups(con, jira):
+    """Field ids and the status name to category map, both resolved by name so
+    no instance specific id is ever compiled in."""
+    con.execute("DELETE FROM fields")
+    for field in jira.fields():
+        con.execute("INSERT INTO fields VALUES (?, ?, NULL) ON CONFLICT (id) DO NOTHING",
+                    [field["id"], field.get("name")])
+    con.execute("DELETE FROM statuses")
+    for status in jira.statuses():
+        con.execute(
+            "INSERT INTO statuses VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
+            [status["name"], (status.get("statusCategory") or {}).get("key")],
+        )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="urd", description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DB_DEFAULT)
@@ -246,6 +332,21 @@ def main(argv=None):
         for row in con.execute(args.query).fetchall():
             print("\t".join("" if v is None else str(v) for v in row))
         return 0
+
+    if args.verb == "sync":
+        # ponytail: one HTTP request per changed issue. Daily delta is small and
+        # a first backfill is a few hundred requests paid once. Upgrade path is
+        # batching via the search endpoint's fields expansion.
+        save_scope(con, site=args.site, email=args.email, project=args.project,
+                   component=args.component, earliest_since=args.since)
+        scope = load_scope(con)
+        if not scope["site"]:
+            raise SystemExit("first run needs --site")
+        # Email resolution: CLI flag, then environment, then stored
+        email = args.email or os.environ.get("URD_EMAIL") or scope["email"]
+        if not email:
+            raise SystemExit("first run needs --email (or set URD_EMAIL)")
+        return sync(con, Jira(scope["site"], email, token()))
 
     print(f"{args.verb}: not implemented yet", file=sys.stderr)
     return 1

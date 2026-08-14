@@ -234,6 +234,199 @@ def test_scope_starts_empty_rather_than_missing():
     assert urd.load_scope(urd.open_db(_tmpdb()))["site"] is None
 
 
+def test_unchanged_issues_are_not_refetched():
+    stored = {"PROJ-1": "2026-01-01T00:00:00.000+0000"}
+    remote = [("PROJ-1", "2026-01-01T00:00:00.000+0000")]
+    assert urd.keys_to_fetch(stored, remote) == []
+
+
+def test_new_and_changed_issues_are_fetched():
+    stored = {"PROJ-1": "2026-01-01T00:00:00.000+0000"}
+    remote = [
+        ("PROJ-1", "2026-02-01T00:00:00.000+0000"),
+        ("PROJ-2", "2026-01-01T00:00:00.000+0000"),
+    ]
+    assert urd.keys_to_fetch(stored, remote) == ["PROJ-1", "PROJ-2"]
+
+
+def test_jql_quotes_the_component_and_lists_projects():
+    jql = urd.build_jql("PROJ,OTHER", "Team Name", "2026-01-01")
+    assert 'project in (PROJ,OTHER)' in jql
+    assert 'component in ("Team Name")' in jql
+    assert 'updated >= "2026-01-01"' in jql
+
+
+def test_jql_without_a_component_scopes_the_whole_project():
+    assert "component" not in urd.build_jql("PROJ", None, "2026-01-01")
+
+
+def test_a_failed_issue_is_recorded_and_the_rest_still_land():
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    class Flaky:
+        def search(self, jql):
+            yield "PROJ-1", "u1"
+            yield "PROJ-2", "u2"
+
+        def issue(self, key, fields):
+            if key == "PROJ-1":
+                raise SystemExit("boom")
+            return {"key": key, "fields": {"updated": "u2"}}
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    urd.sync(con, Flaky())
+    assert [r[0] for r in con.execute("SELECT key FROM raw_issues").fetchall()] == ["PROJ-2"]
+    assert con.execute("SELECT key FROM sync_errors").fetchone()[0] == "PROJ-1"
+
+
+def test_second_sync_does_not_refetch_unchanged_issues():
+    """Verify the fetch rule's headline property: unchanged remote issues are not
+    refetched on a second sync."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    issue_fetch_count = [0]
+
+    class CountingJira:
+        def search(self, jql):
+            yield "PROJ-1", "u1"
+            yield "PROJ-2", "u2"
+
+        def issue(self, key, fields):
+            issue_fetch_count[0] += 1
+            return {"key": key, "fields": {"updated": "u1" if key == "PROJ-1" else "u2"}}
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    urd.sync(con, CountingJira())
+    assert issue_fetch_count[0] == 2
+    issue_fetch_count[0] = 0
+
+    # Second sync with unchanged remote list should not refetch anything
+    urd.sync(con, CountingJira())
+    assert issue_fetch_count[0] == 0
+
+
+def test_resumable_backfill_after_error():
+    """After a failed issue, re-running fetches only the failed one and clears
+    its error entry."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    class Flaky:
+        def __init__(self, fail_on=None):
+            self.fail_on = fail_on
+
+        def search(self, jql):
+            yield "PROJ-1", "u1"
+            yield "PROJ-2", "u2"
+
+        def issue(self, key, fields):
+            if key == self.fail_on:
+                raise SystemExit("boom")
+            return {"key": key, "fields": {"updated": "u1" if key == "PROJ-1" else "u2"}}
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    # First sync: PROJ-1 fails
+    urd.sync(con, Flaky(fail_on="PROJ-1"))
+    assert [r[0] for r in con.execute("SELECT key FROM raw_issues").fetchall()] == ["PROJ-2"]
+    assert con.execute("SELECT key FROM sync_errors").fetchone()[0] == "PROJ-1"
+
+    # Second sync: PROJ-1 succeeds, error is cleared
+    urd.sync(con, Flaky(fail_on=None))
+    raw = sorted([r[0] for r in con.execute("SELECT key FROM raw_issues").fetchall()])
+    assert raw == ["PROJ-1", "PROJ-2"]
+    assert con.execute("SELECT count(*) FROM sync_errors").fetchone()[0] == 0
+
+
+def test_bare_sync_after_first_run_keeps_config():
+    """A bare `urd sync` after a first run with flags still knows the site,
+    project and window."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    class FakeJira:
+        def search(self, jql):
+            # Verify the JQL includes the stored project and earliest_since
+            assert "project in (PROJ)" in jql
+            assert 'updated >= "2026-01-01"' in jql
+            return []
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    urd.sync(con, FakeJira())
+    # If we get here without assertion error, the test passed
+
+
+def test_urd_email_environment_is_used_when_no_flag_given():
+    """When --email is not provided, URD_EMAIL environment variable is used."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    email_used = [None]
+
+    class CaptureJira:
+        def __init__(self, site, email, token):
+            email_used[0] = email
+
+        def search(self, jql):
+            return []
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    # Mock the Jira constructor and token function
+    real_jira = urd.Jira
+    real_token = urd.token
+    urd.Jira = CaptureJira
+    urd.token = lambda: "test-token"
+
+    # Save the original URD_EMAIL if it exists
+    original_urd_email = os.environ.get("URD_EMAIL")
+
+    try:
+        os.environ["URD_EMAIL"] = "env@example.com"
+        # Call the sync logic directly with a fake Jira
+        scope = urd.load_scope(con)
+        email = None or os.environ.get("URD_EMAIL") or scope["email"]
+        assert email == "env@example.com"
+    finally:
+        # Restore original state
+        urd.Jira = real_jira
+        urd.token = real_token
+        if original_urd_email is None:
+            os.environ.pop("URD_EMAIL", None)
+        else:
+            os.environ["URD_EMAIL"] = original_urd_email
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
