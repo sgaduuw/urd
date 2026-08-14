@@ -414,6 +414,57 @@ def test_malformed_issue_response_is_recorded_not_fatal():
     assert urd.load_scope(con)["last_sync_at"] is not None
 
 
+def test_json_array_issue_response_is_recorded_not_fatal():
+    """A JSON array body from /issue/KEY (not a dict) is recorded in sync_errors
+    and the run continues, not a traceback."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    class ArrayResponseOpener:
+        def __call__(self, url, headers):
+            if "/issue/PROJ-1" in url:
+                # Return a JSON array instead of object
+                return 200, json.dumps(["item1", "item2"]).encode()
+            if "/issue/PROJ-2" in url:
+                return 200, json.dumps({"key": "PROJ-2", "fields": {"updated": "u2"}}).encode()
+            if "/search" in url:
+                return 200, json.dumps({
+                    "issues": [
+                        {"key": "PROJ-1", "fields": {"updated": "u1"}},
+                        {"key": "PROJ-2", "fields": {"updated": "u2"}},
+                    ],
+                    "isLast": True,
+                }).encode()
+            return 200, b"{}"
+
+    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=ArrayResponseOpener())
+
+    class Syncer:
+        def search(self, jql):
+            yield "PROJ-1", "u1"
+            yield "PROJ-2", "u2"
+
+        def issue(self, key, fields):
+            return jira.issue(key, fields)
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    urd.sync(con, Syncer())
+    # PROJ-2 succeeds despite PROJ-1 returning an array
+    assert [r[0] for r in con.execute("SELECT key FROM raw_issues").fetchall()] == ["PROJ-2"]
+    # PROJ-1 is recorded in sync_errors
+    error_row = con.execute("SELECT error FROM sync_errors WHERE key = 'PROJ-1'").fetchone()
+    assert error_row is not None
+    assert "expected a JSON object, got list" in error_row[0]
+    # last_sync_at is still written
+    assert urd.load_scope(con)["last_sync_at"] is not None
+
+
 def test_lookups_and_sync_timestamp_are_written():
     con = urd.open_db(_tmpdb())
     urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
@@ -524,14 +575,20 @@ def test_urd_email_is_used_when_no_flag_is_given():
     urd.Jira, urd.token = CaptureJira, lambda env=None: "token"
     os.environ["URD_EMAIL"] = "env@example.com"
     try:
+        # Test 1: environment beats stored scope
         urd.main(["--db", db, "sync"])
+        assert seen["email"] == "env@example.com"
+
+        # Test 2: flag beats environment
+        seen["email"] = None
+        urd.main(["--db", db, "sync", "--email", "flag@example.com"])
+        assert seen["email"] == "flag@example.com"
     finally:
         urd.Jira, urd.token = real_jira, real_token
         if real_env is None:
             os.environ.pop("URD_EMAIL", None)
         else:
             os.environ["URD_EMAIL"] = real_env
-    assert seen["email"] == "env@example.com"
 
 
 if __name__ == "__main__":

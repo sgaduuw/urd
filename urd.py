@@ -125,6 +125,8 @@ class Jira:
 
     def issue(self, key, fields):
         got = self.get(f"/issue/{key}", {"expand": "changelog", "fields": fields})
+        if not isinstance(got, dict):
+            raise SystemExit(f"{key}: expected a JSON object, got {type(got).__name__}")
         log = got.get("changelog") or {}
         histories = log.get("histories", [])
         # Jira truncates an inline changelog. Losing the early history of a
@@ -240,9 +242,11 @@ def keys_to_fetch(stored, remote):
 
 def build_jql(project, component, since):
     """Build a JQL query string. Both project and component are interpolated raw,
-    so a stray double quote or a component with commas (which are legal in Jira
-    component names) can widen the query. This is acceptable only because the
-    sole input is the operator's own command line and the client is GET-only."""
+    so a stray double quote can break the query syntax. A comma in a real
+    component name becomes a separator and the missing component causes a 400,
+    which the caller sees as a loud failure, not a silent widening. This is
+    acceptable only because the sole input is the operator's own command line
+    and the client is GET-only."""
     clauses = [f"project in ({project})"]
     if component:
         quoted = ",".join(f'"{c.strip()}"' for c in component.split(","))
