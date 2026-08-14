@@ -331,20 +331,38 @@ CREATE OR REPLACE TABLE people (account_id VARCHAR PRIMARY KEY, display_name VAR
 
 def resolve_field(con, name):
     """Custom field ids differ per instance, so they are looked up by name and
-    never compiled in. Returns None when the instance has no such field."""
+    never compiled in. Returns None when the instance has no such field.
+
+    ponytail: ORDER BY id LIMIT 1 orders string ids, so with two fields named
+    "Story Points", customfield_10999 beats customfield_20001. The wrong pick is
+    silent except for a null rate near 1.0. If both name a DOUBLE field, the pick
+    is arbitrary; if both name incompatible types (e.g. text), the wrong one raises
+    ConversionException on derive. Upgrade path: if duplicates ever occur, fail
+    loudly per instance-specific logic or stash both and fail the derive.
+    """
     row = con.execute("SELECT id FROM fields WHERE name = ? ORDER BY id LIMIT 1", [name]).fetchone()
     return row[0] if row else None
 
 
 def _ts(value):
-    """Jira sends '2026-01-05T09:00:00.000+0000', which fromisoformat rejects
-    before Python 3.11 and accepts after. Normalise the colonless offset anyway
-    so the parse does not depend on the interpreter's minor version."""
+    """Jira sends '2026-01-05T09:00:00.000+0000' on issue fields and '...Z' on the
+    Sprint field. Both are normalised to a naive UTC datetime, because the issues
+    table's TIMESTAMP columns are naive: binding an aware value makes DuckDB shift
+    it to the machine's local wall time and drop the zone, so the same database
+    would read differently on a laptop and in CI, and any span crossing a DST
+    change would come out an hour wrong.
+
+    ponytail: assumes Jira always sends an offset, which it does. A naive input
+    would be treated as local time by astimezone. Upgrade path if that ever
+    changes: reject a value with no offset rather than guessing one.
+    """
     if not value:
         return None
-    if len(value) > 5 and value[-5] in "+-" and ":" not in value[-5:]:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    elif len(value) > 5 and value[-5] in "+-" and ":" not in value[-5:]:
         value = value[:-2] + ":" + value[-2:]
-    return datetime.fromisoformat(value)
+    return datetime.fromisoformat(value).astimezone(timezone.utc).replace(tzinfo=None)  # noqa: UP017
 
 
 def _names(items, attr="name"):
@@ -360,7 +378,9 @@ def derive_issues(con):
         f = json.loads(raw)["fields"]
         for who in (f.get("assignee"), f.get("reporter")):
             if who:
-                people[who["accountId"]] = who.get("displayName")
+                acct = who.get("accountId")
+                if acct:
+                    people[acct] = who.get("displayName")
         points = f.get(points_field) if points_field else None
         missing_points += points is None
         rows.append(
@@ -377,9 +397,11 @@ def derive_issues(con):
             ]
         )
 
-    con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
-    con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
-                    list(people.items()))
+    if rows:
+        con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
+    if people:
+        con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
+                        list(people.items()))
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])

@@ -643,10 +643,16 @@ def test_derive_issues_flattens_every_fixture():
     load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
     assert urd.derive_issues(con) == 3
     row = con.execute(
-        "SELECT type, status_category, assignee_id, story_points, parent, fix_versions "
-        "FROM issues WHERE key = 'PROJ-1'"
+        "SELECT key, project, type, status, status_category, assignee_id, reporter_id, "
+        "created, updated, resolved, story_points, timespent_s, parent, "
+        "fix_versions, labels, components FROM issues WHERE key = 'PROJ-1'"
     ).fetchone()
-    assert row == ("Story", "done", "acct-2", 5.0, "PROJ-100", ["R1"])
+    assert row == (
+        "PROJ-1", "PROJ", "Story", "Done", "done", "acct-2", "acct-1",
+        datetime(2026, 1, 5, 9, 0, 0), datetime(2026, 1, 20, 17, 0, 0),
+        datetime(2026, 1, 20, 17, 0, 0), 5.0, 3600, "PROJ-100",
+        ["R1"], ["infra"], ["TEAM"],
+    )
 
 
 def test_derive_issues_tolerates_missing_optional_fields():
@@ -707,6 +713,112 @@ def test_derive_issues_is_idempotent():
     # Verify the final row count is still 3, not 6
     total_rows = con.execute("SELECT count(*) FROM issues").fetchone()[0]
     assert total_rows == 3
+
+
+def test_stored_timestamps_do_not_depend_on_the_machines_timezone():
+    """The issues table's TIMESTAMP columns are naive, so _ts must hand DuckDB a
+    naive UTC value. An aware one gets shifted to local wall time, which makes any
+    span crossing a DST change an hour wrong and makes CI disagree with a laptop."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    created = con.execute("SELECT created FROM issues WHERE key = 'PROJ-1'").fetchone()[0]
+    # The fixture has "created": "2026-01-05T09:00:00.000+0000"
+    # This should be stored as naive UTC 09:00:00, not shifted to local wall time
+    assert created == datetime(2026, 1, 5, 9, 0, 0)
+
+
+def test_ts_normalizes_all_input_formats():
+    """Verify _ts handles all four cases: +0000, Z, -0500, and None."""
+    # Test 1: Standard Jira format with +0000
+    ts1 = urd._ts("2026-01-05T09:00:00.000+0000")
+    assert ts1 == datetime(2026, 1, 5, 9, 0, 0)
+
+    # Test 2: Z format (Sprint field)
+    ts2 = urd._ts("2026-01-05T09:00:00.000Z")
+    assert ts2 == datetime(2026, 1, 5, 9, 0, 0)
+
+    # Test 3: Negative offset that gives the same instant as +0000
+    # 13:00:00-0500 = 18:00:00+0000 = 18:00:00 UTC
+    ts3 = urd._ts("2026-01-05T13:00:00.000-0500")
+    assert ts3 == datetime(2026, 1, 5, 18, 0, 0)
+
+    # Test 4: None input
+    ts4 = urd._ts(None)
+    assert ts4 is None
+
+
+def test_derive_issues_returns_zero_on_empty_input():
+    """Running derive_issues on an empty raw_issues table must return 0, not raise."""
+    con = urd.open_db(_tmpdb())
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    count = urd.derive_issues(con)
+    assert count == 0
+
+
+def test_missing_assignee_and_reporter_does_not_abort():
+    """An issue with both assignee and reporter null must complete the derive."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "skipped_progress")
+    urd.derive_issues(con)
+    # Verify the row was written despite null assignee/reporter
+    assert con.execute("SELECT count(*) FROM issues WHERE key = 'PROJ-2'").fetchone()[0] == 1
+
+
+def test_missing_accountid_is_skipped():
+    """A person object without accountId must not abort derive or leave the run
+    half-done in the people table."""
+    con = urd.open_db(_tmpdb())
+    # Insert a fixture manually with a malformed person object
+    raw = json.dumps({
+        "key": "PROJ-4",
+        "fields": {
+            "summary": "Malformed person",
+            "issuetype": {"name": "Story"},
+            "status": {"name": "Done", "statusCategory": {"key": "done"}},
+            "assignee": {"displayName": "NoId", "avatarUrl": "..."},
+            "reporter": {"accountId": "acct-1", "displayName": "Alder"},
+            "created": "2026-01-05T09:00:00.000+0000",
+            "updated": "2026-01-05T09:00:00.000+0000",
+            "resolutiondate": None,
+            "timespent": None,
+            "parent": None,
+            "fixVersions": [],
+            "labels": [],
+            "components": [{"name": "TEAM"}],
+            "customfield_20001": None,
+            "customfield_20002": None,
+        },
+        "changelog": {"histories": []},
+    })
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        ["PROJ-4", "2026-01-05T09:00:00.000+0000", datetime.now(timezone.utc), raw],  # noqa: UP017
+    )
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    urd.save_scope(con, status_order="To Do,Done", start_status="To Do", review_status="Done")
+
+    # This must not raise, even though assignee has no accountId
+    count = urd.derive_issues(con)
+    assert count == 1
+    # Verify the issue was written
+    assert con.execute("SELECT count(*) FROM issues WHERE key = 'PROJ-4'").fetchone()[0] == 1
+    # Verify only the valid person (Alder) was inserted
+    people = sorted([r[0] for r in con.execute("SELECT display_name FROM people").fetchall()])
+    assert people == ["Alder"]
+
+
+def test_people_idempotence():
+    """Running derive_issues twice must not double the people table row count."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "two_sprints")
+    urd.derive_issues(con)
+    count1 = con.execute("SELECT count(*) FROM people").fetchone()[0]
+    urd.derive_issues(con)
+    count2 = con.execute("SELECT count(*) FROM people").fetchone()[0]
+    assert count1 == count2
 
 
 if __name__ == "__main__":
