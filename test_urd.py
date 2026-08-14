@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import tempfile
 
 import urd
@@ -73,6 +74,100 @@ def test_issue_pages_a_truncated_changelog():
         "PROJ-9", "summary"
     )
     assert [h["id"] for h in got["changelog"]["histories"]] == ["1", "2", "3"]
+
+
+def test_transport_failures_retry_then_exit():
+    """Transport failure (599 status) on first attempt should retry then succeed."""
+    attempt = [0]
+
+    def opener(url, headers):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            return urd.TRANSPORT_ERROR_STATUS, b"timeout"
+        return 200, b"{}"
+
+    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    jira.get("/field")
+    assert attempt[0] == 2
+
+
+def test_transport_failures_exit_on_second_attempt():
+    """Transport failure (599 status) on both attempts should raise SystemExit."""
+    def opener(url, headers):
+        return urd.TRANSPORT_ERROR_STATUS, b"timeout"
+
+    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    try:
+        jira.get("/field")
+        raise AssertionError("expected SystemExit")
+    except SystemExit as e:
+        assert "GET" in str(e) and "599" in str(e)
+
+
+def test_search_detects_stalled_page_token():
+    """If the server returns the same token, search should raise, not spin."""
+    page = {
+        "issues": [{"key": "PROJ-1", "fields": {"updated": "2026-01-01T00:00:00.000+0000"}}],
+        "nextPageToken": "tok1",
+        "isLast": False,
+    }
+    opener = FakeOpener({"/search/jql": page})
+    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    try:
+        list(jira.search("project = PROJ"))
+        raise AssertionError("expected SystemExit")
+    except SystemExit as e:
+        assert "stalled" in str(e).lower()
+
+
+def test_truncated_changelog_raises_instead_of_corrupting():
+    """A changelog that returns fewer entries than promised should raise."""
+    truncated = {
+        "key": "PROJ-9",
+        "fields": {"updated": "2026-01-01T00:00:00.000+0000"},
+        "changelog": {
+            "total": 3,
+            "maxResults": 2,
+            "startAt": 0,
+            "histories": [{"id": "1"}, {"id": "2"}],
+        },
+    }
+    empty_page = {"total": 3, "maxResults": 2, "startAt": 2, "values": []}
+    opener = FakeOpener({"/changelog": empty_page, "/issue/PROJ-9": truncated})
+    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    try:
+        jira.issue("PROJ-9", "summary")
+        raise AssertionError("expected SystemExit")
+    except SystemExit as e:
+        assert "PROJ-9" in str(e) and "partial history" in str(e).lower()
+
+
+def test_redirects_are_refused():
+    """A redirect status should be treated as an error, not followed."""
+    def opener(url, headers):
+        # Simulate a 302 response from _urlopen (the redirect handler would
+        # have already raised before we get here in production, but this tests
+        # that if it somehow returned a 302, get() would fail loudly)
+        return 302, b"Found"
+
+    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    try:
+        jira.get("/field")
+        raise AssertionError("expected SystemExit")
+    except SystemExit as e:
+        assert "302" in str(e)
+
+
+def test_the_client_can_only_issue_get_requests():
+    """Read-only is a design guarantee, not a preference, so pin it structurally.
+    Every other test injects a fake opener, which leaves the real request builder
+    untested."""
+    source = (pathlib.Path(__file__).parent / "urd.py").read_text()
+    assert 'method="GET"' in source
+    assert not any(
+        f'method="{verb}"' in source for verb in ("POST", "PUT", "PATCH", "DELETE")
+    )
+    assert "data=" not in source  # urllib sends a body, and so POSTs, when data is set
 
 
 def test_schema_is_created_on_open():

@@ -21,7 +21,8 @@ import duckdb
 KEYCHAIN_SERVICE = "urd"
 PAGE_SIZE = 100
 TIMEOUT_S = 30
-RETRY_STATUSES = (429, 500, 502, 503, 504)
+TRANSPORT_ERROR_STATUS = 599  # not a real HTTP status; our marker for a failed connection
+RETRY_STATUSES = (429, 500, 502, 503, 504, TRANSPORT_ERROR_STATUS)
 
 DB_DEFAULT = "urd.duckdb"
 
@@ -38,12 +39,30 @@ def token(env=None):
         text=True,
         check=False,
     )
-    if found.returncode != 0:
+    if found.returncode != 0 or not found.stdout.strip():
         raise SystemExit(
             "no API token. Either export URD_TOKEN, or store one once with:\n"
             f"  security add-generic-password -s {KEYCHAIN_SERVICE} -a <email> -w"
         )
     return found.stdout.strip()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: urllib copies the Authorization header to the new host,
+    which would hand the API token to whoever the redirect points at. Jira Cloud's
+    API does not redirect, so a redirect means the site is wrong."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"refusing redirect to {newurl}",
+            headers,
+            fp,
+        )
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect())
 
 
 class Jira:
@@ -58,10 +77,17 @@ class Jira:
     def _urlopen(url, headers):
         request = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            with _OPENER.open(request, timeout=TIMEOUT_S) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as err:
             return err.code, err.read()
+        except OSError as err:
+            # URLError and TimeoutError are both OSError subclasses, so this one
+            # clause covers timeouts, DNS and TLS failures. A dead connection is
+            # retryable in exactly the way a 503 is, and mapping it onto a status
+            # keeps the retry and the SystemExit contract in one place instead of
+            # letting a traceback escape past sync's per-issue error handling.
+            return TRANSPORT_ERROR_STATUS, str(err).encode()
 
     def get(self, path, params=None):
         url = self.base + path
@@ -73,8 +99,11 @@ class Jira:
             if status == 200:
                 return json.loads(body or b"{}")
             if status in RETRY_STATUSES and attempt == 1:
-                # ponytail: one flat retry, no backoff curve. A backfill that
-                # trips a rate limit is meant to be resumed, not waited out.
+                # ponytail: one flat retry, no backoff curve, and the (status, bytes)
+                # opener contract discards headers so Retry-After cannot be honoured
+                # at all. A backfill that trips a rate limit is meant to be resumed,
+                # not waited out. Upgrade path: widen the opener contract to
+                # (status, headers, bytes) and sleep for Retry-After.
                 time.sleep(5)
                 continue
             raise SystemExit(f"GET {url} returned {status}: {body[:200]!r}")
@@ -90,6 +119,11 @@ class Jira:
             nxt = page.get("nextPageToken")
             if page.get("isLast") or not nxt:
                 return
+            if nxt == params.get("nextPageToken"):
+                # The same token twice means the server is not advancing. Failing
+                # loudly beats a hung command: the caller consumes this generator
+                # with list(), so a silent spin prints nothing at all.
+                raise SystemExit(f"search paging stalled on the same page token: {jql}")
             params = dict(params, nextPageToken=nxt)
 
     def issue(self, key, fields):
@@ -105,7 +139,10 @@ class Jira:
             )
             values = page.get("values", [])
             if not values:
-                break
+                raise SystemExit(
+                    f"{key}: changelog reports {log.get('total')} entries but returned "
+                    f"{len(histories)}; refusing to store a partial history"
+                )
             histories.extend(values)
         got["changelog"] = {"histories": histories, "total": len(histories)}
         return got
