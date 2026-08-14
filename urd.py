@@ -243,10 +243,10 @@ def keys_to_fetch(stored, remote):
 def build_jql(project, component, since):
     """Build a JQL query string. Both project and component are interpolated raw,
     so a stray double quote can break the query syntax. A comma in a real
-    component name becomes a separator and the missing component causes a 400,
-    which the caller sees as a loud failure, not a silent widening. This is
-    acceptable only because the sole input is the operator's own command line
-    and the client is GET-only."""
+    component name becomes a separator; if both fragments name real components,
+    the query widens silently. Usually a fragment is not a real component and
+    Jira returns a 400 to abort loudly. This is acceptable only because the sole
+    input is the operator's own command line and the client is GET-only."""
     clauses = [f"project in ({project})"]
     if component:
         quoted = ",".join(f'"{c.strip()}"' for c in component.split(","))

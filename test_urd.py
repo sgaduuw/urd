@@ -498,42 +498,21 @@ def test_lookups_and_sync_timestamp_are_written():
 
 
 def test_sync_errors_are_pruned_for_keys_leaving_scope():
-    """Keys that have left the scope are removed from sync_errors so they don't
-    report "1 error(s) outstanding" forever."""
+    """Keys that have left the scope are removed from sync_errors, but errors
+    for keys still in scope survive the prune even if not refetched."""
     con = urd.open_db(_tmpdb())
     urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
-    class Flaky:
-        def __init__(self, fail_key=None):
-            self.fail_key = fail_key
-
+    class FirstSync:
         def search(self, jql):
             yield "PROJ-1", "u1"
             yield "PROJ-2", "u2"
+            yield "PROJ-3", "u3"
 
         def issue(self, key, fields):
-            if key == self.fail_key:
-                raise SystemExit("boom")
-            return {"key": key, "fields": {"updated": "u1" if key == "PROJ-1" else "u2"}}
-
-        def fields(self):
-            return []
-
-        def statuses(self):
-            return []
-
-    # First sync: PROJ-2 fails
-    urd.sync(con, Flaky(fail_key="PROJ-2"))
-    assert con.execute("SELECT key FROM sync_errors").fetchone()[0] == "PROJ-2"
-
-    # Second sync: PROJ-2 is not in the remote list anymore (e.g., filtered by
-    # component), so its error should be cleared
-    class FilteredList:
-        def search(self, jql):
-            yield "PROJ-1", "u1"
-
-        def issue(self, key, fields):
+            if key in ("PROJ-2", "PROJ-3"):
+                raise SystemExit(f"{key} failed")
             return {"key": key, "fields": {"updated": "u1"}}
 
         def fields(self):
@@ -542,8 +521,45 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
         def statuses(self):
             return []
 
-    urd.sync(con, FilteredList())
-    assert con.execute("SELECT count(*) FROM sync_errors").fetchone()[0] == 0
+    # First sync: PROJ-2 and PROJ-3 fail, PROJ-1 succeeds
+    urd.sync(con, FirstSync())
+    # Manually insert PROJ-2 and PROJ-3 into raw_issues so they won't be wanted
+    # in the second sync (same timestamp means no fetch)
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET updated = excluded.updated",
+        ["PROJ-2", "u2", urd.datetime.now(urd.timezone.utc), "{}"],
+    )
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET updated = excluded.updated",
+        ["PROJ-3", "u3", urd.datetime.now(urd.timezone.utc), "{}"],
+    )
+    # Verify errors exist
+    errors = con.execute("SELECT key FROM sync_errors ORDER BY key").fetchall()
+    assert [r[0] for r in errors] == ["PROJ-2", "PROJ-3"]
+
+    # Second sync: PROJ-3 leaves scope, PROJ-2 and PROJ-1 stay with unchanged timestamps
+    class SecondSync:
+        def search(self, jql):
+            yield "PROJ-1", "u1"  # unchanged
+            yield "PROJ-2", "u2"  # unchanged, still in scope
+
+        def issue(self, key, fields):
+            # Nothing should be fetched; all are unchanged
+            raise AssertionError(f"unexpected fetch of {key}")
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    urd.sync(con, SecondSync())
+    # PROJ-3 error should be pruned (out of scope), PROJ-2 error should survive
+    # (still in scope, not refetched)
+    errors = con.execute("SELECT key FROM sync_errors ORDER BY key").fetchall()
+    assert [r[0] for r in errors] == ["PROJ-2"]
 
 
 def test_urd_email_is_used_when_no_flag_is_given():
