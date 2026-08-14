@@ -451,6 +451,9 @@ def derive_issues(con):
     if rows:
         con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
     if people:
+        # ponytail: last-writer wins on rename, ordering is by issue key not fetched_at,
+        # so a stale name can win if an old issue mentions a person. Upgrade path:
+        # prefer the row with newest fetched_at.
         con.executemany(
             "INSERT INTO people VALUES (?, ?) "
             "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",

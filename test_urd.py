@@ -999,6 +999,20 @@ def test_changelog_authors_join_people():
     ).fetchone()[0]
     assert row_count == 1
 
+    # Re-run derive_issues to verify people persists across functions
+    urd.derive_issues(con)
+    row_count_after = con.execute(
+        "SELECT count(*) FROM people WHERE account_id = 'acct-99'"
+    ).fetchone()[0]
+    assert row_count_after == 1, "acct-99 should persist after re-derive_issues"
+
+    # Verify acct-99 is still joinable from changes.author_id
+    joined = con.execute(
+        "SELECT count(*) FROM changes WHERE author_id = 'acct-99' "
+        "AND EXISTS (SELECT 1 FROM people WHERE account_id = 'acct-99')"
+    ).fetchone()[0]
+    assert joined > 0, "acct-99 should be joinable from changes"
+
 
 def test_same_timestamp_transitions_use_history_id_tiebreaker():
     """Two transitions at the same timestamp must not flip initial status."""
@@ -1052,6 +1066,11 @@ def test_same_timestamp_transitions_use_history_id_tiebreaker():
         "SELECT status FROM status_durations WHERE key = 'PROJ-5' ORDER BY entered LIMIT 1"
     ).fetchone()[0]
     assert first_status == "To Do"
+    # Check the open span status, which must be Done (not In Progress from wrong LEAD order)
+    open_status = con.execute(
+        "SELECT status FROM status_durations WHERE key = 'PROJ-5' ORDER BY left_at DESC LIMIT 1"
+    ).fetchone()[0]
+    assert open_status == "Done"
 
 
 def test_first_transition_predating_created_does_not_produce_negative_span():
@@ -1242,6 +1261,66 @@ def test_person_display_name_propagates_on_rename():
         "SELECT display_name FROM people WHERE account_id = 'renamed'"
     ).fetchone()[0]
     assert name_after == "New Name", f"Expected 'New Name', got '{name_after}'"
+
+
+def test_assignee_display_name_refresh_on_derive_issues():
+    """A renamed assignee must update their name on re-derive_issues."""
+    con = urd.open_db(_tmpdb())
+    # Insert an issue with an assignee
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "ASSIGN-1",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "ASSIGN-1",
+                "fields": {
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "assignee": {"accountId": "assignee-id", "displayName": "Old Assignee Name"},
+                    "reporter": {"accountId": "reporter-id", "displayName": "Reporter"},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-02T09:00:00.000+0000",
+                },
+                "changelog": {"histories": []}
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20001", "Story Points"])
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20002", "Sprint"])
+    for status, category in [("Done", "done")]:
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(con, status_order="Done", start_status="Done", review_status="Done")
+
+    urd.derive_issues(con)
+    name_before = con.execute(
+        "SELECT display_name FROM people WHERE account_id = 'assignee-id'"
+    ).fetchone()[0]
+    assert name_before == "Old Assignee Name"
+
+    # Change the assignee's name in raw_issues and re-derive
+    con.execute(
+        "UPDATE raw_issues SET json = ? WHERE key = 'ASSIGN-1'",
+        [json.dumps({
+            "key": "ASSIGN-1",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                "assignee": {"accountId": "assignee-id", "displayName": "New Assignee Name"},
+                "reporter": {"accountId": "reporter-id", "displayName": "Reporter"},
+                "created": "2026-03-01T09:00:00.000+0000",
+                "updated": "2026-03-02T09:00:00.000+0000",
+            },
+            "changelog": {"histories": []}
+        })],
+    )
+
+    urd.derive_issues(con)
+    name_after = con.execute(
+        "SELECT display_name FROM people WHERE account_id = 'assignee-id'"
+    ).fetchone()[0]
+    assert name_after == "New Assignee Name", f"Expected 'New Assignee Name', got '{name_after}'"
 
 
 if __name__ == "__main__":
