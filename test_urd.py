@@ -862,21 +862,50 @@ def test_assignee_changes_keep_both_the_id_and_the_name():
 
 def test_status_durations_cover_the_whole_life_of_the_issue():
     """Every moment from creation to now sits in exactly one span, including the
-    stretch before the first transition, which `transitions` alone cannot see."""
+    stretch before the first transition, which `transitions` alone cannot see.
+    A sum cannot see a boundary error: every interior boundary appears once as
+    a left_at and once as an entered, so the arithmetic cancels. Assert the
+    exact figure, and assert every individual span, not just the total."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
     urd.derive_issues(con)
     urd.derive_changes(con)
+
+    # Exact figure, not a sum that hides boundary errors
     gaps = con.execute(
         """
         SELECT i.key,
-               abs(date_diff('second', i.created, now())
-                   - sum(date_diff('second', d.entered, d.left_at))) AS drift
+               date_diff('second', i.created, now() AT TIME ZONE 'UTC')
+                   - sum(date_diff('second', d.entered, d.left_at)) AS drift
         FROM issues i JOIN status_durations d USING (key)
-        GROUP BY i.key, i.created HAVING drift > 2
+        GROUP BY i.key, i.created HAVING drift <> 0
         """
     ).fetchall()
     assert gaps == []
+
+    # No span may run backwards. This is what a sum hides.
+    backwards = con.execute(
+        "SELECT key, status, entered, left_at FROM status_durations WHERE left_at < entered"
+    ).fetchall()
+    assert backwards == []
+
+    # Assert per-span for reopened.json, whose transitions are known
+    reopened_spans = con.execute(
+        """
+        SELECT status, date_diff('second', entered, left_at) AS seconds
+        FROM status_durations WHERE key = 'PROJ-1' ORDER BY entered
+        """
+    ).fetchall()
+    # Hand-computed from fixture: Jan5-6 (To Do), 6-8 (IP), 8-9 (Rev), 9-15 (IP), 15-20.17 (Rev)
+    expected_closed = [
+        ("To Do", 86400),
+        ("In Progress", 172800),
+        ("Review", 86400),
+        ("In Progress", 518400),
+        ("Review", 460800),
+    ]
+    assert reopened_spans[:-1] == expected_closed, f"got {reopened_spans[:-1]}"
+    assert reopened_spans[-1][0] == "Done"  # final span is open
 
 
 def test_the_first_span_is_the_status_the_issue_started_in():
@@ -894,8 +923,8 @@ def test_an_issue_that_never_moved_still_has_one_span():
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened")
     con.execute(
-        "INSERT INTO raw_issues VALUES ('PROJ-4', 'u', now(), ?)",
-        [json.dumps({"key": "PROJ-4", "fields": {
+        "INSERT INTO raw_issues VALUES ('PROJ-4', 'u', ?, ?)",
+        [urd._now(), json.dumps({"key": "PROJ-4", "fields": {
             "issuetype": {"name": "Task"},
             "status": {"name": "To Do", "statusCategory": {"key": "new"}},
             "created": "2026-03-01T09:00:00.000+0000",
@@ -912,8 +941,8 @@ def test_changelog_authors_join_people():
     con = urd.open_db(_tmpdb())
     # Insert an issue with a changelog author who is NOT an assignee or reporter
     con.execute(
-        "INSERT INTO raw_issues VALUES ('PROJ-5', 'u', now(), ?)",
-        [json.dumps({"key": "PROJ-5", "fields": {
+        "INSERT INTO raw_issues VALUES ('PROJ-5', 'u', ?, ?)",
+        [urd._now(), json.dumps({"key": "PROJ-5", "fields": {
             "issuetype": {"name": "Task"},
             "status": {"name": "Done", "statusCategory": {"key": "done"}},
             "assignee": None,
@@ -946,6 +975,149 @@ def test_changelog_authors_join_people():
         "SELECT count(*) FROM people WHERE account_id = 'acct-99'"
     ).fetchone()[0]
     assert row_count == 1
+
+
+def test_same_timestamp_transitions_use_history_id_tiebreaker():
+    """Two transitions at the same timestamp must not flip initial status."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-5",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-5",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-02T09:00:00.000+0000",
+                },
+                "changelog": {
+                    "histories": [
+                        {
+                            "id": "100",
+                            "created": "2026-03-01T10:00:00.000+0000",
+                            "author": {"accountId": "a1", "displayName": "A"},
+                            "items": [{"field": "status", "from": "1", "fromString": "To Do",
+                                      "to": "3", "toString": "In Progress"}],
+                        },
+                        {
+                            "id": "101",
+                            "created": "2026-03-01T10:00:00.000+0000",
+                            "author": {"accountId": "a2", "displayName": "B"},
+                            "items": [{"field": "status", "from": "3", "fromString": "In Progress",
+                                      "to": "5", "toString": "Done"}],
+                        },
+                    ]
+                },
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20001", "Story Points"])
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20002", "Sprint"])
+    for status, category in (("To Do", "new"), ("In Progress", "indeterminate"), ("Done", "done")):
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(
+        con, status_order="To Do,In Progress,Done", start_status="In Progress", review_status="Done"
+    )
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    # Check the first status in the durations, which must be To Do
+    first_status = con.execute(
+        "SELECT status FROM status_durations WHERE key = 'PROJ-5' ORDER BY entered LIMIT 1"
+    ).fetchone()[0]
+    assert first_status == "To Do"
+
+
+def test_first_transition_predating_created_does_not_produce_negative_span():
+    """A transition timestamped before creation must clamp to creation."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-6",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-6",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+                    "created": "2026-01-10T09:00:00.000+0000",
+                    "updated": "2026-01-20T09:00:00.000+0000",
+                },
+                "changelog": {
+                    "histories": [
+                        {
+                            "id": "1",
+                            "created": "2026-01-05T09:00:00.000+0000",
+                            "author": {"accountId": "a1", "displayName": "A"},
+                            "items": [{"field": "status", "from": "1", "fromString": "To Do",
+                                      "to": "3", "toString": "In Progress"}],
+                        },
+                    ]
+                },
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20001", "Story Points"])
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20002", "Sprint"])
+    for status, category in (("To Do", "new"), ("In Progress", "indeterminate")):
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(
+        con, status_order="To Do,In Progress", start_status="In Progress",
+        review_status="In Progress"
+    )
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    # All spans must be non-negative
+    backwards = con.execute(
+        "SELECT key, status, entered, left_at FROM status_durations "
+        "WHERE key = 'PROJ-6' AND left_at < entered"
+    ).fetchall()
+    assert backwards == []
+
+
+def test_derive_changes_return_value_matches_rows_inserted():
+    """derive_changes must return the count of rows inserted."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    count = urd.derive_changes(con)
+    actual_rows = con.execute("SELECT count(*) FROM changes").fetchone()[0]
+    assert count == actual_rows
+
+
+def test_derive_changes_handles_empty_changelog():
+    """derive_changes must return 0 and not raise when an issue has no changelog."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-7",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-7",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-02T09:00:00.000+0000",
+                }
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20001", "Story Points"])
+    con.execute("INSERT INTO fields VALUES (?, ?, NULL)", ["customfield_20002", "Sprint"])
+    for status, category in (("To Do", "new"),):
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
+    urd.derive_issues(con)
+    count = urd.derive_changes(con)
+    assert count == 0
 
 
 if __name__ == "__main__":

@@ -332,14 +332,14 @@ CREATE OR REPLACE TABLE issues (
     story_points DOUBLE, timespent_s BIGINT, parent VARCHAR,
     fix_versions VARCHAR[], labels VARCHAR[], components VARCHAR[]
 );
-CREATE OR REPLACE TABLE people (account_id VARCHAR PRIMARY KEY, display_name VARCHAR);
+CREATE TABLE IF NOT EXISTS people (account_id VARCHAR PRIMARY KEY, display_name VARCHAR);
 """
 
 CHANGES_SCHEMA = """
 CREATE OR REPLACE TABLE changes (
     key VARCHAR, ts TIMESTAMP, field VARCHAR,
     from_id VARCHAR, from_str VARCHAR, to_id VARCHAR, to_str VARCHAR,
-    author_id VARCHAR
+    author_id VARCHAR, history_id BIGINT
 );
 """
 
@@ -348,25 +348,31 @@ CREATE OR REPLACE TABLE changes (
 # needs.
 VIEWS_CHANGES = """
 CREATE OR REPLACE VIEW transitions AS
-SELECT key, ts, from_str AS from_status, to_str AS to_status, author_id
+SELECT key, ts, from_str AS from_status, to_str AS to_status, author_id, history_id
 FROM changes WHERE field = 'status';
 
 CREATE OR REPLACE VIEW status_durations AS
 WITH first_move AS (
-    SELECT key, min(ts) AS first_ts, arg_min(from_status, ts) AS initial_status
-    FROM transitions GROUP BY key
+    SELECT key, ts AS first_ts, from_status AS initial_status FROM (
+        SELECT key, ts, from_status,
+               row_number() OVER (PARTITION BY key ORDER BY ts, history_id) AS rn
+        FROM transitions
+    ) WHERE rn = 1
 ),
 before_first AS (        -- creation up to the first transition, in the status it started in
     SELECT i.key, f.initial_status AS status, i.created AS entered, f.first_ts AS left_at
     FROM issues i JOIN first_move f USING (key)
+    WHERE f.first_ts > i.created
 ),
 after_each AS (          -- each transition up to the next, the last one still open
-    SELECT key, to_status AS status, ts AS entered,
-           COALESCE(LEAD(ts) OVER (PARTITION BY key ORDER BY ts), now()) AS left_at
-    FROM transitions
+    SELECT t.key, t.to_status AS status,
+           GREATEST(t.ts, i.created) AS entered,
+           GREATEST(COALESCE(LEAD(t.ts) OVER (PARTITION BY t.key ORDER BY t.ts, t.history_id),
+                             now() AT TIME ZONE 'UTC'), i.created) AS left_at
+    FROM transitions t JOIN issues i ON i.key = t.key
 ),
 never_moved AS (         -- no status changes at all: one span, creation to now
-    SELECT key, status, created AS entered, now() AS left_at
+    SELECT key, status, created AS entered, now() AT TIME ZONE 'UTC' AS left_at
     FROM issues WHERE key NOT IN (SELECT key FROM transitions)
 )
 SELECT * FROM before_first
@@ -445,7 +451,8 @@ def derive_issues(con):
     if rows:
         con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
     if people:
-        con.executemany("INSERT INTO people VALUES (?, ?)", list(people.items()))
+        con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
+                        list(people.items()))
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])
@@ -461,17 +468,22 @@ def derive_changes(con):
             author = history.get("author") or {}
             if author.get("accountId"):
                 people[author["accountId"]] = author.get("displayName")
+            history_id_str = history.get("id")
+            try:
+                history_id = int(history_id_str) if history_id_str else None
+            except (ValueError, TypeError):
+                history_id = None
             for item in history.get("items", []):
                 rows.append(
                     [
                         key, _ts(history.get("created")), item.get("field"),
                         item.get("from"), item.get("fromString"),
                         item.get("to"), item.get("toString"),
-                        author.get("accountId"),
+                        author.get("accountId"), history_id,
                     ]
                 )
     if rows:
-        con.executemany(f"INSERT INTO changes VALUES ({','.join(['?'] * 8)})", rows)
+        con.executemany(f"INSERT INTO changes VALUES ({','.join(['?'] * 9)})", rows)
     if people:
         con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
                         list(people.items()))
