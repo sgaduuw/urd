@@ -381,20 +381,23 @@ def test_bare_sync_after_first_run_keeps_config():
     # If we get here without assertion error, the test passed
 
 
-def test_urd_email_environment_is_used_when_no_flag_given():
-    """When --email is not provided, URD_EMAIL environment variable is used."""
+def test_malformed_issue_response_is_recorded_not_fatal():
+    """An issue response with no fields key (empty 200 body or malformed JSON)
+    is recorded in sync_errors and the run continues."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", project="PROJ",
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
-    email_used = [None]
-
-    class CaptureJira:
-        def __init__(self, site, email, token):
-            email_used[0] = email
-
+    class MalformedResponseJira:
         def search(self, jql):
-            return []
+            yield "PROJ-1", "u1"
+            yield "PROJ-2", "u2"
+
+        def issue(self, key, fields):
+            if key == "PROJ-1":
+                # Simulate empty 200 response or malformed JSON that loses fields
+                return {"key": key}
+            return {"key": key, "fields": {"updated": "u2"}}
 
         def fields(self):
             return []
@@ -402,29 +405,133 @@ def test_urd_email_environment_is_used_when_no_flag_given():
         def statuses(self):
             return []
 
-    # Mock the Jira constructor and token function
-    real_jira = urd.Jira
-    real_token = urd.token
-    urd.Jira = CaptureJira
-    urd.token = lambda: "test-token"
+    urd.sync(con, MalformedResponseJira())
+    # PROJ-2 succeeds despite PROJ-1 failing
+    assert [r[0] for r in con.execute("SELECT key FROM raw_issues").fetchall()] == ["PROJ-2"]
+    # PROJ-1 is recorded in sync_errors
+    assert con.execute("SELECT key FROM sync_errors").fetchone()[0] == "PROJ-1"
+    # last_sync_at is still written
+    assert urd.load_scope(con)["last_sync_at"] is not None
 
-    # Save the original URD_EMAIL if it exists
-    original_urd_email = os.environ.get("URD_EMAIL")
 
+def test_lookups_and_sync_timestamp_are_written():
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    class LookupJira:
+        def search(self, jql):
+            return iter(())
+
+        def issue(self, key, fields):
+            raise AssertionError("nothing is in scope, so no issue should be fetched")
+
+        def fields(self):
+            return [{"id": "customfield_20001", "name": "Story Points"},
+                    {"id": "customfield_20002", "name": "Sprint"}]
+
+        def statuses(self):
+            # The second one has no statusCategory, which the real API does for
+            # some statuses and which the code has to store as NULL.
+            return [{"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+                    {"name": "Odd", "statusCategory": None}]
+
+    urd.sync(con, LookupJira())
+    field = con.execute("SELECT id FROM fields WHERE name = 'Story Points'").fetchone()[0]
+    assert field == "customfield_20001"
+    status = con.execute("SELECT category FROM statuses WHERE name = 'In Progress'").fetchone()[0]
+    assert status == "indeterminate"
+    odd = con.execute("SELECT category FROM statuses WHERE name = 'Odd'").fetchone()[0]
+    assert odd is None
+    assert urd.load_scope(con)["last_sync_at"] is not None
+
+
+def test_sync_errors_are_pruned_for_keys_leaving_scope():
+    """Keys that have left the scope are removed from sync_errors so they don't
+    report "1 error(s) outstanding" forever."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+
+    class Flaky:
+        def __init__(self, fail_key=None):
+            self.fail_key = fail_key
+
+        def search(self, jql):
+            yield "PROJ-1", "u1"
+            yield "PROJ-2", "u2"
+
+        def issue(self, key, fields):
+            if key == self.fail_key:
+                raise SystemExit("boom")
+            return {"key": key, "fields": {"updated": "u1" if key == "PROJ-1" else "u2"}}
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    # First sync: PROJ-2 fails
+    urd.sync(con, Flaky(fail_key="PROJ-2"))
+    assert con.execute("SELECT key FROM sync_errors").fetchone()[0] == "PROJ-2"
+
+    # Second sync: PROJ-2 is not in the remote list anymore (e.g., filtered by
+    # component), so its error should be cleared
+    class FilteredList:
+        def search(self, jql):
+            yield "PROJ-1", "u1"
+
+        def issue(self, key, fields):
+            return {"key": key, "fields": {"updated": "u1"}}
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    urd.sync(con, FilteredList())
+    assert con.execute("SELECT count(*) FROM sync_errors").fetchone()[0] == 0
+
+
+def test_urd_email_is_used_when_no_flag_is_given():
+    """Precedence is flag, then environment, then stored scope. This has to go
+    through main(), or the test just re-computes the expression it is checking."""
+    db = _tmpdb()
+    con = urd.open_db(db)
+    urd.save_scope(con, site="example.atlassian.net", email="stored@example.com",
+                   project="PROJ", earliest_since="2026-01-01")
+    con.close()
+
+    seen = {}
+
+    class CaptureJira:
+        def __init__(self, site, email, token, opener=None):
+            seen["email"] = email
+
+        def search(self, jql):
+            return iter(())
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+    real_jira, real_token = urd.Jira, urd.token
+    real_env = os.environ.get("URD_EMAIL")
+    urd.Jira, urd.token = CaptureJira, lambda env=None: "token"
+    os.environ["URD_EMAIL"] = "env@example.com"
     try:
-        os.environ["URD_EMAIL"] = "env@example.com"
-        # Call the sync logic directly with a fake Jira
-        scope = urd.load_scope(con)
-        email = None or os.environ.get("URD_EMAIL") or scope["email"]
-        assert email == "env@example.com"
+        urd.main(["--db", db, "sync"])
     finally:
-        # Restore original state
-        urd.Jira = real_jira
-        urd.token = real_token
-        if original_urd_email is None:
+        urd.Jira, urd.token = real_jira, real_token
+        if real_env is None:
             os.environ.pop("URD_EMAIL", None)
         else:
-            os.environ["URD_EMAIL"] = original_urd_email
+            os.environ["URD_EMAIL"] = real_env
+    assert seen["email"] == "env@example.com"
 
 
 if __name__ == "__main__":

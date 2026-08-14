@@ -239,6 +239,10 @@ def keys_to_fetch(stored, remote):
 
 
 def build_jql(project, component, since):
+    """Build a JQL query string. Both project and component are interpolated raw,
+    so a stray double quote or a component with commas (which are legal in Jira
+    component names) can widen the query. This is acceptable only because the
+    sole input is the operator's own command line and the client is GET-only."""
     clauses = [f"project in ({project})"]
     if component:
         quoted = ",".join(f'"{c.strip()}"' for c in component.split(","))
@@ -254,14 +258,22 @@ def sync(con, jira):
 
     jql = build_jql(scope["project"], scope["component"], scope["earliest_since"])
     remote = list(jira.search(jql))
+    # A key that has left the scope can never be retried, so its error would be
+    # reported forever. `remote` is the authoritative list of what is in scope.
+    con.execute("DELETE FROM sync_errors WHERE NOT list_contains(?::VARCHAR[], key)",
+                [[key for key, _ in remote]])
     stored = dict(con.execute("SELECT key, updated FROM raw_issues").fetchall())
     wanted = keys_to_fetch(stored, remote)
     print(f"{len(remote)} in scope, {len(wanted)} to fetch")
 
     for n, key in enumerate(wanted, start=1):
+        # ponytail: one HTTP request per changed issue. Daily delta is small and
+        # a first backfill is a few hundred requests paid once. Upgrade path is
+        # batching via the search endpoint's fields expansion.
         try:
             issue = jira.issue(key, FETCH_FIELDS)
-        except SystemExit as err:
+            updated = issue["fields"]["updated"]
+        except (SystemExit, KeyError, TypeError) as err:
             con.execute(
                 'INSERT INTO sync_errors VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE '
                 'SET "at" = excluded."at", error = excluded.error',
@@ -273,7 +285,7 @@ def sync(con, jira):
             "INSERT INTO raw_issues VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE "
             "SET updated = excluded.updated, fetched_at = excluded.fetched_at, "
             "json = excluded.json",
-            [key, issue["fields"]["updated"], datetime.now(timezone.utc), json.dumps(issue)],  # noqa: UP017
+            [key, updated, datetime.now(timezone.utc), json.dumps(issue)],  # noqa: UP017
         )
         con.execute("DELETE FROM sync_errors WHERE key = ?", [key])
         if n % 50 == 0:
@@ -334,9 +346,6 @@ def main(argv=None):
         return 0
 
     if args.verb == "sync":
-        # ponytail: one HTTP request per changed issue. Daily delta is small and
-        # a first backfill is a few hundred requests paid once. Upgrade path is
-        # batching via the search endpoint's fields expansion.
         save_scope(con, site=args.site, email=args.email, project=args.project,
                    component=args.component, earliest_since=args.since)
         scope = load_scope(con)
