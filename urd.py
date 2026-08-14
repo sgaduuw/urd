@@ -335,6 +335,45 @@ CREATE OR REPLACE TABLE issues (
 CREATE OR REPLACE TABLE people (account_id VARCHAR PRIMARY KEY, display_name VARCHAR);
 """
 
+CHANGES_SCHEMA = """
+CREATE OR REPLACE TABLE changes (
+    key VARCHAR, ts TIMESTAMP, field VARCHAR,
+    from_id VARCHAR, from_str VARCHAR, to_id VARCHAR, to_str VARCHAR,
+    author_id VARCHAR
+);
+"""
+
+# One general table beats two specific ones: status transitions are a view over
+# it, and assignee history then comes free, which is what the handoff matrix
+# needs.
+VIEWS_CHANGES = """
+CREATE OR REPLACE VIEW transitions AS
+SELECT key, ts, from_str AS from_status, to_str AS to_status, author_id
+FROM changes WHERE field = 'status';
+
+CREATE OR REPLACE VIEW status_durations AS
+WITH first_move AS (
+    SELECT key, min(ts) AS first_ts, arg_min(from_status, ts) AS initial_status
+    FROM transitions GROUP BY key
+),
+before_first AS (        -- creation up to the first transition, in the status it started in
+    SELECT i.key, f.initial_status AS status, i.created AS entered, f.first_ts AS left_at
+    FROM issues i JOIN first_move f USING (key)
+),
+after_each AS (          -- each transition up to the next, the last one still open
+    SELECT key, to_status AS status, ts AS entered,
+           COALESCE(LEAD(ts) OVER (PARTITION BY key ORDER BY ts), now()) AS left_at
+    FROM transitions
+),
+never_moved AS (         -- no status changes at all: one span, creation to now
+    SELECT key, status, created AS entered, now() AS left_at
+    FROM issues WHERE key NOT IN (SELECT key FROM transitions)
+)
+SELECT * FROM before_first
+UNION ALL SELECT * FROM after_each
+UNION ALL SELECT * FROM never_moved;
+"""
+
 
 def resolve_field(con, name):
     """Custom field ids differ per instance, so they are looked up by name and
@@ -410,6 +449,33 @@ def derive_issues(con):
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])
+    return len(rows)
+
+
+def derive_changes(con):
+    con.execute(CHANGES_SCHEMA)
+    rows, people = [], {}
+    for key, raw in con.execute("SELECT key, json FROM raw_issues ORDER BY key").fetchall():
+        issue = json.loads(raw)
+        for history in (issue.get("changelog") or {}).get("histories", []):
+            author = history.get("author") or {}
+            if author.get("accountId"):
+                people[author["accountId"]] = author.get("displayName")
+            for item in history.get("items", []):
+                rows.append(
+                    [
+                        key, _ts(history.get("created")), item.get("field"),
+                        item.get("from"), item.get("fromString"),
+                        item.get("to"), item.get("toString"),
+                        author.get("accountId"),
+                    ]
+                )
+    if rows:
+        con.executemany(f"INSERT INTO changes VALUES ({','.join(['?'] * 8)})", rows)
+    if people:
+        con.executemany("INSERT INTO people VALUES (?, ?) ON CONFLICT (account_id) DO NOTHING",
+                        list(people.items()))
+    con.execute(VIEWS_CHANGES)
     return len(rows)
 
 

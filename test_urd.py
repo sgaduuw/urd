@@ -840,6 +840,114 @@ def test_project_comes_from_the_key_not_a_constant():
     assert con.execute("SELECT project FROM issues").fetchone() == ("OTHER",)
 
 
+def test_changes_covers_every_field_not_only_status():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    fields = {r[0] for r in con.execute("SELECT DISTINCT field FROM changes").fetchall()}
+    assert fields == {"status", "assignee"}
+
+
+def test_assignee_changes_keep_both_the_id_and_the_name():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    row = con.execute(
+        "SELECT from_id, from_str, to_id, to_str FROM changes WHERE field = 'assignee'"
+    ).fetchone()
+    assert row == ("acct-1", "Alder", "acct-2", "Birch")
+
+
+def test_status_durations_cover_the_whole_life_of_the_issue():
+    """Every moment from creation to now sits in exactly one span, including the
+    stretch before the first transition, which `transitions` alone cannot see."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    gaps = con.execute(
+        """
+        SELECT i.key,
+               abs(date_diff('second', i.created, now())
+                   - sum(date_diff('second', d.entered, d.left_at))) AS drift
+        FROM issues i JOIN status_durations d USING (key)
+        GROUP BY i.key, i.created HAVING drift > 2
+        """
+    ).fetchall()
+    assert gaps == []
+
+
+def test_the_first_span_is_the_status_the_issue_started_in():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    first = con.execute(
+        "SELECT status FROM status_durations WHERE key = 'PROJ-1' ORDER BY entered LIMIT 1"
+    ).fetchone()[0]
+    assert first == "To Do"
+
+
+def test_an_issue_that_never_moved_still_has_one_span():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    con.execute(
+        "INSERT INTO raw_issues VALUES ('PROJ-4', 'u', now(), ?)",
+        [json.dumps({"key": "PROJ-4", "fields": {
+            "issuetype": {"name": "Task"},
+            "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+            "created": "2026-03-01T09:00:00.000+0000",
+            "updated": "2026-03-01T09:00:00.000+0000",
+            "fixVersions": [], "labels": [], "components": []}})],
+    )
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    spans = con.execute("SELECT status FROM status_durations WHERE key = 'PROJ-4'").fetchall()
+    assert spans == [("To Do",)]
+
+
+def test_changelog_authors_join_people():
+    con = urd.open_db(_tmpdb())
+    # Insert an issue with a changelog author who is NOT an assignee or reporter
+    con.execute(
+        "INSERT INTO raw_issues VALUES ('PROJ-5', 'u', now(), ?)",
+        [json.dumps({"key": "PROJ-5", "fields": {
+            "issuetype": {"name": "Task"},
+            "status": {"name": "Done", "statusCategory": {"key": "done"}},
+            "assignee": None,
+            "reporter": {"accountId": "acct-1", "displayName": "Alder"},
+            "created": "2026-03-01T09:00:00.000+0000",
+            "updated": "2026-03-02T09:00:00.000+0000",
+            "fixVersions": [], "labels": [], "components": []},
+            "changelog": {"histories": [{
+                "created": "2026-03-02T09:00:00.000+0000",
+                "author": {"accountId": "acct-99", "displayName": "Unknown"},
+                "items": [{
+                    "field": "status", "from": "1", "fromString": "To Do",
+                    "to": "5", "toString": "Done"
+                }]
+            }]}
+        })],
+    )
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    for status, category in (
+        ("To Do", "new"), ("Done", "done"),
+    ):
+        con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
+    urd.save_scope(con, status_order="To Do,Done", start_status="To Do", review_status="Done")
+    urd.derive_issues(con)
+    urd.derive_changes(con)
+    # Verify the changelog author (acct-99) was added to people even though
+    # not assignee/reporter
+    row_count = con.execute(
+        "SELECT count(*) FROM people WHERE account_id = 'acct-99'"
+    ).fetchone()[0]
+    assert row_count == 1
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
