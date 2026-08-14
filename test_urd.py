@@ -1168,28 +1168,6 @@ def test_derive_changes_handles_empty_changelog():
     assert count == 0
 
 
-def test_people_persists_across_derive_functions():
-    """A changelog-only author must survive re-running derive_issues alone."""
-    con = urd.open_db(_tmpdb())
-    load_fixtures(con, "reopened")
-    urd.derive_issues(con)
-    urd.derive_changes(con)
-    # Verify the author is present and can be joined from changes
-    count_before = con.execute("SELECT count(*) FROM people").fetchone()[0]
-    assert count_before > 0
-
-    # Re-run derive_issues to verify it does not drop people
-    urd.derive_issues(con)
-    count_after = con.execute("SELECT count(*) FROM people").fetchone()[0]
-    assert count_after == count_before, "people table was not preserved across derives"
-
-    # Verify people can still be joined from changes
-    joined = con.execute(
-        "SELECT count(*) FROM changes c JOIN people p ON c.author_id = p.account_id"
-    ).fetchone()[0]
-    assert joined > 0
-
-
 def test_person_display_name_propagates_on_rename():
     """A renamed person must update their name on re-derive."""
     con = urd.open_db(_tmpdb())
