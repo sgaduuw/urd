@@ -359,9 +359,7 @@ def main(argv=None):
         email = args.email or os.environ.get("URD_EMAIL") or scope["email"]
         if not email:
             raise SystemExit("first run needs --email (or set URD_EMAIL)")
-        ret = sync(con, Jira(scope["site"], email, token()))
-        con.close()
-        return ret
+        return sync(con, Jira(scope["site"], email, token()))
 
     print(f"{args.verb}: not implemented yet", file=sys.stderr)
     return 1
