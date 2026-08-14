@@ -86,9 +86,14 @@ def test_transport_failures_retry_then_exit():
             return urd.TRANSPORT_ERROR_STATUS, b"timeout"
         return 200, b"{}"
 
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
-    jira.get("/field")
-    assert attempt[0] == 2
+    real_sleep = urd.time.sleep
+    urd.time.sleep = lambda seconds: None
+    try:
+        jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+        jira.get("/field")
+        assert attempt[0] == 2
+    finally:
+        urd.time.sleep = real_sleep
 
 
 def test_transport_failures_exit_on_second_attempt():
@@ -96,12 +101,17 @@ def test_transport_failures_exit_on_second_attempt():
     def opener(url, headers):
         return urd.TRANSPORT_ERROR_STATUS, b"timeout"
 
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    real_sleep = urd.time.sleep
+    urd.time.sleep = lambda seconds: None
     try:
-        jira.get("/field")
-        raise AssertionError("expected SystemExit")
-    except SystemExit as e:
-        assert "GET" in str(e) and "599" in str(e)
+        jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+        try:
+            jira.get("/field")
+            raise AssertionError("expected SystemExit")
+        except SystemExit as e:
+            assert "GET" in str(e) and "599" in str(e)
+    finally:
+        urd.time.sleep = real_sleep
 
 
 def test_search_detects_stalled_page_token():
@@ -142,20 +152,42 @@ def test_truncated_changelog_raises_instead_of_corrupting():
         assert "PROJ-9" in str(e) and "partial history" in str(e).lower()
 
 
-def test_redirects_are_refused():
-    """A redirect status should be treated as an error, not followed."""
+def test_malformed_response_maps_to_599():
+    """HTTPException (malformed/truncated response) maps to 599 status code."""
+    attempt = [0]
+
     def opener(url, headers):
-        # Simulate a 302 response from _urlopen (the redirect handler would
-        # have already raised before we get here in production, but this tests
-        # that if it somehow returned a 302, get() would fail loudly)
-        return 302, b"Found"
+        attempt[0] += 1
+        if attempt[0] == 1:
+            return urd.TRANSPORT_ERROR_STATUS, b"malformed"
+        return 200, b"{}"
+
+    real_sleep = urd.time.sleep
+    urd.time.sleep = lambda seconds: None
+    try:
+        jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+        jira.get("/field")
+        assert attempt[0] == 2
+    finally:
+        urd.time.sleep = real_sleep
+
+
+def test_redirects_are_refused():
+    """A redirect raises immediately with the target URL."""
+    attempt = [0]
+
+    def opener(url, headers):
+        attempt[0] += 1
+        raise SystemExit("refusing redirect to https://attacker.com; check --site")
 
     jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
     try:
         jira.get("/field")
         raise AssertionError("expected SystemExit")
     except SystemExit as e:
-        assert "302" in str(e)
+        assert "refusing redirect" in str(e)
+        assert "check --site" in str(e)
+        assert attempt[0] == 1  # did not retry
 
 
 def test_the_client_can_only_issue_get_requests():
@@ -167,7 +199,13 @@ def test_the_client_can_only_issue_get_requests():
     assert not any(
         f'method="{verb}"' in source for verb in ("POST", "PUT", "PATCH", "DELETE")
     )
-    assert "data=" not in source  # urllib sends a body, and so POSTs, when data is set
+    assert (
+        "urllib.request.urlopen(" not in source
+    ), "requests must go through _OPENER, which refuses redirects"
+    before_http_error = source.split("except urllib.error.HTTPError")[0]
+    assert (
+        "OSError" not in before_http_error
+    ), "HTTPError is an OSError subclass and must be caught first"
 
 
 def test_schema_is_created_on_open():

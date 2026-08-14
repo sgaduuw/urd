@@ -7,6 +7,7 @@ is what makes changing a metric definition cheap.
 """
 import argparse
 import base64
+import http.client
 import json
 import os
 import subprocess
@@ -21,7 +22,7 @@ import duckdb
 KEYCHAIN_SERVICE = "urd"
 PAGE_SIZE = 100
 TIMEOUT_S = 30
-TRANSPORT_ERROR_STATUS = 599  # not a real HTTP status; our marker for a failed connection
+TRANSPORT_ERROR_STATUS = 599  # unassigned by IANA, used here as our marker for a failed connection
 RETRY_STATUSES = (429, 500, 502, 503, 504, TRANSPORT_ERROR_STATUS)
 
 DB_DEFAULT = "urd.duckdb"
@@ -53,13 +54,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     API does not redirect, so a redirect means the site is wrong."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(
-            req.full_url,
-            code,
-            f"refusing redirect to {newurl}",
-            headers,
-            fp,
-        )
+        raise SystemExit(f"refusing redirect to {newurl}; check --site")
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect())
@@ -81,12 +76,13 @@ class Jira:
                 return response.status, response.read()
         except urllib.error.HTTPError as err:
             return err.code, err.read()
-        except OSError as err:
+        except (OSError, http.client.HTTPException) as err:
             # URLError and TimeoutError are both OSError subclasses, so this one
-            # clause covers timeouts, DNS and TLS failures. A dead connection is
-            # retryable in exactly the way a 503 is, and mapping it onto a status
-            # keeps the retry and the SystemExit contract in one place instead of
-            # letting a traceback escape past sync's per-issue error handling.
+            # clause covers timeouts, DNS and TLS failures, and malformed or
+            # truncated responses. A dead connection is retryable in exactly the
+            # way a 503 is, and mapping it onto a status keeps the retry and the
+            # SystemExit contract in one place instead of letting a traceback
+            # escape past sync's per-issue error handling.
             return TRANSPORT_ERROR_STATUS, str(err).encode()
 
     def get(self, path, params=None):
