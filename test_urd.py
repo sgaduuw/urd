@@ -50,6 +50,121 @@ def load_fixtures(con, *names):
                    start_status="In Progress", review_status="Review")
 
 
+def _derived(*fixtures):
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, *fixtures)
+    scope = urd.load_scope(con)
+    urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"])
+    return con
+
+
+def test_rework_counts_only_backward_transitions():
+    """PROJ-1 goes Review back to In Progress exactly once."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    assert con.execute("SELECT count(*) FROM rework").fetchone()[0] == 1
+    assert con.execute("SELECT key, from_status, to_status FROM rework").fetchone() == (
+        "PROJ-1", "Review", "In Progress",
+    )
+
+
+def test_statuses_outside_the_order_rank_last_and_are_reported():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive(con, "To Do,In Progress,Done", "In Progress", "Review")
+    unknown = con.execute(
+        "SELECT DISTINCT to_status FROM transitions t "
+        "WHERE to_status NOT IN (SELECT status FROM status_order)"
+    ).fetchall()
+    assert unknown == [("Review",)]
+    # Review ranks last, so Review to In Progress is no longer counted as rework.
+    assert con.execute("SELECT count(*) FROM rework").fetchone()[0] == 0
+
+
+def test_cycle_time_starts_at_the_start_status():
+    """PROJ-1 entered In Progress on the 6th and resolved on the 20th."""
+    con = _derived("reopened")
+    query = "SELECT started, resolved, cycle_days FROM cycle_times WHERE key = 'PROJ-1'"
+    row = con.execute(query).fetchone()
+    started, resolved, days = row
+    # Verify it started on Jan 6 (not Jan 9, which would be if we used max instead of min)
+    assert started == datetime(2026, 1, 6, 9, 0, 0), f"Expected start Jan 6, got {started}"
+    # Verify the cycle days are about 14.33 days (from Jan 6 to Jan 20 at 17:00)
+    assert 14.0 < days < 14.5, f"Expected cycle_days ~14.33, got {days}"
+
+
+def test_a_ticket_that_never_started_is_absent_from_cycle_times():
+    con = _derived("reopened", "skipped_progress")
+    keys = {r[0] for r in con.execute("SELECT key FROM cycle_times").fetchall()}
+    assert keys == {"PROJ-1"}
+
+
+def test_closures_are_transitions_into_a_done_category_status():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    keys = sorted(r[0] for r in con.execute("SELECT key FROM closures").fetchall())
+    assert keys == ["PROJ-1", "PROJ-2"]
+
+
+def test_derive_is_idempotent():
+    con = _derived("reopened", "two_sprints")
+    scope = urd.load_scope(con)
+    urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"])
+    assert con.execute("SELECT count(*) FROM issues").fetchone()[0] == 2
+
+
+def test_cycle_times_respects_configured_start_status():
+    """Changing start_status must change which transitions count as the cycle start."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    # Derive with To Do as start_status instead of In Progress
+    urd.derive(con, "To Do,In Progress,Review,Done", "To Do", "Review")
+    row = con.execute("SELECT started, cycle_days FROM cycle_times WHERE key = 'PROJ-1'").fetchone()
+    if row:
+        started, days = row
+        # Should start at creation (Jan 5) with "To Do" as start_status
+        assert started == datetime(2026, 1, 5, 9, 0, 0), f"Expected start Jan 5, got {started}"
+        # Cycle time should be from Jan 5 to Jan 20 at 17:00, about 15.33 days
+        assert 15.0 < days < 16.0, f"Expected cycle_days ~15.33, got {days}"
+
+
+def test_unknown_statuses_are_found_by_query():
+    """The query that finds unknown statuses must execute and return correct results."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    urd.derive(con, "To Do,In Progress,Done", "In Progress", "Review")
+    # The derive function should have created the transitions and status_order tables
+    unknown = con.execute(
+        "SELECT DISTINCT to_status FROM transitions "
+        "WHERE to_status NOT IN (SELECT status FROM status_order) ORDER BY 1"
+    ).fetchall()
+    # Review appears as a to_status but is not in status_order
+    assert unknown == [("Review",)], f"Expected [('Review',)], got {unknown}"
+
+
+def test_derive_reports_unknown_statuses_to_output():
+    """Derive must report unknown statuses when they are found."""
+    import io
+    import sys as sys_module
+
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+
+    # Capture stdout
+    old_stdout = sys_module.stdout
+    sys_module.stdout = io.StringIO()
+
+    try:
+        urd.derive(con, "To Do,In Progress,Done", "In Progress", "Review")
+        output = sys_module.stdout.getvalue()
+    finally:
+        sys_module.stdout = old_stdout
+
+    # The output must mention that Review is ranked last
+    assert "statuses not in --status-order" in output, (
+        f"Expected unknown status report in output, got: {output}"
+    )
+    assert "Review" in output, f"Expected 'Review' in output, got: {output}"
+
+
 def test_token_prefers_the_environment_over_the_keychain():
     assert urd.token({"URD_TOKEN": "from-env"}) == "from-env"
 

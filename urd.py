@@ -536,6 +536,69 @@ def derive_changes(con):
     return len(rows)
 
 
+UNRANKED = 9999  # statuses absent from status_order sort last, and are reported
+
+VIEWS_METRICS = """
+CREATE OR REPLACE VIEW closures AS
+SELECT t.key, t.ts, t.author_id
+FROM transitions t JOIN statuses s ON s.name = t.to_status
+WHERE s.category = 'done';
+
+CREATE OR REPLACE VIEW cycle_times AS
+SELECT i.key,
+       min(t.ts) AS started,
+       i.resolved,
+       date_diff('minute', min(t.ts), i.resolved) / 1440.0 AS cycle_days
+FROM issues i
+JOIN transitions t ON t.key = i.key AND t.to_status = (SELECT start_status FROM sync_state)
+WHERE i.resolved IS NOT NULL
+GROUP BY i.key, i.resolved;
+
+CREATE OR REPLACE VIEW rework AS
+SELECT t.key, t.ts, t.from_status, t.to_status, t.author_id
+FROM transitions t
+LEFT JOIN status_order sf ON sf.status = t.from_status
+LEFT JOIN status_order st ON st.status = t.to_status
+WHERE st.pos IS NOT NULL AND sf.pos IS NOT NULL
+  AND st.pos < sf.pos;
+"""
+
+
+def derive(con, status_order, start_status, review_status):
+    if not status_order or not start_status:
+        raise SystemExit(
+            "derive needs --status-order and --start-status on the first run, for example:\n"
+            '  urd derive --status-order "To Do,In Progress,Review,Done" '
+            '--start-status "In Progress" --review-status "Review"'
+        )
+    save_scope(con, status_order=status_order, start_status=start_status,
+               review_status=review_status)
+
+    con.execute("CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
+    con.executemany(
+        "INSERT INTO status_order VALUES (?, ?)",
+        [(s.strip(), i) for i, s in enumerate(status_order.split(","))],
+    )
+
+    issues = derive_issues(con)
+    changes = derive_changes(con)
+    sprints = derive_sprints(con)
+    con.execute(VIEWS_METRICS)
+
+    print(f"derived {issues} issues, {changes} changes, {sprints} sprint memberships")
+    unknown = con.execute(
+        "SELECT DISTINCT to_status FROM transitions "
+        "WHERE to_status NOT IN (SELECT status FROM status_order) ORDER BY 1"
+    ).fetchall()
+    if unknown:
+        print("statuses not in --status-order, ranked last: "
+              + ", ".join(u[0] for u in unknown if u[0]))
+    for field, rate in con.execute(
+        "SELECT name, null_rate FROM fields WHERE null_rate IS NOT NULL"
+    ).fetchall():
+        print(f"{field}: {rate:.0%} empty")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="urd", description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DB_DEFAULT)
@@ -579,6 +642,16 @@ def main(argv=None):
         if not email:
             raise SystemExit("first run needs --email (or set URD_EMAIL)")
         return sync(con, Jira(scope["site"], email, token()))
+
+    if args.verb == "derive":
+        scope = load_scope(con)
+        derive(
+            con,
+            args.status_order or scope["status_order"],
+            args.start_status or scope["start_status"],
+            args.review_status or scope["review_status"],
+        )
+        return 0
 
     print(f"{args.verb}: not implemented yet", file=sys.stderr)
     return 1
