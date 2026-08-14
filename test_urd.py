@@ -1303,20 +1303,24 @@ def test_assignee_display_name_refresh_on_derive_issues():
 
 def test_sprint_membership_is_ordered_so_carry_over_is_visible():
     """Ordinal must follow array position, not id or name order. The fixture has
-    array [id=2 name=SprintB, id=1 name=SprintA] so ordinal must be [1, 2], not
-    id order [1, 2] or name order [A, B]. This catches mutations that set ordinal
-    to sprint.get("id") or sort by name."""
+    array [id=7 name=SprintB, id=3 name=SprintA] so ordinal must be [1, 2], not
+    id order [3, 7] or name order [A, B]. Also reads start/end to verify both
+    columns carry values (not null or swapped). This catches mutations that set
+    ordinal to sprint.get("id"), sort by name, or confuse the date columns."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
     urd.derive_issues(con)
     assert urd.derive_sprints(con) == 3
     rows = con.execute(
-        "SELECT sprint_id, sprint_name, state, ordinal FROM issue_sprints "
-        "WHERE key = 'PROJ-3' ORDER BY ordinal"
+        "SELECT sprint_id, sprint_name, state, start, \"end\", ordinal "
+        "FROM issue_sprints WHERE key = 'PROJ-3' ORDER BY ordinal"
     ).fetchall()
-    # Array order: [id=2 name=SprintB state=active, id=1 name=SprintA state=closed]
-    # Ordinal [1, 2] follows array position, not id order [1, 2] or name sort [A, B]
-    assert rows == [(2, "Sprint B", "active", 1), (1, "Sprint A", "closed", 2)]
+    # Array [id=7 name=B closed Jan5-19, id=3 name=A closed Jan19-Feb2]
+    # Ordinal [1, 2] follows array, not id [3, 7] or name sort [A, B]
+    assert rows == [
+        (7, "Sprint B", "closed", datetime(2026, 1, 5, 9, 0, 0), datetime(2026, 1, 19, 9, 0, 0), 1),
+        (3, "Sprint A", "closed", datetime(2026, 1, 19, 9, 0, 0), datetime(2026, 2, 2, 9, 0, 0), 2),
+    ]
 
 
 def test_carried_over_issues_are_exactly_those_with_a_second_sprint():
@@ -1339,7 +1343,9 @@ def test_sprint_field_null_contributes_no_rows():
 
 
 def test_sprint_field_missing_contributes_no_rows():
-    """An issue whose Sprint field is not in raw_issues at all (resolve_field returns None)."""
+    """An issue whose Sprint field is absent from the issue JSON, even though the
+    instance has a Sprint field (resolve_field finds it). The .get() fallback returns
+    an empty array, which contributes no rows."""
     con = urd.open_db(_tmpdb())
     con.execute(
         "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
@@ -1478,6 +1484,98 @@ def test_sprint_field_is_resolved_by_name_not_hardcoded_by_id():
     assert count == 1
     row = con.execute("SELECT sprint_name FROM issue_sprints WHERE key = 'PROJ-DIFF-ID'").fetchone()
     assert row[0] == "Sprint A"
+
+
+def test_ordinal_follows_array_order_not_date_order():
+    """Ordinal must follow array position even when sprints are out of chronological
+    order. A mutation that sorts by startDate would scramble the ordinal."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-OUT-OF-ORDER",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-OUT-OF-ORDER",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-01T09:00:00.000+0000",
+                    "customfield_20002": [
+                        {
+                            "id": 20, "name": "Sprint Z",
+                            "state": "closed",
+                            "startDate": "2026-02-01T09:00:00.000Z",
+                            "endDate": "2026-02-15T09:00:00.000Z",
+                        },
+                        {
+                            "id": 10, "name": "Sprint Y",
+                            "state": "closed",
+                            "startDate": "2026-01-01T09:00:00.000Z",
+                            "endDate": "2026-01-15T09:00:00.000Z",
+                        },
+                    ],
+                }
+            }),
+        ],
+    )
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    con.execute("INSERT INTO statuses VALUES ('To Do', 'new')")
+    urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
+    urd.derive_issues(con)
+    urd.derive_sprints(con)
+    rows = con.execute(
+        "SELECT sprint_id, sprint_name, ordinal FROM issue_sprints "
+        "WHERE key = 'PROJ-OUT-OF-ORDER' ORDER BY ordinal"
+    ).fetchall()
+    # Array order is [Z id=20, Y id=10] (out of date order)
+    # Ordinal must be [1, 2] (array position), not [2, 1] (date order)
+    assert rows == [(20, "Sprint Z", 1), (10, "Sprint Y", 2)]
+
+
+def test_resolve_field_returns_exact_match_not_lexicographic_largest():
+    """resolve_field must return the field matching "Sprint" by name, not pick
+    the lexicographically largest field id when multiple names exist. Add a decoy
+    field (customfield_zzzz under a different name) and verify it is ignored."""
+    con = urd.open_db(_tmpdb())
+    con.execute(
+        "INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+        [
+            "PROJ-LEX",
+            "u",
+            urd._now(),
+            json.dumps({
+                "key": "PROJ-LEX",
+                "fields": {
+                    "issuetype": {"name": "Task"},
+                    "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    "created": "2026-03-01T09:00:00.000+0000",
+                    "updated": "2026-03-01T09:00:00.000+0000",
+                    "customfield_20002": [
+                        {"id": 1, "name": "Sprint 1", "state": "closed",
+                         "startDate": "2026-01-05T09:00:00.000Z",
+                         "endDate": "2026-01-19T09:00:00.000Z"}
+                    ]
+                }
+            }),
+        ],
+    )
+    # Register the actual Sprint field
+    con.execute("INSERT INTO fields VALUES ('customfield_20002', 'Sprint', NULL)")
+    # Add a decoy field with a lexicographically larger id
+    con.execute("INSERT INTO fields VALUES ('customfield_zzzz', 'Other Field', NULL)")
+    con.execute("INSERT INTO fields VALUES ('customfield_20001', 'Story Points', NULL)")
+    con.execute("INSERT INTO statuses VALUES ('To Do', 'new')")
+    urd.save_scope(con, status_order="To Do", start_status="To Do", review_status="To Do")
+    urd.derive_issues(con)
+    count = urd.derive_sprints(con)
+    # Must find the sprint in customfield_20002, not error on customfield_zzzz
+    assert count == 1
+    row = con.execute("SELECT sprint_name FROM issue_sprints WHERE key = 'PROJ-LEX'").fetchone()
+    assert row[0] == "Sprint 1"
 
 
 if __name__ == "__main__":

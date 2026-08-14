@@ -16,9 +16,9 @@
     "components": [{"name": "TEAM"}],
     "customfield_20001": 3,
     "customfield_20002": [
-      {"id": 2, "name": "Sprint B", "state": "active",
+      {"id": 7, "name": "Sprint B", "state": "closed",
        "startDate": "2026-01-05T09:00:00.000Z", "endDate": "2026-01-19T09:00:00.000Z"},
-      {"id": 1, "name": "Sprint A", "state": "closed",
+      {"id": 3, "name": "Sprint A", "state": "closed",
        "startDate": "2026-01-19T09:00:00.000Z", "endDate": "2026-02-02T09:00:00.000Z"}
     ]
   },
