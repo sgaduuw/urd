@@ -553,12 +553,12 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
     con.execute(
         "INSERT INTO raw_issues VALUES (?, ?, ?, ?) "
         "ON CONFLICT (key) DO UPDATE SET updated = excluded.updated",
-        ["PROJ-2", "u2", urd.datetime.now(urd.timezone.utc), "{}"],
+        ["PROJ-2", "u2", urd._now(), "{}"],
     )
     con.execute(
         "INSERT INTO raw_issues VALUES (?, ?, ?, ?) "
         "ON CONFLICT (key) DO UPDATE SET updated = excluded.updated",
-        ["PROJ-3", "u3", urd.datetime.now(urd.timezone.utc), "{}"],
+        ["PROJ-3", "u3", urd._now(), "{}"],
     )
     # Verify errors exist
     errors = con.execute("SELECT key FROM sync_errors ORDER BY key").fetchall()
@@ -764,13 +764,13 @@ def test_derive_issues_returns_zero_on_empty_input():
 
 
 def test_missing_assignee_and_reporter_does_not_abort():
-    """An issue with no assignee must complete the derive. This tests the
-    if people: guard, which prevents executemany from raising on empty input."""
+    """An issue with no assignee must derive without aborting and write a null
+    assignee_id. The fixture has a reporter, so the if people: guard is not tested here."""
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "skipped_progress")
     urd.derive_issues(con)
-    # Verify the row was written despite null assignee
-    assert con.execute("SELECT count(*) FROM issues WHERE key = 'PROJ-2'").fetchone()[0] == 1
+    # Verify the row was written with null assignee_id despite null assignee
+    assert con.execute("SELECT assignee_id FROM issues WHERE key = 'PROJ-2'").fetchone()[0] is None
 
 
 def test_missing_accountid_is_skipped():

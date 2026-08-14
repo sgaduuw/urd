@@ -353,26 +353,21 @@ def resolve_field(con, name):
 
 def _ts(value):
     """Jira sends '2026-01-05T09:00:00.000+0000' on issue fields and '...Z' on the
-    Sprint field. Both are normalised to a naive UTC datetime, because the issues
-    table's TIMESTAMP columns are naive: binding an aware value makes DuckDB shift
-    it to the machine's local wall time and drop the zone, so the same database
-    would read differently on a laptop and in CI, and any span crossing a DST
-    change would come out an hour wrong.
+    Sprint field. Python 3.11's fromisoformat parses both, and this project targets
+    3.11 (ruff.toml). Returns naive UTC, because the TIMESTAMP columns are naive:
+    an aware value gets shifted to the machine's local wall time with the zone
+    dropped, so the same database would read differently on a laptop and in CI,
+    and any span crossing a DST change would come out an hour wrong.
 
-    The string-normalization branches (Z to +00:00 and adding : in the offset) are
-    redundant on Python 3.11, which accepts those formats natively in fromisoformat,
-    but are load-bearing on Python 3.10, which rejects them. ruff.toml targets 3.10.
+    On 3.10 or earlier this raises ValueError on both shapes, which is the correct
+    loud failure for an unsupported interpreter.
 
     ponytail: assumes Jira always sends an offset, which it does. A naive input
-    would be treated as local time by astimezone. Upgrade path if that ever
-    changes: reject a value with no offset rather than guessing one.
+    would be treated as local time by astimezone. Upgrade path if that changes:
+    reject a value with no offset rather than guessing one.
     """
     if not value:
         return None
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    elif len(value) > 5 and value[-5] in "+-" and ":" not in value[-5:]:
-        value = value[:-2] + ":" + value[-2:]
     return datetime.fromisoformat(value).astimezone(timezone.utc).replace(tzinfo=None)  # noqa: UP017
 
 
