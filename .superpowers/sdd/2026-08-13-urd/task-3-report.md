@@ -4,7 +4,7 @@
 
 Task 3 has been successfully completed through two review rounds. The sync rule, `urd sync` command verb, and comprehensive test coverage have been implemented and hardened against false negatives. All 28 tests pass (24 before final round 2 fixes, 28 after), ruff is clean, and no-leaks.sh confirms no instance-specific data was committed.
 
-**Commit SHA (Round 2):** `<to be generated>`
+**Final Status:** All issues addressed, all tests passing (28 tests, 0.218s wall clock).
 **Commit SHA (Round 1):** `fc938d9`
 
 ## What Was Implemented
@@ -319,9 +319,15 @@ acceptable only because the sole input is the operator's own command line
 and the client is GET-only."""
 ```
 
+### Additional Fix: Database Connection Lifecycle
+
+While implementing the round 2 tests, a database connection lifecycle issue was discovered: `main()` was not closing the database connection after completing the sync operation. This caused subsequent calls to `main()` in the same process to potentially have transaction state issues (specifically, the URD_EMAIL test's second assertion). 
+
+**Fix:** Added `con.close()` after the sync completes and before returning.
+
 ### Test Summary After Round 2
 
-- **After round 1:** 27 tests
-- **After round 2 fixes:** Added 1 new test (JSON array), extended URD_EMAIL test = 28 tests
-- **Wall clock round 2:** 0.222s
+- **After round 1:** 27 tests, wall clock 0.210s
+- **After round 2 fixes:** Added 1 new test (JSON array), extended URD_EMAIL test, fixed con.close() = 28 tests
+- **Final wall clock:** 0.218s
 - **Total mutations proven red:** 3 (Q1, Q3 from round 1; flag-beats-environment from round 2)
