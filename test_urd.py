@@ -4,6 +4,7 @@ import pathlib
 import tempfile
 from datetime import datetime
 
+import render
 import urd
 
 
@@ -1972,6 +1973,144 @@ def test_resolve_field_returns_exact_match_not_lexicographic_largest():
     assert count == 1
     row = con.execute("SELECT sprint_name FROM issue_sprints WHERE key = 'PROJ-LEX'").fetchone()
     assert row[0] == "Sprint 1"
+
+
+### render.py: SVG primitives (Task 8) ###
+
+# The seven tests below are the brief's contract, verbatim.
+
+
+def test_escaping_prevents_a_ticket_summary_breaking_the_svg():
+    assert render.esc('a <b> & "c"') == "a &lt;b&gt; &amp; &quot;c&quot;"
+
+
+def test_bars_emits_one_rect_per_value_and_scales_to_the_maximum():
+    out = render.bars(
+        [{"label": "a", "done": 2, "open": 0}, {"label": "b", "done": 4, "open": 1}],
+        labels="label", series=["done", "open"],
+    )
+    assert out.count("<rect") == 4
+    assert "<svg" in out and "</svg>" in out
+
+
+def test_lines_survives_a_single_point_without_dividing_by_zero():
+    out = render.lines([{"wk": "2026-01-05", "created": 3}], x="wk", series=["created"])
+    assert "<svg" in out
+
+
+def test_empty_data_renders_a_note_not_a_broken_axis():
+    assert "no data" in render.lines([], x="wk", series=["created"]).lower()
+
+
+def test_scatter_draws_a_guide_line_per_percentile():
+    out = render.scatter(
+        [{"x": 1, "y": 2}, {"x": 2, "y": 8}], x="x", y="y",
+        guides=[("p50", 5.0), ("p85", 7.6)],
+    )
+    assert out.count("stroke-dasharray") == 2
+    assert "p85" in out
+
+
+def test_table_shading_maps_the_largest_cell_to_full_strength():
+    out = render.table(
+        [{"from": "Alder", "to": "Birch", "n": 4}], headers=["from", "to", "n"], shade="n",
+    )
+    assert "fill-opacity" in out
+
+
+def test_colours_are_defined_for_both_themes():
+    """The file is opened in a browser, so both themes must be explicit."""
+    assert "prefers-color-scheme" in render.CSS
+    assert ":root" in render.CSS
+
+
+# Everything below closes gaps the seven tests above leave open, found by
+# deliberately breaking render.py and checking the suite actually goes red
+# (see the mutation log in task-8-report.md rather than trusting the setup).
+
+_DANGEROUS = 'a <b> & "c"'
+
+
+def test_palette_has_at_least_six_distinct_colours():
+    """A repeated hex would make two adjacent series indistinguishable;
+    PALETTE must never contain a duplicate."""
+    assert len(render.PALETTE) >= 6
+    assert len(set(render.PALETTE)) == len(render.PALETTE)
+
+
+def test_lines_survives_all_equal_values_without_dividing_by_zero():
+    """Distinct from the single-point case: three rows, all the same value,
+    so the y-range is zero despite there being more than one point."""
+    out = render.lines(
+        [{"wk": "2026-01-05", "created": 7}, {"wk": "2026-01-12", "created": 7},
+         {"wk": "2026-01-19", "created": 7}],
+        x="wk", series=["created"],
+    )
+    assert "<svg" in out
+    assert "nan" not in out.lower()
+
+
+def test_bars_escapes_label_values():
+    out = render.bars(
+        [{"label": _DANGEROUS, "done": 2, "open": 1}], labels="label", series=["done", "open"],
+    )
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+
+
+def test_lines_escapes_x_values():
+    out = render.lines(
+        [{"wk": _DANGEROUS, "created": 3}, {"wk": "2026-01-12", "created": 5}],
+        x="wk", series=["created"],
+    )
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+
+
+def test_stacked_escapes_band_and_x_values():
+    out = render.stacked(
+        [{"wk": _DANGEROUS, "status": "Done", "n": 3}], x="wk", band="status", value="n",
+    )
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+
+
+def test_scatter_escapes_guide_labels():
+    out = render.scatter([{"x": 1, "y": 2}], x="x", y="y", guides=[(_DANGEROUS, 1.5)])
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+
+
+def test_table_escapes_header_and_cell_values():
+    out = render.table([{"from": _DANGEROUS, "to": "Birch", "n": 4}], headers=["from", "to", "n"])
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+
+
+def test_small_multiples_escapes_group_titles():
+    out = render.small_multiples({_DANGEROUS: [{"wk": "2026-01-05", "n": 3}]}, x="wk", y="n")
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+
+
+def test_bars_empty_data_renders_a_note():
+    assert "no data" in render.bars([], labels="label", series=["done"]).lower()
+
+
+def test_stacked_empty_data_renders_a_note():
+    assert "no data" in render.stacked([], x="wk", band="status", value="n").lower()
+
+
+def test_scatter_empty_data_renders_a_note():
+    assert "no data" in render.scatter([], x="x", y="y").lower()
+
+
+def test_table_empty_data_renders_a_note():
+    assert "no data" in render.table([], headers=["a", "b"]).lower()
+
+
+def test_small_multiples_empty_data_renders_a_note():
+    assert "no data" in render.small_multiples({}, x="wk", y="n").lower()
 
 
 if __name__ == "__main__":
