@@ -22,10 +22,13 @@ import math
 # Fixed hue order is the CVD-safety mechanism: within one chart, slot N always
 # means the same series. `_slot` below does wrap past 8 (see its own docstring
 # for why that's an accepted ceiling here, not a claim that it never happens).
-# This list drives CSS's --sN tokens (see CSS below): it is the one place a
-# *categorical* colour is spelled out. PALETTE_MUTED below is the equivalent
-# for chrome (gridlines, axis text), a separate constant since those aren't
-# identity colours and CSS generates its own tokens from each independently.
+# This list drives CSS's --sN tokens (see CSS below): it is the one place
+# this module's *light-mode* categorical colours are spelled out (see
+# _PALETTE_DARK below for the dark-mode steps, a separate list since the two
+# modes are genuinely different hex values, not a computed transform of one
+# another). PALETTE_MUTED below is the equivalent for chrome (gridlines,
+# axis text), a separate constant since those aren't identity colours and
+# CSS generates its own tokens from each independently.
 PALETTE = [
     "#2a78d6",  # 1 blue
     "#eb6834",  # 2 orange
@@ -167,8 +170,15 @@ def esc(text):
     routinely contain &, <, >, and quotes. Every primitive here runs every
     interpolated string through this before it lands in markup; skipping it
     for even one field turns a chart into a broken XML document rather than
-    a slightly wrong one.
+    a slightly wrong one. Also the single place a raw non-finite float
+    (nan/inf, which `_num` treats as missing everywhere chart math happens,
+    but which can still reach *display* text directly, e.g. a table cell
+    that isn't the shaded column) gets caught before `str()` would print
+    the literal word "nan" or "inf" into a document meant to hold ticket
+    data, not float internals.
     """
+    if isinstance(text, float) and not math.isfinite(text):
+        text = "0"
     return html.escape(str(text), quote=True)
 
 
@@ -219,6 +229,23 @@ def _fmt_num(v):
     return f"{v:,}" if isinstance(v, int) else f"{v:,.2f}"
 
 
+def _cat_sort_key(c):
+    """Sort key for `small_multiples`' shared x-category axis: numeric
+    values in numeric order (so integer week 10 doesn't sort as the
+    string "10", ahead of "9"), other values lexically, and `None` (a
+    NULL category from a LEFT JOIN) last, after every real value, rather
+    than a phantom leftmost time bucket. The two real-value buckets never
+    compare against each other directly (Python tuple comparison stops at
+    the first differing element, the bucket number, before reaching the
+    differently-typed third element), so this never raises on a facet
+    grid mixing numeric and string x-values.
+    """
+    if c is None:
+        return (1, 0, "")
+    n = _num(c)
+    return (0, 0, n) if n is not None else (0, 1, str(c))
+
+
 def _nice_ticks(lo, hi, count=4):
     """A handful of evenly spaced values between lo and hi, inclusive.
 
@@ -231,6 +258,18 @@ def _nice_ticks(lo, hi, count=4):
         return [lo]
     step = (hi - lo) / count
     return [lo + step * i for i in range(count + 1)]
+
+
+# Indices (0-based) of the three light-mode slots the dataviz skill's own
+# validator flags below 3:1 contrast against the light surface: aqua (2),
+# yellow (3), magenta (4). Used only to decide which endpoint label survives
+# when two collide in `lines`: the skill's relief rule for a contrast WARN
+# is a visible direct label, so a WARN slot keeps its label and a
+# high-contrast slot (whose line and dot are already legible) loses its own
+# first. Not used for anything else; these three are exactly as identifiable
+# by colour as every other slot, just harder to read as *text* on this
+# specific light surface.
+_WARN_SLOTS = {2, 3, 4}
 
 
 def _slot(index):
@@ -342,7 +381,11 @@ def axes(rows, x, y, width, height, zero_floor=False):
                 return left + plot_w / 2
             return left + _cats.index(v) / (_n - 1) * plot_w
 
-        tick_items = [(sx(c), str(c)) for c in cats]
+        # Raw category, not str(c): esc() does its own str() and is where
+        # a non-finite float gets caught before it can print as "nan"/
+        # "inf"; converting to a string here first would erase the float
+        # type esc() needs to see to catch it.
+        tick_items = [(sx(c), c) for c in cats]
 
     for xp, label in tick_items:
         parts.append(
@@ -378,9 +421,13 @@ def _legend(names, y0, width, x0=46, row_h=18):
     for i, name in enumerate(names):
         # ponytail: advances the cursor by a rough characters-per-label
         # estimate instead of measured text width (no renderer available
-        # offline). The only consequence is wrapping a little earlier or
-        # later than a real font would; see the docstring for the one
-        # entry shape (wider than a whole row) this can't wrap regardless.
+        # offline). Wrapping a little earlier than a real font would is
+        # harmless (an extra row); wrapping later, because the estimate
+        # under-shot a name with wide characters, is the same crop this
+        # wrap exists to prevent, just for one entry instead of the whole
+        # legend. Fine for this module's actual names (short status and
+        # assignee names); upgrade path is real text metrics if a wider or
+        # more varied set of names ever needs this guaranteed, not likely.
         w = 18 + 7 * len(str(name)) + 16
         if current and cx + w > width - 10:
             rows.append(current)
@@ -493,7 +540,11 @@ def lines(rows, x, series):
     grid_markup, sx, sy = axes(rows, x, series, width, base_h)
 
     parts = [grid_markup]
-    placed_label_ys = []
+    # First pass: the path, end-marker and <title> tooltip are drawn for
+    # every series unconditionally (the relief mechanism that never gates);
+    # only the on-chart value label, placed in the second pass below, can
+    # be dropped for a crowded cluster.
+    endpoints = []  # (slot_index, series_name, colour, lx, ly, last_value)
     for j, s in enumerate(series):
         pts, last_v = [], None
         for r in rows:
@@ -516,28 +567,45 @@ def lines(rows, x, series):
             f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="4" fill="{color}" '
             f'stroke="var(--surface)" stroke-width="2" />'
         )
-        # dataviz relief rule: a contrast WARN on a categorical slot obliges
-        # visible direct labels or the table view. Every series gets its
-        # endpoint value labelled (not just the line drawn), so a low-
-        # contrast slot at 3+ series still has its magnitude readable
-        # without relying on colour or a hover state. Right-anchored just
-        # left of the dot (not left-anchored past it) so the label stays
-        # inside the plot's own right edge instead of running past the
-        # viewBox: lx is always <= the plot's right edge, and text-anchor
-        # "end" grows the text leftward from that point, never rightward
-        # past it.
-        #
-        # dataviz: "when end-labels collide, don't stack them" (converging
-        # series). Skip a label that would land within one line-height of
-        # an already-placed one; the dot, the <title> tooltip, the legend
-        # and the table view all still carry that series' value, so nothing
-        # is gated, only the redundant on-chart text for a crowded cluster.
-        if all(abs(ly - py) >= 12 for py in placed_label_ys):
-            parts.append(
-                f'<text x="{lx - 6:.1f}" y="{ly + 4:.1f}" class="value-label" text-anchor="end">'
-                f"{esc(_fmt_num(last_v))}</text>"
-            )
-            placed_label_ys.append(ly)
+        endpoints.append((j, s, color, lx, ly, last_v))
+
+    # Second pass: dataviz relief rule, a contrast WARN on a categorical
+    # slot obliges visible direct labels (a <title> tooltip does not
+    # count as the relief the skill asks for), so _WARN_SLOTS gets first
+    # claim on a spot when two endpoints collide; a high-contrast slot's
+    # label is the one dropped, since its line and dot are already legible
+    # without one. Order series by that priority, then place each label
+    # only if it doesn't collide (in both x and y, not y alone: two labels
+    # can share a height while ending far apart on the x axis and not
+    # overlap at all) with one already placed.
+    order = sorted(range(len(endpoints)), key=lambda i: endpoints[i][0] % 8 not in _WARN_SLOTS)
+    placed = []  # (lx, ly) of every label actually drawn so far
+    for i in order:
+        j, s, color, lx, ly, last_v = endpoints[i]
+        if any(abs(lx - px) < 60 and abs(ly - py) < 12 for px, py in placed):
+            # dataviz: "when end-labels collide, don't stack them." The
+            # dot, the <title> tooltip, the legend and the table view all
+            # still carry this series' value; only the redundant on-chart
+            # text for a crowded cluster is dropped, never the value
+            # itself, and the skill accepts that (it does not accept a
+            # tooltip alone as relief for the *kept* labels' slots).
+            continue
+        # Anchor toward whichever side of the plot has room: a series
+        # whose last point is near the *left* edge (it stopped appearing
+        # early, or a status/assignee that dropped out) would run past
+        # x=0 if always anchored to grow leftward from just left of the
+        # dot; anchoring rightward there instead keeps it inside the plot,
+        # the same way "end" anchoring off the right edge does for the
+        # far more common case of a series still running to the last point.
+        if lx > width / 2:
+            anchor, label_x = "end", lx - 6
+        else:
+            anchor, label_x = "start", lx + 6
+        parts.append(
+            f'<text x="{label_x:.1f}" y="{ly + 4:.1f}" class="value-label" text-anchor="{anchor}">'
+            f"{esc(_fmt_num(last_v))}</text>"
+        )
+        placed.append((lx, ly))
 
     title = f'<title>{esc(", ".join(series))} over {esc(x)}</title>'
     return svg(width, height, title + "".join(parts) + legend)
@@ -548,10 +616,17 @@ def stacked(rows, x, band, value):
     split into segments named by `band`, each segment's height proportional
     to `value` and floored at 1px so a small non-zero band stays visible
     instead of disappearing (a value that reaches the plot at all is real
-    data, and the inter-segment gap below must not be able to swallow it
-    whole). A band's colour comes from its first-seen order in *this*
-    dataset (dataviz: colour must follow the entity, never its position in
-    a given stack); if a later call filters the same band set differently,
+    data). Segments within a bar are positioned sequentially from the
+    baseline up (each one starts exactly where the previous one's rendered
+    top ended), not independently from their own value, which is what
+    keeps the floor from ever making one segment occlude another: however
+    many bands in the same bar are near-zero, each still gets its own
+    un-overlapped 1px, at the cost of the stack's true top possibly
+    reading a few pixels higher than its value would place it on the
+    y-axis in that (rare, several-simultaneously-near-zero-bands) case.
+    A band's colour comes from its first-seen order in *this* dataset
+    (dataviz: colour must follow the entity, never its position in a
+    given stack); if a later call filters the same band set differently,
     the caller is responsible for keeping bands in the same relative order,
     since a band absent from a filtered dataset can't hold a slot for it.
     """
@@ -594,30 +669,37 @@ def stacked(rows, x, band, value):
     for i, xv in enumerate(x_order):
         band_x = left + i * band_w + gap
         running = 0
+        # Pixel y of the next segment's bottom edge, tracked sequentially
+        # rather than computed independently per segment from `running`:
+        # every segment starts exactly where the previous one's rendered
+        # top ended, so a floor-inflated segment can never end up sharing
+        # pixels with (occluding, or being occluded by) its neighbour.
+        cursor = bottom
         segs = {r.get(band): (_num(r.get(value)) or 0) for r in by_x[xv]}
         seg_idx = 0
         for b in band_order:
             v = segs.get(b, 0)
             if v <= 0:
                 continue
-            y0, y1 = sy(running), sy(running + v)
-            nat_h = y0 - y1
+            nat_h = sy(0) - sy(v)  # this segment's own height; independent of position
+            seg_bottom = cursor
             # Only spend the inter-segment gap if the segment survives it:
             # a small band (5 out of a 1000+5+200 stack) can be smaller than
             # the 2px gap itself, and inserting it unconditionally rendered
             # that band at 0.0 height, present only as an invisible rect
-            # with a tooltip. Skipping the gap there (segments still get
-            # their surface-colour ring from the tooltip hover, just not
-            # this static separator) and flooring at 1px keeps every
-            # positive value visible, matching the docstring's promise.
+            # with a tooltip. Skipping the gap there (the segment still
+            # gets its surface-colour ring from the tooltip hover, just not
+            # this static separator) keeps every positive value visible.
             if seg_idx > 0 and nat_h - gap >= 1:
-                y0 -= gap
-            height = max(y0 - y1, 1)
+                seg_bottom -= gap
+            seg_h = max(nat_h, 1)  # floor: a value that reaches the plot earns >= 1px
+            seg_top = seg_bottom - seg_h
             parts.append(
-                f'<rect x="{band_x:.1f}" y="{y1:.1f}" width="{bar_w:.1f}" '
-                f'height="{height:.1f}" fill="{color_of[b]}">'
+                f'<rect x="{band_x:.1f}" y="{seg_top:.1f}" width="{bar_w:.1f}" '
+                f'height="{seg_h:.1f}" fill="{color_of[b]}">'
                 f'<title>{esc("" if b is None else b)}: {esc(_fmt_num(v))}</title></rect>'
             )
+            cursor = seg_top
             running += v
             seg_idx += 1
         if running > 0:
@@ -626,8 +708,12 @@ def stacked(rows, x, band, value):
             # tooltip, not squeezed inside it), but the bar's total does
             # have one, so label that directly rather than leaving every
             # bar's magnitude readable only via colour or a hover state.
+            # Labelled at `cursor` (the actual rendered top of the stack),
+            # not sy(running): the two only differ when a segment was
+            # floor-inflated, and the label must sit at what's actually
+            # drawn, not the untouched math.
             parts.append(
-                f'<text x="{band_x + bar_w / 2:.1f}" y="{sy(running) - 4:.1f}" '
+                f'<text x="{band_x + bar_w / 2:.1f}" y="{cursor - 4:.1f}" '
                 f'class="value-label" text-anchor="middle">{esc(_fmt_num(running))}</text>'
             )
         parts.append(
@@ -748,14 +834,15 @@ def small_multiples(groups, x, y):
     needs an actual order, and first-seen across concatenated facets is
     just facet iteration order, not a real timeline (a facet missing a
     middle category would jumble the shared axis, e.g. w1, w3, w2 instead
-    of w1, w2, w3 if the facet holding w2 happens to come second). Sorting
-    the collected set fixes that, and is the order this precondition
-    depends on: **x must be a naturally-ordered, comparably-typed value**
-    (a date or week string, or all-numeric), the same assumption every
-    small-multiples facet grid already makes about its shared x-axis. A
-    facet missing a category breaks its line there rather than joining
-    straight across the gap, which would draw a silent stretch as though
-    output had been steady through it.
+    of w1, w2, w3 if the facet holding w2 happens to come second). Sorted
+    with `_cat_sort_key` instead (numeric values in numeric order, other
+    values lexically, so an integer week like 10 doesn't sort as if it
+    were the string "10" ahead of "9"); a `None` category (a NULL from a
+    LEFT JOIN) sorts last, after every real value, as a trailing "unknown"
+    bucket rather than a phantom leftmost one. A facet missing a category
+    breaks its line there rather than joining straight across the gap,
+    which would draw a silent stretch as though output had been steady
+    through it.
     """
     items = list(groups.items()) if hasattr(groups, "items") else list(groups)
     if not items:
@@ -769,14 +856,8 @@ def small_multiples(groups, x, y):
     if shared_max <= 0:
         shared_max = 1
 
-    # key=(c is None, str(c)): a total order over anything, including a
-    # NULL week from a LEFT JOIN (sorted first, ahead of every real value)
-    # or a facet grid mixing str and int x-values (str(c) compares fine
-    # even when the raw values wouldn't); plain sorted() raises TypeError
-    # on either. See the docstring above for why sorting instead of
-    # first-seen order is the right axis in the first place.
     cats = {r.get(x) for _, facet_rows in items for r in facet_rows}
-    shared_cats = sorted(cats, key=lambda c: (c is None, str(c)))
+    shared_cats = sorted(cats, key=_cat_sort_key)
     n_cats = len(shared_cats)
     cat_index = {c: i for i, c in enumerate(shared_cats)}
 

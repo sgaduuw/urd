@@ -1985,6 +1985,18 @@ def test_escaping_prevents_a_ticket_summary_breaking_the_svg():
     assert render.esc('a <b> & "c"') == "a &lt;b&gt; &amp; &quot;c&quot;"
 
 
+def test_esc_never_prints_the_literal_word_nan_or_inf():
+    """_num already treats a non-finite float as missing everywhere chart
+    math happens, but a raw nan/inf can still reach *display* text
+    directly (a table cell that isn't the shaded column, or a category
+    value _num rejects and axes() then treats as a plain label). esc()
+    is the one place every such value is stringified, so it's the one
+    place this has to be caught."""
+    assert render.esc(float("nan")) == "0"
+    assert render.esc(float("inf")) == "0"
+    assert render.esc(float("-inf")) == "0"
+
+
 def test_bars_emits_one_rect_per_value_and_scales_to_the_maximum():
     out = render.bars(
         [{"label": "a", "done": 2, "open": 0}, {"label": "b", "done": 4, "open": 1}],
@@ -2036,32 +2048,61 @@ _DANGEROUS = 'a <b> & "c"'
 
 
 def test_palette_slots_painted_in_css_are_distinct():
-    """PALETTE only documents the colours; every mark is actually painted
-    with the --sN custom properties in CSS (generated from PALETTE, but
-    that generation step is itself part of what could break), so the
-    distinctness guard has to read the copy that paints, not the list.
-    Light and dark are checked separately, since slot 6 (green) is the
-    documented exception that's intentionally identical in both modes."""
+    """Checks the values CSS actually paints, not the PALETTE list, so a
+    duplicate landing only in the copy that paints (not the copy that's
+    otherwise tested) is still caught. Does NOT by itself prove CSS is
+    *generated* from PALETTE rather than a hand-copied literal that
+    happens to currently match it (a pre-fix, hand-maintained CSS with
+    these same values would pass this exact check too); see
+    test_palette_wiring_is_generated_not_hand_copied for that. Light and
+    dark are checked separately, since slot 6 (green) is the documented
+    exception that's intentionally identical in both modes."""
     hexes = re.findall(r"--s\d: (#[0-9a-fA-F]{6});", render.CSS)
     n = len(render.PALETTE)
     assert n >= 6
     assert len(hexes) == 2 * n  # one block for light, one for dark
     light, dark = hexes[:n], hexes[n:]
-    assert light == render.PALETTE  # CSS actually reflects PALETTE, not a stale copy
+    assert light == render.PALETTE  # CSS's current light values match PALETTE's
     assert len(set(light)) == n
     assert len(set(dark)) == n
 
 
+def test_palette_wiring_is_generated_not_hand_copied():
+    """The value-equality check above would pass just as well against a
+    hand-copied CSS literal that happens to match PALETTE's current
+    values (that was the actual pre-fix state, and it satisfied an
+    equivalent check). Pin the mechanism at the source instead: the CSS
+    assembly must call the generator, not spell the hex values out a
+    second time."""
+    source = (pathlib.Path(__file__).parent / "render.py").read_text()
+    assert "_token_block(PALETTE," in source
+    assert "_token_block(_PALETTE_DARK," in source
+
+
 def test_palette_muted_drives_the_css_chrome_tokens():
-    """PALETTE_MUTED had zero consumers once scatter's guide line moved to
-    var(--baseline): a public, tested export that painted nothing, the
-    same disconnect PALETTE.CSS generation exists to prevent, just
-    relocated to the chrome tokens. It must generate --grid/--baseline/
-    --muted, not merely document values the CSS template hard-codes on
-    its own."""
+    """Checks the values CSS actually paints for --grid/--baseline/--muted
+    match PALETTE_MUTED's current values. Like the --sN check above, this
+    does NOT by itself prove generation: a hand-copied literal matching
+    PALETTE_MUTED's current values (the actual pre-fix state) would pass
+    this exact check too; see test_palette_muted_wiring_is_generated_not_
+    hand_copied for that."""
     assert f'--grid: {render.PALETTE_MUTED["grid"]};' in render.CSS
     assert f'--baseline: {render.PALETTE_MUTED["baseline"]};' in render.CSS
     assert f'--muted: {render.PALETTE_MUTED["text"]};' in render.CSS
+
+
+def test_palette_muted_wiring_is_generated_not_hand_copied():
+    """PALETTE_MUTED had zero consumers once scatter's guide line moved to
+    var(--baseline): a public, tested export that painted nothing, the
+    same disconnect PALETTE's own CSS generation exists to prevent, just
+    relocated to the chrome tokens. Pin the mechanism at the source: the
+    CSS assembly must read PALETTE_MUTED's dict values, not spell them
+    out a second time (a hand-copied literal matching its current values
+    would satisfy the value-presence check above just as well)."""
+    source = (pathlib.Path(__file__).parent / "render.py").read_text()
+    assert 'PALETTE_MUTED["grid"]' in source
+    assert 'PALETTE_MUTED["baseline"]' in source
+    assert 'PALETTE_MUTED["text"]' in source
 
 
 def test_lines_survives_all_equal_values_without_dividing_by_zero():
@@ -2085,6 +2126,12 @@ def test_lines_survives_all_equal_values_without_dividing_by_zero():
 # number. "no raw markup leaked" is the property that matters; two
 # different marker tags (<i>, <u>) let one test check two or three sites
 # at once without them masking each other.
+#
+# render.py has 33 esc() call sites, not all reachable: 9 are
+# esc(_fmt_num(...)), which can only ever receive a float _fmt_num itself
+# already formats to clean digits/commas, so no test (hostile or
+# otherwise) can reach them with anything but a number. The other 24 are
+# what these tests actually pin: 24 of 24 reachable, not 33 of 33.
 
 _DANGEROUS_NAME = 'n <i> & "m"'  # a column-name argument (labels=/x=/band=/y=)
 _DANGEROUS_NAME2 = 'q <u> & "z"'  # a second one, for primitives with two
@@ -2238,6 +2285,76 @@ def test_stacked_small_band_survives_the_inter_segment_gap():
         assert float(h) >= 1.0
 
 
+def test_stacked_segments_are_never_occluded_however_many_are_tiny():
+    """The 1px floor sets a rect's height but the original fix left its
+    position untouched, so a later segment (painted on top) could cover
+    an earlier tiny one entirely: at 100000/1/1/1 two of the three 1-unit
+    bands were fully hidden under the third, even though the height
+    assertion above (which only reads each rect's own height attribute,
+    never its neighbours) passed on all three. This checks the actual
+    rendered extent: no two segments' [y, y+height] pixel ranges may
+    overlap, in either the mild (1000/5/200) or the extreme
+    (100000/1/1/1) case."""
+    rect_re = r'<rect x="[\d.]+" y="(-?[\d.]+)" width="[\d.]+" height="([\d.]+)"'
+
+    def spans(rows):
+        out = render.stacked(rows, x="wk", band="status", value="n")
+        return sorted((float(y), float(y) + float(h)) for y, h in re.findall(rect_re, out))
+
+    for values in ([1000, 5, 200], [100000, 1, 1, 1]):
+        rows = [{"wk": "w1", "status": chr(65 + i), "n": v} for i, v in enumerate(values)]
+        segs = spans(rows)
+        for pair in zip(segs, segs[1:], strict=False):  # deliberately different lengths (pairwise)
+            (_top1, bottom1), (top2, _bottom2) = pair
+            # segments sorted by y; each must end at or before the next begins
+            assert bottom1 <= top2 + 0.01
+
+
+def test_stacked_viewbox_height_matches_the_chart_not_the_last_segment():
+    """Regression guard for the blocker: a loop-local `height` (now
+    `seg_h`) shadowed the outer chart-height variable that the same name
+    fed into svg(width, height, ...), so the viewBox height became
+    whatever the very last drawn segment's own pixel height happened to
+    be. Checked across band counts that exercise both the no-legend
+    (<=1 band) and with-legend (2+ bands) height branches."""
+    for n_bands, expected_h in ((1, 220), (2, 242), (6, 242)):
+        rows = [{"wk": "w1", "status": chr(65 + i), "n": i + 1} for i in range(n_bands)]
+        out = render.stacked(rows, x="wk", band="status", value="n")
+        vb_h = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', out).group(1))
+        assert vb_h == expected_h
+
+
+def test_every_primitive_keeps_marks_within_the_viewbox_height():
+    """The frame (viewBox) and the content (marks, text) drifting apart is
+    exactly how the stacked blocker shipped (the viewBox tracked the last
+    segment instead of the chart) and how the lines endpoint label
+    shipped clipped (the mark was correctly inside the frame; the label
+    wasn't). Check the frame against the content directly, across every
+    primitive that draws one, not just the ones with a bespoke test."""
+    bars_rows = [{"label": "a", "n": 1}, {"label": "b", "n": 100}]
+    samples = [
+        render.bars(bars_rows, labels="label", series=["n"]),
+        render.lines(
+            [{"wk": "2026-01-05", "n": 1}, {"wk": "2026-01-12", "n": 100}], x="wk", series=["n"],
+        ),
+        render.stacked(
+            [{"wk": "w1", "status": "A", "n": 1000}, {"wk": "w1", "status": "B", "n": 5},
+             {"wk": "w1", "status": "C", "n": 200}],
+            x="wk", band="status", value="n",
+        ),
+        render.scatter([{"x": 1, "y": 2}, {"x": 2, "y": 8}], x="x", y="y", guides=[("p50", 5.0)]),
+        render.small_multiples({"g": [{"wk": "2026-01-05", "n": 3}]}, x="wk", y="n"),
+    ]
+    for out in samples:
+        vb_h = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', out).group(1))
+        ys = [float(y) for y in re.findall(r'\by="(-?[\d.]+)"', out)]
+        rects = re.findall(r'<rect [^>]*\by="(-?[\d.]+)"[^>]*height="([\d.]+)"', out)
+        for y in ys:
+            assert -5 <= y <= vb_h + 5
+        for y, h in rects:
+            assert -5 <= float(y) + float(h) <= vb_h + 5
+
+
 def test_small_multiples_handles_null_and_mixed_type_x_without_crashing():
     """Replacing first-seen order with sorted() introduced a comparison
     where there was none: a NULL week from a LEFT JOIN, or facets whose x
@@ -2250,6 +2367,35 @@ def test_small_multiples_handles_null_and_mixed_type_x_without_crashing():
     mixed = {"A": [{"wk": 1, "n": 1}], "B": [{"wk": "w2", "n": 2}]}
     out2 = render.small_multiples(mixed, x="wk", y="n")
     assert "<svg" in out2
+
+
+def test_small_multiples_sorts_integer_categories_numerically_not_lexically():
+    """key=(c is None, str(c)) sorted integer weeks {2, 9, 10, 11} as the
+    strings "10", "11", "2", "9". A facet that visits every category (in
+    any order, since it's iterated in shared-category order regardless)
+    always traces a monotonically-increasing pixel path by construction,
+    which cannot tell a correct sort from a wrong one: it's checking that
+    points are visited in shared_cats' own order, not that shared_cats
+    itself is in the right order. Two single-point facets (so each
+    renders in isolation, at the position its own value's rank in the
+    shared axis gives it) expose the real property: week 2 must land
+    left of week 11, not the reverse."""
+    groups = {
+        "full": [{"wk": w, "n": w} for w in (2, 9, 10, 11)],  # populates the shared axis
+        "low": [{"wk": 2, "n": 1}],
+        "high": [{"wk": 11, "n": 1}],
+    }
+    out = render.small_multiples(groups, x="wk", y="n")
+    # local cx within each facet's own <g> (not the translated screen
+    # position, which the 3-column grid layout dominates and which says
+    # nothing about the value/category ordering this test is checking)
+    gs = re.findall(r'<g transform="translate\([\d.]+,[\d.]+\)">(.*?)</g>', out, re.DOTALL)
+    local_x = {}
+    for body in gs:
+        title = re.search(r'class="facet-title"[^>]*>([^<]+)<', body).group(1)
+        cx = re.search(r'<circle cx="([\d.]+)"', body).group(1)
+        local_x[title] = float(cx)
+    assert local_x["low"] < local_x["high"]
 
 
 def test_bars_skips_a_missing_value_instead_of_drawing_a_zero():
@@ -2275,6 +2421,27 @@ def test_none_category_renders_as_empty_text_not_the_literal_none():
     assert "<title>None:" not in out
 
     out = render.small_multiples({None: [{"wk": "w1", "n": 3}]}, x="wk", y="n")
+    assert ">None<" not in out
+
+
+def test_stacked_none_x_value_renders_as_empty_tick_text():
+    """The prior test only ever set the *band* to None; stacked's x-tick
+    None-guard is a separate line and was never exercised by it. A
+    second, real x value keeps the tick text from collapsing to a single
+    band (which would skip the tick loop's only interesting case)."""
+    rows = [{"wk": None, "status": "A", "n": 3}, {"wk": "w2", "status": "A", "n": 2}]
+    out = render.stacked(rows, x="wk", band="status", value="n")
+    assert ">None<" not in out
+
+
+def test_legend_none_name_renders_as_empty_text_not_the_literal_none():
+    """The prior test's stacked/small_multiples scenarios only ever had
+    one distinct band/group, so _legend (which needs 2+ names to render
+    at all) was never called with a None name; its own None-guard was a
+    dead arm."""
+    rows = [{"wk": "w1", "status": None, "n": 3}, {"wk": "w1", "status": "Done", "n": 2}]
+    out = render.stacked(rows, x="wk", band="status", value="n")
+    assert "legend-label" in out  # confirms the legend actually rendered
     assert ">None<" not in out
 
 
@@ -2312,6 +2479,63 @@ def test_lines_skips_a_value_label_that_would_overlap_a_convergent_series():
     assert "<title>a: " in out and "<title>b: " in out and "<title>c: " in out
 
 
+def test_lines_endpoint_label_stays_inside_the_left_edge_too():
+    """The right-edge fix anchored every label leftward of its dot
+    unconditionally (text-anchor="end", x=lx-6): safe when lx is near the
+    plot's right edge (text grows left, into the plot), but a series
+    whose last non-null point is the *first* x (it stopped appearing, a
+    status or assignee that dropped out) sits near the plot's *left*
+    edge, where growing further leftward runs a multi-digit value past
+    x=0. Checking only the anchor's x coordinate can't see this: that
+    coordinate stays a small positive number in both the buggy and the
+    fixed version, since the actual clipping happens in the *rendered
+    text*, which grows outward from the anchor in the direction
+    text-anchor points, not at the anchor point itself. The fix is which
+    direction it grows in, so check that."""
+    rows = [
+        {"wk": "2026-01-05", "a": 1234567},
+        {"wk": "2026-01-12"},
+        {"wk": "2026-01-19"},
+    ]
+    out = render.lines(rows, x="wk", series=["a"])
+    m = re.search(r'x="(-?[\d.]+)"[^>]*class="value-label" text-anchor="(start|end)"', out)
+    assert m, "expected exactly one endpoint label"
+    x, anchor = float(m.group(1)), m.group(2)
+    assert anchor == "start"  # grows rightward, into the plot, not off the left edge
+    assert x >= 0
+
+
+def test_lines_collision_check_compares_x_not_just_y():
+    """Comparing only y meant three series ending 210px apart at the same
+    height still counted as one crowded cluster and produced a single
+    label; they don't overlap and each needs its own."""
+    rows = [
+        {"wk": "w1", "a": 10},
+        {"wk": "w2", "b": 10},
+        {"wk": "w3", "c": 10},
+    ]
+    out = render.lines(rows, x="wk", series=["a", "b", "c"])
+    assert out.count('class="value-label"') == 3
+
+
+def test_lines_drops_the_high_contrast_label_first_on_collision():
+    """dataviz: the sub-3:1 WARN slots' documented mitigation *is* the
+    direct label; dropping their label on a collision and keeping a
+    high-contrast slot's (whose line and dot are already legible) defeats
+    the whole mechanism. Slot index 2 (aqua) is a WARN slot; slot 0
+    (blue) is not."""
+    rows = [
+        {"wk": "w1", "blue": 0, "other": 100, "aqua": 100},
+        {"wk": "w2", "blue": 50, "other": 5, "aqua": 50.3},
+    ]
+    out = render.lines(rows, x="wk", series=["blue", "other", "aqua"])
+    assert out.count('class="value-label"') == 2  # blue and aqua collide; one drops
+    # class="value-label", not the axis tick (class="tick"), which can
+    # coincidentally show the same numbers
+    assert 'class="value-label" text-anchor="end">50.30</text>' in out  # aqua survives
+    assert 'class="value-label" text-anchor="end">50</text>' not in out  # blue does not
+
+
 def test_stacked_labels_each_bars_total():
     """Same relief rule as lines, but a stacked segment has no free end to
     label (an interior segment's own value belongs in the tooltip/legend),
@@ -2343,6 +2567,25 @@ def test_table_shading_handles_an_all_negative_column():
     out = render.table(rows, headers=["from", "to", "n"], shade="n")
     assert "-0.00" not in out
     assert "fill-opacity" not in out
+
+
+def test_table_never_prints_the_literal_word_nan_for_a_non_shaded_cell():
+    """A non-shaded cell's text is `esc(v)` with no numeric formatting in
+    between; a raw nan/inf value there used to print the literal word
+    "nan"/"inf" as if it were real ticket data."""
+    out = render.table([{"from": "A", "to": "B", "n": float("nan")}], headers=["from", "to", "n"])
+    assert "nan" not in out.lower()
+
+
+def test_scatter_axis_never_prints_nan_or_inf_as_a_tick_label():
+    """A NaN in the x column makes axes() fall back to its categorical
+    branch (not every value is numeric), whose tick labels used to print
+    str(c) verbatim: "nan" as an axis category, right next to the real
+    numeric ticks on the y axis."""
+    rows = [{"x": 1, "y": 2}, {"x": float("nan"), "y": 3}]
+    out = render.scatter(rows, x="x", y="y")
+    assert "nan" not in out.lower()
+    assert "inf" not in out.lower()
 
 
 def test_scatter_guide_line_uses_a_theme_variable_not_a_hardcoded_hex():
