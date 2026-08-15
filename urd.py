@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 import duckdb
 
+import charts as chart_specs
 import render
 
 KEYCHAIN_SERVICE = "urd"
@@ -650,9 +651,31 @@ def report(con, path="report.html"):
     return 0
 
 
+def run_chart(con, chart):
+    """Run one spec and hand its rows to the renderer its kind names."""
+    subtitle = chart.caption
+    if chart.coverage:
+        numerator, denominator = con.execute(chart.coverage).fetchone()
+        numerator, denominator = numerator or 0, denominator or 0
+        share = 0 if not denominator else numerator / denominator
+        if share < chart.threshold:
+            return render.coverage_strip(chart.title, numerator, denominator, chart.threshold)
+        subtitle += f" ({numerator} of {denominator} tickets)"
+    cursor = con.execute(chart.sql)
+    columns = [d[0] for d in cursor.description]
+    rows = [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
+    return render.figure(chart, rows, subtitle, con)
+
+
 def render_sections(con):
-    """Charts arrive in Tasks 10 to 13; until then the page is empty but valid."""
-    return []
+    return [
+        (
+            section,
+            [run_chart(con, c) for c in chart_specs.CHARTS if c.section == section],
+        )
+        for section in chart_specs.SECTIONS
+        if any(c.section == section for c in chart_specs.CHARTS)
+    ]
 
 
 def main(argv=None):

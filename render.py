@@ -154,6 +154,15 @@ td.shaded span { position: relative; }
 
 p.empty { color: var(--muted); font-style: italic; }
 
+figure { margin: 0 0 28px; }
+figure h3 { font-size: 15px; margin: 0 0 6px; font-weight: 600; }
+figcaption {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 6px;
+  max-width: 480px;
+}
+
 .warn {
   color: var(--text-secondary);
   border-left: 3px solid var(--s2);
@@ -1074,3 +1083,34 @@ def small_multiples(groups, x, y):
 
     title = f'<title>{esc(y)} by {esc(x)}, one panel per group</title>'
     return svg(width, height, title + "".join(parts))
+
+
+FIGURE_KINDS = frozenset({"table", "matrix", "lines", "stacked", "scatter"})
+
+
+def figure(chart, rows, subtitle, con):
+    """One chart's markup: heading, the primitive its kind names, and a caption.
+
+    `matrix` is a shaded table rather than its own renderer: the row and column
+    names are data, so a grouped-bar version would need a pivot with dynamic
+    columns for no gain over a table that already shades.
+    """
+    o = chart.options
+    if chart.kind in ("table", "matrix"):
+        body = table(rows, o["headers"], o.get("shade"))
+    elif chart.kind == "lines":
+        body = lines(rows, o["x"], o["series"])
+    elif chart.kind == "stacked":
+        body = stacked(rows, o["x"], o["band"], o["value"])
+    elif chart.kind == "scatter":
+        guides = ()
+        if o.get("guides_sql"):
+            p50, p85 = con.execute(o["guides_sql"]).fetchone()
+            guides = [(name, v) for name, v in (("p50", p50), ("p85", p85)) if v is not None]
+        body = scatter(rows, o["x"], o["y"], guides)
+    else:
+        raise ValueError(f"no renderer for chart kind {chart.kind!r}")
+    return (
+        f'<figure id="{esc(chart.key)}"><h3>{esc(chart.title)}</h3>{body}'
+        f"<figcaption>{esc(subtitle)}</figcaption></figure>"
+    )

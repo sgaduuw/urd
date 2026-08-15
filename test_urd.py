@@ -6,6 +6,7 @@ import re
 import tempfile
 from datetime import datetime
 
+import charts as chart_specs
 import render
 import urd
 
@@ -2940,6 +2941,165 @@ def test_table_empty_data_renders_a_note():
 
 def test_small_multiples_empty_data_renders_a_note():
     assert "no data" in render.small_multiples({}, x="wk", y="n").lower()
+
+
+def _flow_rows(con, key):
+    chart = next(c for c in chart_specs.CHARTS if c.key == key)
+    cursor = con.execute(chart.sql)
+    columns = [d[0] for d in cursor.description]
+    return chart, [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
+
+
+def test_every_chart_spec_is_well_formed():
+    seen = set()
+    for chart in chart_specs.CHARTS:
+        assert chart.key not in seen, f"duplicate chart key {chart.key}"
+        seen.add(chart.key)
+        # Against what figure can actually draw, not a hand-kept list: a spec naming
+        # a kind no renderer handles must fail here, not as a blank space in a browser.
+        assert chart.kind in render.FIGURE_KINDS, f"{chart.key}: unrenderable {chart.kind}"
+        assert chart.section in chart_specs.SECTIONS, f"{chart.key}: stray section"
+        assert chart.caption, f"{chart.key} has no caption"
+
+
+def test_every_chart_sql_returns_the_columns_its_options_name():
+    """A query that runs but names its columns differently draws an empty chart.
+    The renderers read rows by key and silently get None, so this is the only
+    place the mismatch is visible."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    needed = {"lines": ("x",), "stacked": ("x", "band", "value"), "scatter": ("x", "y")}
+    for chart in chart_specs.CHARTS:
+        cursor = con.execute(chart.sql)
+        columns = {d[0] for d in cursor.description}
+        cursor.fetchall()
+        for option in needed.get(chart.kind, ()):
+            assert chart.options[option] in columns, (
+                f"{chart.key}: options[{option!r}]={chart.options[option]!r} "
+                f"is not among {sorted(columns)}")
+        for series in chart.options.get("series", []):
+            assert series in columns, f"{chart.key}: series {series!r} not in {sorted(columns)}"
+        for header in chart.options.get("headers", []):
+            assert header in columns, f"{chart.key}: header {header!r} not in {sorted(columns)}"
+        if chart.coverage:
+            numerator, denominator = con.execute(chart.coverage).fetchone()
+            assert numerator is not None and denominator is not None
+
+
+def test_flow_health_charts_are_all_present():
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
+    assert keys == {"aging_wip", "created_vs_closed", "cfd", "cycle_scatter", "time_in_status"}
+
+
+def test_aging_lists_only_open_tickets_worst_first():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "aging_wip")
+    # PROJ-1 and PROJ-2 are status_category 'done'; PROJ-3 is In Progress.
+    assert [r["key"] for r in rows] == ["PROJ-3"]
+
+
+def test_the_cumulative_flow_is_a_weekly_snapshot_not_a_daily_sum():
+    """Grouping days into weeks with count(*) multiplies every value by about
+    seven while preserving the shape, so the chart still looks right. The count
+    of tickets in a status can never exceed the number of tickets."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "cfd")
+    total = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    assert rows, "no cumulative flow rows at all"
+    assert max(r["tickets"] for r in rows) <= total
+    # Bounded, so the chart does not grow a bar a day forever.
+    assert len({r["day"] for r in rows}) <= 27
+
+
+def test_time_in_status_ignores_time_spent_already_done():
+    """status_durations closes an open span at now(), so a closed ticket's Done
+    span measures time since resolution. It read 207 days in the fixtures."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "time_in_status")
+    assert rows
+    assert "Done" not in {r["status"] for r in rows}
+
+
+def test_cycle_time_falls_below_its_threshold_in_the_fixtures():
+    """skipped_progress resolves without ever entering start_status, so coverage
+    is 1 of 2. The chart must say so rather than plot one point as if it were the
+    whole picture. If this test fails, the threshold or the fixture moved."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
+    numerator, denominator = con.execute(chart.coverage).fetchone()
+    assert (numerator, denominator) == (1, 2)
+    out = urd.run_chart(con, chart)
+    assert "1 of 2" in out and "<svg" not in out
+
+
+def test_sections_render_in_a_fixed_order():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    titles = [title for title, _ in urd.render_sections(con)]
+    assert titles[0] == "Flow health"
+    # Only one section holds charts until Task 11, so asserting the real list is
+    # in SECTIONS order is vacuous: a one-element list is sorted every way at
+    # once, and reversing SECTIONS leaves this green. Order is therefore checked
+    # against a stand-in chart list, declared deliberately back to front.
+    spare = [s for s in chart_specs.SECTIONS if s != "Flow health"][0]
+    stub = {"headers": ["n"]}
+    original = chart_specs.CHARTS
+    try:
+        chart_specs.CHARTS = [
+            chart_specs.Chart(key="second", section=spare, title="B", kind="table",
+                              caption="c", sql="SELECT 1 AS n", options=stub),
+            chart_specs.Chart(key="first", section="Flow health", title="A", kind="table",
+                              caption="c", sql="SELECT 1 AS n", options=stub),
+        ]
+        ordered = [title for title, _ in urd.render_sections(con)]
+    finally:
+        chart_specs.CHARTS = original
+    assert ordered == ["Flow health", spare], "sections follow CHARTS order, not SECTIONS"
+
+
+def test_every_rendered_chart_stays_inside_its_frame():
+    """Every chart the report draws, against the frame it draws into.
+
+    This does NOT catch the daily cumulative flow that prompted it: that chart
+    overflowed by 0.8px before commit 91e8f85 taught `stacked` to thin and anchor
+    its x labels, and the same fix now absorbs 222 days without complaint. The
+    bar-count bound in the weekly-snapshot test is what catches it. Kept because
+    it is a standing guard over every chart Tasks 11 to 13 add, not because it
+    guards the one that motivated it."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    drawn = 0
+    for section, figures in urd.render_sections(con):
+        for markup in figures:
+            for chunk in re.findall(r"<svg\b.*?</svg>", markup, re.S):
+                _assert_content_within_viewbox(chunk, f"{section}")
+                drawn += 1
+    assert drawn >= 3, f"only {drawn} SVGs rendered; the loop is not seeing charts"
+
+
+def test_figure_draws_a_scatter_with_its_percentile_guides():
+    """The fixtures always take the coverage-strip path for the only scatter, so
+    the renderer branch is exercised directly or not at all."""
+    chart = chart_specs.Chart(
+        key="k", section="Flow health", title="T", kind="scatter",
+        caption="c", options={"x": "resolved", "y": "cycle_days",
+                              "guides_sql": "SELECT 1.0, 4.0"},
+        sql="SELECT 1",
+    )
+    con = urd.open_db(_tmpdb())
+    rows = [{"resolved": 1, "cycle_days": 2}, {"resolved": 3, "cycle_days": 6}]
+    out = render.figure(chart, rows, "sub", con)
+    assert "<svg" in out and "p50" in out and "p85" in out
+    assert "<figcaption>sub</figcaption>" in out
+    assert "<h3>T</h3>" in out
+
+
+def test_figure_refuses_a_kind_no_renderer_handles():
+    chart = chart_specs.Chart(key="k", section="Flow health", title="T", kind="sunburst",
+                              caption="c", sql="SELECT 1")
+    try:
+        render.figure(chart, [], "sub", None)
+    except ValueError as exc:
+        assert "sunburst" in str(exc)
+    else:
+        raise AssertionError("an unknown kind rendered silently")
 
 
 def _header(**over):
