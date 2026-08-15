@@ -1,6 +1,8 @@
+import decimal
 import json
 import os
 import pathlib
+import re
 import tempfile
 from datetime import datetime
 
@@ -278,7 +280,6 @@ def test_no_bare_sql_now_anywhere():
     them, and that is how Task 5's Critical entered. Require every SQL now() to
     be immediately followed by the UTC cast: a cast elsewhere on the line does
     not make an earlier occurrence safe."""
-    import re
     source = (pathlib.Path(__file__).parent / "urd.py").read_text()
     # Find all bare now() not immediately followed by AT TIME ZONE 'UTC'
     # Negative lookahead (?!\s*AT TIME ZONE 'UTC') checks what follows right after
@@ -2024,18 +2025,31 @@ def test_colours_are_defined_for_both_themes():
     assert ":root" in render.CSS
 
 
-# Everything below closes gaps the seven tests above leave open, found by
-# deliberately breaking render.py and checking the suite actually goes red
-# (see the mutation log in task-8-report.md rather than trusting the setup).
+# Everything below closes gaps found in fix round 1 review: the first pass's
+# tests each pinned one interpolation site or one behaviour per primitive,
+# and mutation testing showed roughly twenty other sites, and several whole
+# properties (shared scales, zero floors, accessibility attributes), were
+# free to regress unnoticed. See task-8-report.md's "Fix Round 1" section for
+# the mutation log proving each of these actually goes red.
 
 _DANGEROUS = 'a <b> & "c"'
 
 
-def test_palette_has_at_least_six_distinct_colours():
-    """A repeated hex would make two adjacent series indistinguishable;
-    PALETTE must never contain a duplicate."""
-    assert len(render.PALETTE) >= 6
-    assert len(set(render.PALETTE)) == len(render.PALETTE)
+def test_palette_slots_painted_in_css_are_distinct():
+    """PALETTE only documents the colours; every mark is actually painted
+    with the --sN custom properties in CSS (generated from PALETTE, but
+    that generation step is itself part of what could break), so the
+    distinctness guard has to read the copy that paints, not the list.
+    Light and dark are checked separately, since slot 6 (green) is the
+    documented exception that's intentionally identical in both modes."""
+    hexes = re.findall(r"--s\d: (#[0-9a-fA-F]{6});", render.CSS)
+    n = len(render.PALETTE)
+    assert n >= 6
+    assert len(hexes) == 2 * n  # one block for light, one for dark
+    light, dark = hexes[:n], hexes[n:]
+    assert light == render.PALETTE  # CSS actually reflects PALETTE, not a stale copy
+    assert len(set(light)) == n
+    assert len(set(dark)) == n
 
 
 def test_lines_survives_all_equal_values_without_dividing_by_zero():
@@ -2050,47 +2064,296 @@ def test_lines_survives_all_equal_values_without_dividing_by_zero():
     assert "nan" not in out.lower()
 
 
-def test_bars_escapes_label_values():
+# Each escaping test below seeds the dangerous string into every distinct
+# field that primitive interpolates (not just one), so it pins escaping at
+# every site rather than the one a narrower test happens to reach. Counts
+# are exact (not just "at least one") because they were read off a real run
+# against this implementation; a future site added to the same primitive
+# should raise its own coverage rather than silently ride on this count.
+
+def test_bars_escapes_every_interpolated_field():
     out = render.bars(
-        [{"label": _DANGEROUS, "done": 2, "open": 1}], labels="label", series=["done", "open"],
+        [{"label": _DANGEROUS, "n1": 2, _DANGEROUS: 1}], labels="label", series=["n1", _DANGEROUS],
     )
     assert "<b>" not in out
-    assert "&lt;b&gt;" in out
+    # tick label, tooltip, legend, title: 4 distinct sites
+    assert out.count("&lt;b&gt;") == 4
 
 
-def test_lines_escapes_x_values():
+def test_lines_escapes_every_interpolated_field():
     out = render.lines(
-        [{"wk": _DANGEROUS, "created": 3}, {"wk": "2026-01-12", "created": 5}],
-        x="wk", series=["created"],
+        [{"wk": _DANGEROUS, "n1": 3, _DANGEROUS: 2}, {"wk": "2026-01-12", "n1": 5, _DANGEROUS: 4}],
+        x="wk", series=["n1", _DANGEROUS],
     )
     assert "<b>" not in out
-    assert "&lt;b&gt;" in out
+    # x tick, path title, endpoint label, legend: 4 distinct sites
+    assert out.count("&lt;b&gt;") == 4
 
 
-def test_stacked_escapes_band_and_x_values():
+def test_stacked_escapes_every_interpolated_field():
     out = render.stacked(
-        [{"wk": _DANGEROUS, "status": "Done", "n": 3}], x="wk", band="status", value="n",
+        [{"wk": _DANGEROUS, "status": _DANGEROUS, _DANGEROUS: 3},
+         {"wk": "2026-01-12", "status": "Done", _DANGEROUS: 2}],
+        x="wk", band="status", value=_DANGEROUS,
     )
     assert "<b>" not in out
-    assert "&lt;b&gt;" in out
+    # x tick, segment tooltip, legend, title (the value column name): 4 sites
+    assert out.count("&lt;b&gt;") == 4
 
 
-def test_scatter_escapes_guide_labels():
-    out = render.scatter([{"x": 1, "y": 2}], x="x", y="y", guides=[(_DANGEROUS, 1.5)])
+def test_scatter_escapes_every_interpolated_field():
+    out = render.scatter([{_DANGEROUS: 1, "y": 2}], x=_DANGEROUS, y="y", guides=[(_DANGEROUS, 1.5)])
     assert "<b>" not in out
-    assert "&lt;b&gt;" in out
+    # point tooltip (column name), guide label, chart title: 3 sites
+    assert out.count("&lt;b&gt;") == 3
 
 
-def test_table_escapes_header_and_cell_values():
-    out = render.table([{"from": _DANGEROUS, "to": "Birch", "n": 4}], headers=["from", "to", "n"])
+def test_table_escapes_every_interpolated_field():
+    out = render.table(
+        [{_DANGEROUS: _DANGEROUS, "to": "Birch", "n": 4}], headers=[_DANGEROUS, "to", "n"],
+    )
     assert "<b>" not in out
-    assert "&lt;b&gt;" in out
+    # header text, cell text: 2 sites
+    assert out.count("&lt;b&gt;") == 2
 
 
-def test_small_multiples_escapes_group_titles():
-    out = render.small_multiples({_DANGEROUS: [{"wk": "2026-01-05", "n": 3}]}, x="wk", y="n")
+def test_small_multiples_escapes_every_interpolated_field():
+    out = render.small_multiples({_DANGEROUS: [{_DANGEROUS: "w1", "n": 3}]}, x=_DANGEROUS, y="n")
     assert "<b>" not in out
-    assert "&lt;b&gt;" in out
+    # facet title, chart title (the x column name): 2 sites
+    assert out.count("&lt;b&gt;") == 2
+
+
+def test_every_svg_chart_has_role_title_and_viewbox_scaling():
+    """role="img" plus a leading <title> gives the chart its accessible
+    name; preserveAspectRatio is what lets it scale down instead of
+    cropping in a narrow window. Checked across every primitive that
+    returns an <svg>, not just one."""
+    samples = [
+        render.bars([{"label": "a", "n": 1}], labels="label", series=["n"]),
+        render.lines([{"wk": "2026-01-05", "n": 1}], x="wk", series=["n"]),
+        render.stacked(
+            [{"wk": "2026-01-05", "status": "Done", "n": 1}], x="wk", band="status", value="n",
+        ),
+        render.scatter([{"x": 1, "y": 2}], x="x", y="y"),
+        render.small_multiples({"g": [{"wk": "2026-01-05", "n": 1}]}, x="wk", y="n"),
+    ]
+    for out in samples:
+        assert 'role="img"' in out
+        assert "preserveAspectRatio" in out
+        after_open = out.split(">", 1)[1]
+        assert after_open.startswith("<title>")
+
+
+def test_bars_bar_height_is_proportional_to_value_not_fixed():
+    """The brief's own test is named ..._and_scales_to_the_maximum but only
+    counts rects; a primitive that drew every bar at a fixed height would
+    still pass it."""
+    out = render.bars(
+        [{"label": "a", "n": 2}, {"label": "b", "n": 4}], labels="label", series=["n"],
+    )
+    heights = sorted(float(h) for h in re.findall(r'height="([\d.]+)"', out))
+    assert heights[0] > 0
+    assert heights[1] > heights[0] * 1.5  # value doubles; height must not be flat
+
+
+def test_bars_grow_from_zero_even_when_values_are_all_far_from_it():
+    """Without the zero floor, a domain of [100, 102] leaves sy(0) (the
+    baseline every bar measures from) extrapolating far outside that
+    domain instead of landing on the true baseline, so a bar wildly
+    overflows the chart's own viewBox rather than merely looking flat."""
+    rows = [{"label": "a", "n": 100}, {"label": "b", "n": 102}]
+    out = render.bars(rows, labels="label", series=["n"])
+    vb_h = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', out).group(1))
+    heights = []
+    rect_re = r'<rect x="[\d.]+" y="(-?[\d.]+)" width="[\d.]+" height="([\d.]+)"'
+    for y, h in re.findall(rect_re, out):
+        y, h = float(y), float(h)
+        assert y >= -1
+        assert y + h <= vb_h + 1
+        heights.append(h)
+    assert min(heights) > 0.8 * max(heights)
+
+
+def test_stacked_colours_bands_by_first_seen_order():
+    """A reversed (or otherwise reordered) colour assignment would still
+    produce 3 distinctly-coloured rects; only checking which colour landed
+    on which band's title catches it."""
+    rows = [
+        {"wk": "w1", "status": "A", "n": 1},
+        {"wk": "w1", "status": "B", "n": 2},
+        {"wk": "w1", "status": "C", "n": 3},
+    ]
+    out = render.stacked(rows, x="wk", band="status", value="n")
+    assert 'fill="var(--s1)"><title>A:' in out
+    assert 'fill="var(--s2)"><title>B:' in out
+    assert 'fill="var(--s3)"><title>C:' in out
+
+
+def test_stacked_segments_within_one_bar_have_a_surface_gap():
+    """The mark spec requires the same 2px surface gap between touching
+    stacked segments as between adjacent bars; segments that share an
+    edge with no gap fail it even though the count and colours are right."""
+    rows = [{"wk": "w1", "status": "A", "n": 10}, {"wk": "w1", "status": "B", "n": 10}]
+    out = render.stacked(rows, x="wk", band="status", value="n")
+    tops = [float(y) for y in re.findall(r'<rect x="[\d.]+" y="([\d.]+)"', out)]
+    heights = [float(h) for h in re.findall(r'height="([\d.]+)"', out)]
+    # segment A (drawn first, lower in the stack) sits below segment B
+    # (drawn second, higher up); B's bottom edge (y + height) must clear
+    # A's top edge (y) by a visible margin, not touch it exactly.
+    a_top, b_top = tops
+    a_height, b_height = heights
+    assert a_top - (b_top + b_height) >= 1.5
+
+
+def test_lines_labels_each_series_endpoint_with_its_value():
+    """dataviz relief rule: a contrast WARN on a categorical slot requires
+    visible direct labels or the table view. A line chart with no endpoint
+    labels leaves 3+ series unreadable on a low-contrast slot."""
+    out = render.lines([{"wk": "2026-01-05", "n": 42}], x="wk", series=["n"])
+    # class="value-label", not the axis tick (class="tick"), which can
+    # coincidentally show the same number when it's also the domain max
+    assert 'class="value-label">42</text>' in out
+
+
+def test_stacked_labels_each_bars_total():
+    """Same relief rule as lines, but a stacked segment has no free end to
+    label (an interior segment's own value belongs in the tooltip/legend),
+    so the bar's total is what gets the direct label instead."""
+    rows = [{"wk": "w1", "status": "A", "n": 3}, {"wk": "w1", "status": "B", "n": 4}]
+    out = render.stacked(rows, x="wk", band="status", value="n")
+    # class="value-label", not the axis tick, which can coincidentally show
+    # the same number (7 = 3 + 4) when it's also the domain max
+    assert 'class="value-label" text-anchor="middle">7</text>' in out
+
+
+def test_table_shading_is_proportional_not_uniform():
+    """A mutation that shades every cell at full strength still passes the
+    brief's single-row test (there's only one cell, and it is the max)."""
+    out = render.table(
+        [{"from": "A", "to": "B", "n": 2}, {"from": "C", "to": "D", "n": 4}],
+        headers=["from", "to", "n"], shade="n",
+    )
+    assert 'fill-opacity="1.00"' in out
+    assert 'fill-opacity="0.50"' in out
+
+
+def test_scatter_guide_line_uses_a_theme_variable_not_a_hardcoded_hex():
+    """A hard-coded light-mode hex on the guide line would be the one mark
+    in the whole module that doesn't switch with the theme, and in dark
+    mode it would outshout the data it's meant to annotate."""
+    out = render.scatter([{"x": 1, "y": 2}], x="x", y="y", guides=[("p50", 1.5)])
+    assert 'stroke="var(--baseline)"' in out
+    assert "#c3c2b7" not in out
+
+
+def test_legend_wraps_instead_of_running_past_the_viewbox():
+    """Six realistic status names used to put the last legend entry past
+    x=480 in a 480-wide viewBox, cropped with no indication anything was
+    missing; worst for `stacked`, whose bands have no other identity
+    channel."""
+    statuses = ["To Do", "In Progress", "Waiting for review", "In Review", "Blocked", "Done"]
+    rows = [{"wk": "2026-01-05", **{s: 1 for s in statuses}}]
+    out = render.lines(rows, x="wk", series=statuses)
+    xs = [float(m) for m in re.findall(r'<text x="([\d.]+)" y="[\d.]+" class="legend-label"', out)]
+    assert xs
+    assert max(xs) < 480  # never past the viewBox width
+    ys = {float(m) for m in re.findall(r'<text x="[\d.]+" y="([\d.]+)" class="legend-label"', out)}
+    assert len(ys) > 1  # wrapped onto more than one row
+
+
+def test_small_multiples_shares_one_y_scale_across_facets():
+    """Each facet auto-scaling to its own max independently is exactly how
+    small multiples mislead; the same value in two facets with different
+    maxima must land at the same pixel height."""
+    facets = {
+        "low-max": [{"wk": "w1", "n": 2}],
+        "high-max": [{"wk": "w1", "n": 2}, {"wk": "w2", "n": 20}],
+    }
+    out = render.small_multiples(facets, x="wk", y="n")
+    groups = re.findall(r'<g transform="translate\([\d.]+,[\d.]+\)">(.*?)</g>', out, re.DOTALL)
+    ys = set()
+    for body in groups:
+        # first point of the facet: a path start (2+ points), an isolated-
+        # point dot (r=2), or the end-marker (r=3) when that's the only point
+        m = re.search(
+            r'(?:<path d="M[\d.]+,([\d.]+))|(?:<circle cx="[\d.]+" cy="([\d.]+)" r="[23]")', body,
+        )
+        ys.add(m.group(1) or m.group(2))
+    assert len(ys) == 1  # the n=2 point renders at the same y in both facets
+
+
+def test_small_multiples_shares_one_x_domain_and_breaks_at_gaps():
+    """An independent x per facet puts a different category under "column 1"
+    in every panel (Task 13 facets by person and week; a person with no
+    output some week has no row for it), so the shared y-scale buys nothing.
+    A silent joining line across the gap would also read a real gap as
+    steady output."""
+    facets = {
+        "sparse": [{"wk": "w1", "n": 1}, {"wk": "w3", "n": 3}],  # w2 missing
+        "full": [{"wk": "w1", "n": 1}, {"wk": "w2", "n": 2}, {"wk": "w3", "n": 3}],
+    }
+    out = render.small_multiples(facets, x="wk", y="n")
+    # only the facet with no gap draws a connected path across all 3 points
+    assert out.count("<path") == 1
+    paths = re.findall(r'<path d="([^"]+)"', out)
+    assert paths[0].count("L") == 2  # 3 points, 2 line segments, in the full facet
+
+
+def test_bars_accepts_decimal_values_like_a_float():
+    """DuckDB returns decimal.Decimal from ROUND()/SUM() over a decimal
+    column; an earlier version of this module raised TypeError here."""
+    rows = [{"label": "a", "n": decimal.Decimal("2")}, {"label": "b", "n": decimal.Decimal("4")}]
+    out = render.bars(rows, labels="label", series=["n"])
+    assert out.count("<rect") == 2
+    heights = [float(h) for h in re.findall(r'height="([\d.]+)"', out)]
+    assert max(heights) > min(heights) * 1.5
+
+
+def test_lines_accepts_decimal_values_like_a_float():
+    """An earlier version silently dropped every point for a Decimal
+    series, rendering axes and a title but zero paths and zero circles,
+    which looks like an empty chart rather than a bug."""
+    rows = [
+        {"wk": "2026-01-05", "n": decimal.Decimal("3")},
+        {"wk": "2026-01-12", "n": decimal.Decimal("5")},
+    ]
+    out = render.lines(rows, x="wk", series=["n"])
+    assert "<path" in out
+    assert "<circle" in out
+
+
+def test_stacked_accepts_decimal_values_like_a_float():
+    rows = [{"wk": "2026-01-05", "status": "Done", "n": decimal.Decimal("3")}]
+    out = render.stacked(rows, x="wk", band="status", value="n")
+    assert out.count("<rect") == 1
+
+
+def test_scatter_accepts_decimal_values_like_a_float():
+    """An earlier version's numeric-x check rejected Decimal, silently
+    falling back to a categorical axis (one tick per distinct value)
+    instead of the continuous scale (5 ticks from the default tick
+    count), which draws real correlation data as evenly-spaced labels."""
+    rows = [{"x": decimal.Decimal("1"), "y": decimal.Decimal("2")},
+            {"x": decimal.Decimal("2"), "y": decimal.Decimal("8")}]
+    out = render.scatter(rows, x="x", y="y")
+    assert out.count("<circle") == 2
+    assert out.count('class="tick" text-anchor="middle"') == 5
+
+
+def test_table_shading_accepts_decimal_values_like_a_float():
+    rows = [{"from": "A", "to": "B", "n": decimal.Decimal("2")},
+            {"from": "C", "to": "D", "n": decimal.Decimal("4")}]
+    out = render.table(rows, headers=["from", "to", "n"], shade="n")
+    assert 'fill-opacity="1.00"' in out
+    assert 'fill-opacity="0.50"' in out
+
+
+def test_small_multiples_accepts_decimal_values_like_a_float():
+    out = render.small_multiples(
+        {"g": [{"wk": "2026-01-05", "n": decimal.Decimal("3")}]}, x="wk", y="n",
+    )
+    assert "<path" in out or "<circle" in out
 
 
 def test_bars_empty_data_renders_a_note():
