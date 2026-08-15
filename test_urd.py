@@ -163,70 +163,80 @@ def test_derive_reports_unknown_statuses_to_output():
 
 
 def test_main_wiring_honors_derive_arguments():
-    """main() must pass derive arguments through and respect config precedence."""
+    """main() must pass derive arguments through and respect precedence over stored values."""
     db = _tmpdb()
     con = urd.open_db(db)
     load_fixtures(con, "reopened")
     con.close()
 
-    # Call main with explicit derive arguments that differ from fixtures
+    # Call main with explicit arguments that differ from fixtures
+    # Fixtures store: "To Do,In Progress,Review,Done" with start_status="In Progress"
+    # We pass: "To Do,Review,Done,In Progress" (reordered) with start_status="Done"
     result = urd.main(
         [
             "--db", db, "derive",
-            "--status-order", "To Do,In Progress,Review,Done",
-            "--start-status", "Review",
-            "--review-status", "Done"
+            "--status-order", "To Do,Review,Done,In Progress",
+            "--start-status", "Done",
+            "--review-status", "Review"
         ]
     )
     assert result == 0, "main() derive should return 0 on success"
 
-    # Verify the config was saved with the provided values
+    # Verify the config was saved with the provided values, not the fixtures' values
     con = urd.open_db(db)
     scope = urd.load_scope(con)
-    assert scope["status_order"] == "To Do,In Progress,Review,Done", (
-        f"Expected explicit status_order, got {scope['status_order']}"
+    assert scope["status_order"] == "To Do,Review,Done,In Progress", (
+        f"--status-order flag should override fixtures; got {scope['status_order']}"
     )
-    assert scope["start_status"] == "Review", (
-        f"Expected explicit start_status, got {scope['start_status']}"
+    assert scope["start_status"] == "Done", (
+        f"--start-status flag should override fixtures; got {scope['start_status']}"
     )
-    assert scope["review_status"] == "Done", (
-        f"Expected explicit review_status, got {scope['review_status']}"
+    assert scope["review_status"] == "Review", (
+        f"--review-status flag should override fixtures; got {scope['review_status']}"
     )
     con.close()
 
 
 def test_main_derive_uses_stored_config_when_no_arguments():
-    """main() must use stored config when no derive flags are given."""
+    """main() must use stored config when no derive flags are given, and must actually run."""
     db = _tmpdb()
     con = urd.open_db(db)
     load_fixtures(con, "reopened")
     con.close()
 
-    # First call with explicit config that differs from fixtures
+    # First call: set a specific config that differs from fixtures
+    # Fixtures store: status_order="To Do,In Progress,Review,Done" with start_status="In Progress"
+    # We set: status_order="To Do,Done,Review,In Progress" with start_status="Done"
     urd.main(
         [
             "--db", db, "derive",
-            "--status-order", "To Do,In Progress,Review,Done",
-            "--start-status", "Review",
-            "--review-status", "In Progress"
+            "--status-order", "To Do,Done,Review,In Progress",
+            "--start-status", "Done",
+            "--review-status", "Done"
         ]
     )
 
-    # Second call with no flags should reuse stored config exactly
+    # Second call with no flags should reuse stored config
     result = urd.main(["--db", db, "derive"])
     assert result == 0, "main() derive should succeed with stored config"
 
-    # Verify the config remained unchanged (was not reset to fixtures' values)
+    # Verify derive actually ran and used the stored config by checking derived table counts
     con = urd.open_db(db)
+    issues_count = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    assert issues_count > 0, "derive should have populated issues table"
+    changes_count = con.execute("SELECT count(*) FROM changes").fetchone()[0]
+    assert changes_count > 0, "derive should have populated changes table"
+
+    # Verify the config remained unchanged (not reset by second call)
     scope = urd.load_scope(con)
-    assert scope["status_order"] == "To Do,In Progress,Review,Done", (
-        f"Expected stored status_order, got {scope['status_order']}"
+    assert scope["status_order"] == "To Do,Done,Review,In Progress", (
+        f"Stored status_order should persist; got {scope['status_order']}"
     )
-    assert scope["start_status"] == "Review", (
-        f"Expected stored start_status, got {scope['start_status']}"
+    assert scope["start_status"] == "Done", (
+        f"Stored start_status should persist; got {scope['start_status']}"
     )
-    assert scope["review_status"] == "In Progress", (
-        f"Expected stored review_status, got {scope['review_status']}"
+    assert scope["review_status"] == "Done", (
+        f"Stored review_status should persist; got {scope['review_status']}"
     )
     con.close()
 
@@ -255,15 +265,22 @@ def test_metric_views_have_correct_timestamp_types():
 
 
 def test_no_bare_sql_now_anywhere():
-    """DuckDB's now() is TIMESTAMPTZ. A per-column type check only sees columns a view exposes,
-    so a now() inside a COALESCE fallback or a WHERE filter is invisible to it. Pin the source:
-    every SQL now() must carry AT TIME ZONE 'UTC' to be naive UTC."""
+    """DuckDB's now() is TIMESTAMPTZ. A per-line check cannot catch now() inside a COALESCE
+    fallback or WHERE filter on the same line. Pin the source per occurrence: every bare now()
+    or current_timestamp in urd.py must carry AT TIME ZONE 'UTC'."""
+    import re
     source = (pathlib.Path(__file__).parent / "urd.py").read_text()
-    bare = [
-        ln for ln in source.splitlines()
-        if "now()" in ln and "AT TIME ZONE 'UTC'" not in ln and "_now()" not in ln
-    ]
-    assert bare == [], f"Found bare now() without AT TIME ZONE 'UTC': {bare}"
+    # Find all bare now() or current_timestamp calls without AT TIME ZONE 'UTC'
+    # Must match: now(), current_timestamp (optionally with parens)
+    # Must NOT match: _now(), "AT TIME ZONE 'UTC'"
+    bare = re.findall(
+        r"(?:(?<!_)now\(\)|current_timestamp(?:\(\))?)"
+        r"(?!.*AT TIME ZONE 'UTC')",
+        source
+    )
+    assert bare == [], (
+        f"Found bare now()/current_timestamp without AT TIME ZONE 'UTC': {bare}"
+    )
 
 
 def test_derive_rejects_duplicate_statuses():
@@ -298,6 +315,84 @@ def test_derive_rejects_empty_statuses():
     # Verify the bad config was NOT persisted - config unchanged
     scope = urd.load_scope(con)
     assert scope["status_order"] == original_order, "Bad config should not overwrite saved config"
+
+
+def test_closures_author_id_has_values():
+    """closures.author_id must have values, not be droppable. Task 9 consumes it."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    author_ids = con.execute("SELECT DISTINCT author_id FROM closures").fetchall()
+    assert len(author_ids) > 0, "closures.author_id should contain author IDs"
+    assert author_ids[0][0] is not None, "closures.author_id should not be all NULL"
+
+
+def test_rework_author_id_has_values():
+    """rework.author_id must have values, not be droppable. Task 9 consumes it."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    author_ids = con.execute("SELECT DISTINCT author_id FROM rework").fetchall()
+    assert len(author_ids) > 0, "rework.author_id should contain author IDs"
+    assert author_ids[0][0] is not None, "rework.author_id should not be all NULL"
+
+
+def test_cycle_times_resolved_has_values():
+    """cycle_times.resolved must have values, not be droppable. Task 9 consumes it."""
+    con = _derived("reopened")
+    resolved = con.execute("SELECT DISTINCT resolved FROM cycle_times").fetchall()
+    assert len(resolved) > 0, "cycle_times.resolved should contain timestamps"
+    assert resolved[0][0] is not None, "cycle_times.resolved should not be all NULL"
+
+
+def test_closures_ts_values_are_real_timestamps():
+    """closures.ts values must be real transition timestamps, not constants."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    ts_values = con.execute("SELECT DISTINCT ts FROM closures ORDER BY ts").fetchall()
+    assert len(ts_values) >= 2, "Should have multiple distinct timestamps"
+    # Timestamps should span a range, not all be identical
+    min_ts, max_ts = ts_values[0][0], ts_values[-1][0]
+    assert min_ts != max_ts, "closures.ts should have varying values, not a constant"
+
+
+def test_rework_ts_values_are_real_timestamps():
+    """rework.ts values must be real transition timestamps, not constants."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    ts_values = con.execute("SELECT DISTINCT ts FROM rework ORDER BY ts").fetchall()
+    assert len(ts_values) >= 1, "rework should have timestamps"
+    if len(ts_values) >= 2:
+        # If multiple values, they should vary
+        min_ts, max_ts = ts_values[0][0], ts_values[-1][0]
+        assert min_ts != max_ts, "rework.ts should vary when multiple transitions exist"
+
+
+def test_derive_without_required_arguments_raises():
+    """derive must validate both status_order and start_status before running."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+
+    try:
+        urd.derive(con, "", "In Progress", "Review")
+        raise AssertionError("Expected SystemExit for missing status_order")
+    except SystemExit as e:
+        assert "status-order" in str(e) or "start-status" in str(e).lower()
+
+    try:
+        urd.derive(con, "To Do,In Progress,Done", "", "Review")
+        raise AssertionError("Expected SystemExit for missing start_status")
+    except SystemExit as e:
+        assert "start-status" in str(e).lower()
+
+
+def test_status_list_whitespace_is_stripped():
+    """Status names in --status-order must be stripped of whitespace."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+
+    urd.derive(con, "  To Do  , In Progress , Done ", "In Progress", "Done")
+    # Verify the statuses were inserted with whitespace stripped
+    statuses = set(r[0] for r in con.execute(
+        "SELECT status FROM status_order"
+    ).fetchall())
+    assert statuses == {"To Do", "In Progress", "Done"}, (
+        f"Whitespace should be stripped; got {statuses}"
+    )
 
 
 def test_token_prefers_the_environment_over_the_keychain():

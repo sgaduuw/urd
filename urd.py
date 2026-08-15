@@ -560,8 +560,9 @@ CREATE OR REPLACE VIEW rework AS
 -- A status not in status_order is excluded from rework entirely. The INNER JOINs enforce
 -- that: a transition is rework only if both endpoints have known positions and the target
 -- position is less (earlier in the workflow). A transition with any unknown endpoint is
--- dropped by the join and never considered. Upgrade path: infer position from observed
--- transition frequency to handle partially configured workflows.
+-- dropped by the join and never considered.
+-- ponytail: infer position from observed transition frequency to handle partially
+-- configured workflows.
 SELECT t.key, t.ts, t.from_status, t.to_status, t.author_id
 FROM transitions t
 INNER JOIN status_order sf ON sf.status = t.from_status
@@ -571,10 +572,21 @@ WHERE st.pos < sf.pos;
 
 
 def derive(con, status_order, start_status, review_status):
-    """Build metric views from raw_issues. Only cycle_times is late-bound to sync_state; it
-    reads start_status at query time so configuration changes reflect without re-derive. rework
-    and closures read the status_order and statuses tables that derive rebuilds, so they change
-    only on re-derive."""
+    """Rebuild every derived table and view from raw_issues.
+
+    Offline and idempotent: this reads only what sync already fetched, so a
+    changed metric definition costs a derive run rather than a refetch.
+
+    The three metric views bind to their inputs at different times, which
+    decides when a number can move under you:
+
+      cycle_times reads sync_state directly, so it reflects a changed
+        --start-status immediately, with no re-derive.
+      rework reads the status_order table, which this function rebuilds, so it
+        changes only when derive runs again.
+      closures reads the statuses table, which sync rebuilds (not derive), so a
+        status recategorised in Jira changes it on the next sync.
+    """
     if not status_order or not start_status:
         raise SystemExit(
             "derive needs --status-order and --start-status on the first run, for example:\n"
