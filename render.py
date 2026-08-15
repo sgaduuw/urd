@@ -170,15 +170,25 @@ def esc(text):
     routinely contain &, <, >, and quotes. Every primitive here runs every
     interpolated string through this before it lands in markup; skipping it
     for even one field turns a chart into a broken XML document rather than
-    a slightly wrong one. Also the single place a raw non-finite float
-    (nan/inf, which `_num` treats as missing everywhere chart math happens,
-    but which can still reach *display* text directly, e.g. a table cell
-    that isn't the shaded column) gets caught before `str()` would print
-    the literal word "nan" or "inf" into a document meant to hold ticket
-    data, not float internals.
+    a slightly wrong one. Also the single place a non-finite number (nan/
+    inf, or decimal.Decimal("NaN")/("Infinity")) is caught before str()
+    would print it as literal float/Decimal internals into a document
+    meant to hold ticket data. Routed through `_num` itself rather than a
+    second, narrower float-only check, so this agrees with every other
+    numeric decision in the module (a float-only guard would still let
+    esc(decimal.Decimal("NaN")) print "NaN", since Decimal isn't a float).
+    Renders as "" (the module's existing no-value convention, the same
+    `"" if v is None else v` used in `bars`/`stacked`/`table`/etc.), not a
+    fake "0": a displayed zero must mean a measured zero. `_fmt_num`'s own
+    "0" for this same case is safe only because every caller of `_fmt_num`
+    has already filtered non-finite values out via `_num` first; that
+    isn't true of every path into `esc`, e.g. a table cell that isn't the
+    shaded column, so carrying that convention here would swap a visibly
+    wrong value for an invisibly wrong one.
     """
-    if isinstance(text, float) and not math.isfinite(text):
-        text = "0"
+    is_number = isinstance(text, (int, float, decimal.Decimal)) and not isinstance(text, bool)
+    if is_number and _num(text) is None:  # non-finite; _num already excludes bool itself
+        text = ""
     return html.escape(str(text), quote=True)
 
 
@@ -268,7 +278,9 @@ def _nice_ticks(lo, hi, count=4):
 # high-contrast slot (whose line and dot are already legible) loses its own
 # first. Not used for anything else; these three are exactly as identifiable
 # by colour as every other slot, just harder to read as *text* on this
-# specific light surface.
+# specific light surface. No dark-mode counterpart: this is deliberate, not
+# an omission, since all 8 dark slots clear 3:1 against the dark surface
+# (see palette.md), so there is no dark WARN set to add.
 _WARN_SLOTS = {2, 3, 4}
 
 
@@ -285,26 +297,48 @@ def _slot(index):
     return f"var(--s{index % len(PALETTE) + 1})"
 
 
-def _y_gridlines(values, left, right, top, bottom, plot_h, zero_floor):
-    """Shared y-axis: hairline gridlines, tick labels, and the sy scale.
-
-    Used by `axes` (for line/scatter charts) and directly by the categorical
-    band charts (bars, stacked), which lay out x differently but need the
-    same honest y-scale. A zero-width domain, be that a single value or
-    every value equal, is widened symmetrically around that value so sy
-    never divides by zero and a flat series doesn't render pinned to the
-    baseline.
+def _y_domain(values, zero_floor):
+    """(y_lo, y_hi) for a y-scale: the data's own range, widened to include
+    zero when the caller needs a true baseline (bars/stacked bars must grow
+    from zero or their length stops being an honest read of magnitude, even
+    when every value is positive), and never zero-width (a single value, or
+    every value equal, is widened symmetrically around it so a scale built
+    from this domain never divides by zero).
     """
     y_lo = min(values) if values else 0
     y_hi = max(values) if values else 1
     if zero_floor:
-        # Bars/stacked bars must grow from zero or their length stops being
-        # an honest read of magnitude, even when every value is positive.
         y_lo = min(y_lo, 0)
         y_hi = max(y_hi, 0)
     if y_hi == y_lo:
         y_lo -= 0.5
         y_hi += 0.5
+    return y_lo, y_hi
+
+
+def _y_tick_pad(values, zero_floor):
+    """Left margin (px) wide enough for every y-axis tick label this domain
+    will render. The default 46px comfortably fits a couple of digits; a
+    genuinely large count (a 7-digit value) needs more than that, or its
+    right-aligned label runs past the chart's own left edge. Same rough
+    per-character estimate `_legend` uses for the same reason (no renderer
+    available offline to measure real text width).
+    """
+    y_lo, y_hi = _y_domain(values, zero_floor)
+    widest = max((len(_fmt_num(t)) for t in _nice_ticks(y_lo, y_hi)), default=1)
+    return max(46, 6 + 7 * widest)
+
+
+def _y_gridlines(values, left, right, top, bottom, plot_h, zero_floor):
+    """Shared y-axis: hairline gridlines, tick labels, and the sy scale.
+
+    Used by `axes` (for line/scatter charts) and directly by the categorical
+    band charts (bars, stacked), which lay out x differently but need the
+    same honest y-scale. `left` is expected to already come from
+    `_y_tick_pad` (or be at least as wide), so the tick labels drawn here
+    stay inside the chart rather than running off its left edge.
+    """
+    y_lo, y_hi = _y_domain(values, zero_floor)
     y_span = y_hi - y_lo
 
     def sy(v, _lo=y_lo, _span=y_span):
@@ -339,18 +373,28 @@ def axes(rows, x, y, width, height, zero_floor=False):
     widens a zero-width domain so it never divides by zero (see
     `_y_gridlines` for the y side).
     """
-    pad_l, pad_r, pad_t, pad_b = 46, 14, 12, 26
-    plot_w = max(width - pad_l - pad_r, 1)
-    plot_h = max(height - pad_t - pad_b, 1)
-    left, right = pad_l, pad_l + plot_w
-    top, bottom = pad_t, pad_t + plot_h
+    pad_r, pad_t, pad_b = 14, 12, 26
 
     if not rows:
+        pad_l = 46
+        plot_w = max(width - pad_l - pad_r, 1)
+        plot_h = max(height - pad_t - pad_b, 1)
+        left, bottom = pad_l, pad_t + plot_h
         return "", (lambda v: left), (lambda v: bottom)
 
     y_cols = y if isinstance(y, (list, tuple)) else [y]
     xs = [r.get(x) for r in rows if r.get(x) is not None]
     ys = [n for r in rows for c in y_cols for n in (_num(r.get(c)),) if n is not None]
+
+    # Computed from the actual y-values before the plot's own width is
+    # finalised: a wide tick label (a 7-digit count) needs more left
+    # margin than the 46px default, or its right-aligned text runs past
+    # the chart's own left edge.
+    pad_l = _y_tick_pad(ys, zero_floor)
+    plot_w = max(width - pad_l - pad_r, 1)
+    plot_h = max(height - pad_t - pad_b, 1)
+    left, right = pad_l, pad_l + plot_w
+    top, bottom = pad_t, pad_t + plot_h
 
     y_markup, sy = _y_gridlines(ys, left, right, top, bottom, plot_h, zero_floor)
 
@@ -387,9 +431,22 @@ def axes(rows, x, y, width, height, zero_floor=False):
         # type esc() needs to see to catch it.
         tick_items = [(sx(c), c) for c in cats]
 
-    for xp, label in tick_items:
+    # A centred label on the first/last tick is centred *on the plot's own
+    # edge*, so half of it always runs past the viewBox: an ISO week label
+    # on the most ordinary `lines` chart already does this on the right,
+    # and the same happens on the left. Anchor those two away from the
+    # edge instead (same principle as the endpoint-label fix in `lines`);
+    # interior ticks keep "middle" since they have room on both sides.
+    n_ticks = len(tick_items)
+    for idx, (xp, label) in enumerate(tick_items):
+        if n_ticks > 1 and idx == 0:
+            anchor = "start"
+        elif n_ticks > 1 and idx == n_ticks - 1:
+            anchor = "end"
+        else:
+            anchor = "middle"
         parts.append(
-            f'<text x="{xp:.1f}" y="{bottom + 16}" class="tick" text-anchor="middle">'
+            f'<text x="{xp:.1f}" y="{bottom + 16}" class="tick" text-anchor="{anchor}">'
             f"{esc(label)}</text>"
         )
 
@@ -468,12 +525,12 @@ def bars(rows, labels, series):
     width = 480
     legend, legend_h = _legend(series, base_h + 4, width) if len(series) > 1 else ("", 0)
     height = base_h + legend_h
-    pad_l, pad_r, pad_t, pad_b = 46, 14, 12, 26
+    values = [n for row in rows for s in series for n in (_num(row.get(s)),) if n is not None]
+    pad_l, pad_r, pad_t, pad_b = _y_tick_pad(values, zero_floor=True), 14, 12, 26
     plot_w = max(width - pad_l - pad_r, 1)
     plot_h = max(base_h - pad_t - pad_b, 1)
     left, bottom = pad_l, pad_t + plot_h
 
-    values = [n for row in rows for s in series for n in (_num(row.get(s)),) if n is not None]
     y_markup, sy = _y_gridlines(values, left, left + plot_w, pad_t, bottom, plot_h, zero_floor=True)
 
     n = len(rows)
@@ -647,7 +704,7 @@ def stacked(rows, x, band, value):
     width = 480
     legend, legend_h = _legend(band_order, base_h + 4, width) if len(band_order) > 1 else ("", 0)
     height = base_h + legend_h
-    pad_l, pad_r, pad_t, pad_b = 46, 14, 12, 26
+    pad_l, pad_r, pad_t, pad_b = _y_tick_pad([0, v_max], zero_floor=True), 14, 12, 26
     plot_w = max(width - pad_l - pad_r, 1)
     plot_h = max(base_h - pad_t - pad_b, 1)
     left, bottom = pad_l, pad_t + plot_h
@@ -671,9 +728,10 @@ def stacked(rows, x, band, value):
         running = 0
         # Pixel y of the next segment's bottom edge, tracked sequentially
         # rather than computed independently per segment from `running`:
-        # every segment starts exactly where the previous one's rendered
-        # top ended, so a floor-inflated segment can never end up sharing
-        # pixels with (occluding, or being occluded by) its neighbour.
+        # every segment starts exactly where the previous one's *natural*
+        # slot ended (see `advance` below), so a floor-inflated segment can
+        # never end up sharing pixels with (occluding, or being occluded
+        # by) its neighbour.
         cursor = bottom
         segs = {r.get(band): (_num(r.get(value)) or 0) for r in by_x[xv]}
         seg_idx = 0
@@ -682,18 +740,29 @@ def stacked(rows, x, band, value):
             if v <= 0:
                 continue
             nat_h = sy(0) - sy(v)  # this segment's own height; independent of position
-            seg_bottom = cursor
-            # Only spend the inter-segment gap if the segment survives it:
-            # a small band (5 out of a 1000+5+200 stack) can be smaller than
-            # the 2px gap itself, and inserting it unconditionally rendered
-            # that band at 0.0 height, present only as an invisible rect
-            # with a tooltip. Skipping the gap there (the segment still
-            # gets its surface-colour ring from the tooltip hover, just not
-            # this static separator) keeps every positive value visible.
-            if seg_idx > 0 and nat_h - gap >= 1:
-                seg_bottom -= gap
-            seg_h = max(nat_h, 1)  # floor: a value that reaches the plot earns >= 1px
-            seg_top = seg_bottom - seg_h
+            # `advance` is what the stack actually grows by for this
+            # segment: its natural height, or 1px if that's too small to
+            # see (the floor). The gap is spent *inside* that budget, by
+            # shrinking what's painted, never bolted on top of it: an
+            # earlier version subtracted the gap from where the segment
+            # started while still painting its full natural height, so
+            # every gap after the first widened the whole stack by 2px,
+            # and a five-band chart pushed its total label above the
+            # viewBox entirely. Only spend the gap if the segment survives
+            # it: a small band (5 out of a 1000+5+200 stack) can be
+            # smaller than the 2px gap itself, and spending it
+            # unconditionally rendered that band at 0.0 height.
+            apply_gap = seg_idx > 0 and nat_h - gap >= 1
+            advance = max(nat_h, 1)
+            # The segment's top is always exactly `advance` above the
+            # cursor (matching where the next segment's bottom will be,
+            # gap or no gap): the gap is spent by pulling only the
+            # *bottom* up toward the top, never by moving the top, which
+            # is what keeps the cursor's total travel equal to the sum of
+            # `advance` and nothing else.
+            seg_top = cursor - advance
+            seg_bottom = cursor - gap if apply_gap else cursor
+            seg_h = seg_bottom - seg_top
             parts.append(
                 f'<rect x="{band_x:.1f}" y="{seg_top:.1f}" width="{bar_w:.1f}" '
                 f'height="{seg_h:.1f}" fill="{color_of[b]}">'

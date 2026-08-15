@@ -1991,10 +1991,38 @@ def test_esc_never_prints_the_literal_word_nan_or_inf():
     directly (a table cell that isn't the shaded column, or a category
     value _num rejects and axes() then treats as a plain label). esc()
     is the one place every such value is stringified, so it's the one
-    place this has to be caught."""
-    assert render.esc(float("nan")) == "0"
-    assert render.esc(float("inf")) == "0"
-    assert render.esc(float("-inf")) == "0"
+    place this has to be caught. Renders as "" (this module's existing
+    no-value convention), not "0": a displayed zero must be indistinguishable
+    from a *measured* zero, which a non-finite value is not."""
+    assert render.esc(float("nan")) == ""
+    assert render.esc(float("inf")) == ""
+    assert render.esc(float("-inf")) == ""
+
+
+def test_esc_non_finite_guard_covers_decimal_too():
+    """esc() originally guarded isinstance(text, float) only; _num accepts
+    decimal.Decimal as a first-class number (DuckDB returns it for ROUND()/
+    SUM() over a decimal column), so esc(decimal.Decimal("NaN")) printed
+    the literal "NaN" and Decimal("Infinity") printed "Infinity", the same
+    module-disagrees-with-itself defect closed for _num/bars/lines/scatter
+    in an earlier round, just relocated to esc()'s own guard."""
+    assert render.esc(decimal.Decimal("NaN")) == ""
+    assert render.esc(decimal.Decimal("Infinity")) == ""
+    assert render.esc(decimal.Decimal("-Infinity")) == ""
+    assert render.esc(decimal.Decimal("3.5")) == "3.5"  # a finite Decimal still displays
+
+
+def test_esc_does_not_blank_a_real_boolean_or_zero():
+    """The non-finite guard must not over-fire: bool is a subclass of int,
+    and _num deliberately excludes it (a True/False column is categorical,
+    not a number) which means _num(True) is None too, indistinguishable
+    from a genuine non-finite value unless esc() excludes bool explicitly.
+    And a real 0 must still render as "0", not fall into the same bucket
+    as a non-finite value."""
+    assert render.esc(True) == "True"
+    assert render.esc(False) == "False"
+    assert render.esc(0) == "0"
+    assert render.esc(0.0) == "0.0"
 
 
 def test_bars_emits_one_rect_per_value_and_scales_to_the_maximum():
@@ -2324,35 +2352,134 @@ def test_stacked_viewbox_height_matches_the_chart_not_the_last_segment():
         assert vb_h == expected_h
 
 
-def test_every_primitive_keeps_marks_within_the_viewbox_height():
+def _assert_content_within_viewbox(out, label=""):
+    """Zero tolerance, both axes: every rect's edges (x, y, x+width,
+    y+height) must sit inside its own declared viewBox, and so must every
+    circle's (cx +/- r, cy +/- r) and line's (x1, y1, x2, y2). A raw
+    coordinate tolerance is exactly where this class of defect hides (an
+    earlier round's span invariant carried a 2-second tolerance that let
+    a whole-hour timezone error straight through it), so rects/circles/
+    lines are checked on their literal geometry, zero tolerance.
+
+    A <text> element's own x/y is its anchor point, not its rendered
+    extent: text-anchor="middle" centred exactly on a boundary (x=466 in
+    a 480 frame) is a coordinate inside [0, 480] even though the rendered
+    glyphs run well past it, so checking coordinates alone cannot see
+    this failure mode at all (the same species of mistake as an earlier
+    round's mirror-clip test, which checked an anchor coordinate instead
+    of the direction the text renders in). Text is instead checked by
+    estimated rendered extent on both axes: horizontally by the same
+    rough 7px/character this module's own `_legend`/`_y_tick_pad` use to
+    make the same decision, vertically by cap-height above the baseline.
+    """
+    vb_w, vb_h = (float(m) for m in re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', out).groups())
+    for x, w in re.findall(r'<rect[^>]*\bx="(-?[\d.]+)"[^>]*width="([\d.]+)"', out):
+        assert float(x) >= 0, f"{label}: rect x={x} < 0"
+        assert float(x) + float(w) <= vb_w + 0.01, f"{label}: rect right edge past {vb_w}"
+    for y, h in re.findall(r'<rect[^>]*\by="(-?[\d.]+)"[^>]*height="([\d.]+)"', out):
+        assert float(y) >= 0, f"{label}: rect y={y} < 0"
+        assert float(y) + float(h) <= vb_h + 0.01, f"{label}: rect bottom edge past {vb_h}"
+    for cx, cy, r in re.findall(r'<circle cx="(-?[\d.]+)" cy="(-?[\d.]+)" r="([\d.]+)"', out):
+        cx, cy, r = float(cx), float(cy), float(r)
+        assert cx - r >= 0, f"{label}: circle cx={cx} r={r} left edge < 0"
+        assert cx + r <= vb_w + 0.01, f"{label}: circle cx={cx} r={r} right edge past {vb_w}"
+        assert cy - r >= 0, f"{label}: circle cy={cy} r={r} top edge < 0"
+        assert cy + r <= vb_h + 0.01, f"{label}: circle cy={cy} r={r} bottom edge past {vb_h}"
+    for x1, y1, x2, y2 in re.findall(
+        r'<line x1="(-?[\d.]+)" y1="(-?[\d.]+)" x2="(-?[\d.]+)" y2="(-?[\d.]+)"', out
+    ):
+        for x in (x1, x2):
+            assert 0 <= float(x) <= vb_w + 0.01, f"{label}: line x={x} outside [0,{vb_w}]"
+        for y in (y1, y2):
+            assert 0 <= float(y) <= vb_h + 0.01, f"{label}: line y={y} outside [0,{vb_h}]"
+
+    for x, tag, content in re.findall(r'<text x="(-?[\d.]+)"([^>]*)>([^<]*)</text>', out):
+        m = re.search(r'text-anchor="(start|end|middle)"', tag)
+        anchor = m.group(1) if m else "start"  # SVG's own default when omitted (_legend's labels)
+        x = float(x)
+        est_w = 7 * len(content)
+        if anchor == "start":
+            left, right = x, x + est_w
+        elif anchor == "end":
+            left, right = x - est_w, x
+        else:
+            left, right = x - est_w / 2, x + est_w / 2
+        assert left >= -0.5, f"{label}: text {content!r} ({anchor}) left edge {left} < 0"
+        msg = f"{label}: text {content!r} ({anchor}) right edge {right} > {vb_w}"
+        assert right <= vb_w + 0.5, msg
+
+    # Text needs the same extent treatment vertically, and for the same
+    # reason: a baseline inside [0, vb_h] still renders its glyphs ~8px
+    # above itself (cap height of the 11px charts use), so a label whose
+    # baseline sits at y=6 has already lost its top 2px off the frame.
+    # Checking x extent alone caught the 5- and 6-band stacked regressions
+    # only because those *also* happened to shift a y tick past the left
+    # edge; at 2 bands the label clipped vertically and no assertion here
+    # could see it. Ascent, not the full font size: 11px digits are cap
+    # height, and using 11 would fail every correctly-placed top label.
+    for tag in re.findall(r"<text([^>]*)>", out):
+        ym = re.search(r'\by="(-?[\d.]+)"', tag)
+        if ym is None:
+            continue
+        baseline = float(ym.group(1))
+        # 0.5px is the error bar on the 8px ascent estimate, not slack in
+        # the property: rects/lines/circles above are exact geometry and
+        # stay at zero tolerance, while both text checks are estimates of
+        # rendered extent and carry the same 0.5. It is deliberately far
+        # below the failure this guards (5 bands clipped by 8px, 8 bands
+        # by 14px) and just above the sub-pixel overshoot the documented
+        # 1px band floor produces legitimately (a 0.8px band painted at
+        # 1px lifts the stack top, and its label, by 0.2px).
+        top = baseline - 8
+        assert top >= -0.5, f"{label}: text {baseline} puts glyph top at {top}, above the frame"
+        assert baseline <= vb_h + 0.5, f"{label}: text baseline {baseline} past {vb_h}"
+
+
+def test_every_primitive_keeps_marks_within_the_viewbox_zero_tolerance():
     """The frame (viewBox) and the content (marks, text) drifting apart is
     exactly how the stacked blocker shipped (the viewBox tracked the last
     segment instead of the chart) and how the lines endpoint label
     shipped clipped (the mark was correctly inside the frame; the label
     wasn't). Check the frame against the content directly, across every
-    primitive that draws one, not just the ones with a bespoke test."""
+    primitive that draws one, not just the ones with a bespoke test, with
+    zero tolerance and both axes (the version this replaces used +/-5px
+    and y only, which is why it did not catch the stacked total-label
+    regression in the same round it was added)."""
     bars_rows = [{"label": "a", "n": 1}, {"label": "b", "n": 100}]
-    samples = [
-        render.bars(bars_rows, labels="label", series=["n"]),
-        render.lines(
+    samples = {
+        "bars": render.bars(bars_rows, labels="label", series=["n"]),
+        "lines": render.lines(
             [{"wk": "2026-01-05", "n": 1}, {"wk": "2026-01-12", "n": 100}], x="wk", series=["n"],
         ),
-        render.stacked(
+        "stacked": render.stacked(
             [{"wk": "w1", "status": "A", "n": 1000}, {"wk": "w1", "status": "B", "n": 5},
              {"wk": "w1", "status": "C", "n": 200}],
             x="wk", band="status", value="n",
         ),
-        render.scatter([{"x": 1, "y": 2}, {"x": 2, "y": 8}], x="x", y="y", guides=[("p50", 5.0)]),
-        render.small_multiples({"g": [{"wk": "2026-01-05", "n": 3}]}, x="wk", y="n"),
-    ]
-    for out in samples:
-        vb_h = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', out).group(1))
-        ys = [float(y) for y in re.findall(r'\by="(-?[\d.]+)"', out)]
-        rects = re.findall(r'<rect [^>]*\by="(-?[\d.]+)"[^>]*height="([\d.]+)"', out)
-        for y in ys:
-            assert -5 <= y <= vb_h + 5
-        for y, h in rects:
-            assert -5 <= float(y) + float(h) <= vb_h + 5
+        "scatter": render.scatter(
+            [{"x": 1, "y": 2}, {"x": 2, "y": 8}], x="x", y="y", guides=[("p50", 5.0)],
+        ),
+        "small_multiples": render.small_multiples(
+            {"g": [{"wk": "2026-01-05", "n": 3}]}, x="wk", y="n",
+        ),
+    }
+    for name, out in samples.items():
+        _assert_content_within_viewbox(out, name)
+
+
+def test_stacked_total_label_stays_in_frame_across_band_counts_zero_tolerance():
+    """The blocker's own fix (positioning segments sequentially) added the
+    2px inter-segment gap *on top of* each segment's natural height
+    instead of spending it out of that height, so the whole stack grew by
+    2px per boundary: a 5-band chart pushed its total label to y=0.0, and
+    an 8-band chart's top rect started at y=-2.0, both outside the
+    viewBox entirely. Band counts 1 through 8, zero tolerance, both axes;
+    1 through 8 is deliberately past the 3-band sample the prior check
+    used, since this defect only shows up at 5 or more."""
+    for n_bands in range(1, 9):
+        rows = [{"wk": "w1", "status": chr(65 + i), "n": (i + 1) * 10} for i in range(n_bands)]
+        out = render.stacked(rows, x="wk", band="status", value="n")
+        _assert_content_within_viewbox(out, f"{n_bands} bands")
 
 
 def test_small_multiples_handles_null_and_mixed_type_x_without_crashing():
@@ -2465,6 +2592,46 @@ def test_lines_endpoint_labels_stay_inside_the_viewbox_with_realistic_data():
     assert max(label_xs) <= 466  # the plot's own right edge, not the viewBox's
 
 
+def test_lines_axis_ticks_stay_in_frame_with_iso_weeks_and_a_7digit_value():
+    """The same clip as the endpoint label, on both axes of the most
+    canonical chart there is. `lines(rows, x="wk")` with ISO week labels
+    used to centre the last x-tick at x=466 in a 480 frame (glyphs
+    running to about 500), since a centred label on the very first/last
+    tick is centred *on the plot's own edge*. And every y-tick is
+    right-aligned at a fixed x=40 regardless of how wide the value is: a
+    7-digit count measured at -41.8. Nothing in the original suite looked
+    at x at all."""
+    rows = [
+        {"wk": "2026-W01", "created": 3},
+        {"wk": "2026-W02", "created": 5},
+        {"wk": "2026-W03", "created": 1234567},
+    ]
+    out = render.lines(rows, x="wk", series=["created"])
+    _assert_content_within_viewbox(out, "iso weeks + 7-digit y")
+
+
+def test_y_tick_pad_widens_only_when_a_label_actually_needs_it():
+    """The default 46px margin is unchanged for realistic small values (no
+    plot width sacrificed for the common case); a 7-digit value must
+    widen it, since its right-aligned tick label needs more room than
+    that to avoid running past x=0."""
+    assert render._y_tick_pad([5, 10, 20], zero_floor=True) == 46
+    assert render._y_tick_pad([5, 1234567], zero_floor=False) > 46
+
+
+def test_bars_and_stacked_y_axis_widens_for_a_wide_value_too():
+    """Not just lines/scatter (via axes()): bars and stacked compute their
+    own left padding the same way, and both used to right-align a
+    7-digit tick label at the same fixed x=40 regardless of width."""
+    bars_rows = [{"label": "a", "n": 5}, {"label": "b", "n": 1234567}]
+    out = render.bars(bars_rows, labels="label", series=["n"])
+    _assert_content_within_viewbox(out, "bars 7-digit y")
+
+    stacked_rows = [{"wk": "w1", "status": "A", "n": 1234567}]
+    out2 = render.stacked(stacked_rows, x="wk", band="status", value="n")
+    _assert_content_within_viewbox(out2, "stacked 7-digit y")
+
+
 def test_lines_skips_a_value_label_that_would_overlap_a_convergent_series():
     """dataviz: "when end-labels collide, don't stack them." Three series
     ending within a pixel of each other must not draw three overlapping
@@ -2475,7 +2642,12 @@ def test_lines_skips_a_value_label_that_would_overlap_a_convergent_series():
         {"wk": "2026-01-12", "a": 50, "b": 50.3, "c": 49.8},
     ]
     out = render.lines(rows, x="wk", series=["a", "b", "c"])
-    assert out.count('class="value-label" text-anchor="end"') < 3
+    # class="value-label" (anchor-agnostic), not "...text-anchor=\"end\"":
+    # the mirror-clip fix means a label can anchor "start" instead when its
+    # point is on the left half, and counting only "end" would go vacuous
+    # (always pass, whether or not the collision rule actually fired) the
+    # day these endpoints land there.
+    assert out.count('class="value-label"') < 3
     assert "<title>a: " in out and "<title>b: " in out and "<title>c: " in out
 
 
@@ -2683,12 +2855,16 @@ def test_scatter_accepts_decimal_values_like_a_float():
     """An earlier version's numeric-x check rejected Decimal, silently
     falling back to a categorical axis (one tick per distinct value)
     instead of the continuous scale (5 ticks from the default tick
-    count), which draws real correlation data as evenly-spaced labels."""
+    count), which draws real correlation data as evenly-spaced labels.
+    Total tick count (not just middle-anchored ones, since the first/last
+    x-tick anchor "start"/"end" instead) distinguishes 5 x-ticks + 5
+    y-ticks = 10 for the numeric branch from 2 x-ticks + 5 y-ticks = 7 for
+    the categorical fallback."""
     rows = [{"x": decimal.Decimal("1"), "y": decimal.Decimal("2")},
             {"x": decimal.Decimal("2"), "y": decimal.Decimal("8")}]
     out = render.scatter(rows, x="x", y="y")
     assert out.count("<circle") == 2
-    assert out.count('class="tick" text-anchor="middle"') == 5
+    assert out.count('class="tick"') == 10
 
 
 def test_table_shading_accepts_decimal_values_like_a_float():
