@@ -108,6 +108,9 @@ body {
   background: var(--page);
   color: var(--text-primary);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
 }
 
 svg.chart {
@@ -150,6 +153,16 @@ td.shaded .cell-shade { position: absolute; inset: 0; width: 100%; height: 100%;
 td.shaded span { position: relative; }
 
 p.empty { color: var(--muted); font-style: italic; }
+
+.warn {
+  color: var(--text-secondary);
+  border-left: 3px solid var(--s2);
+  background: var(--surface);
+  padding: 8px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.warn-inline { color: var(--s2); font-weight: 600; }
 """
 
 CSS = (
@@ -190,6 +203,35 @@ def esc(text):
     if is_number and _num(text) is None:  # non-finite; _num already excludes bool itself
         text = ""
     return html.escape(str(text), quote=True)
+
+
+def coverage_strip(title, numerator, denominator, threshold):
+    """Say why a chart is absent, rather than drawing a misleading short one."""
+    share = 0 if not denominator else numerator / denominator
+    return (
+        f'<div class="warn"><strong>{esc(title)}</strong> not shown: '
+        f"{numerator} of {denominator} tickets carry the data it needs "
+        f"({share:.0%}), below the {threshold:.0%} this chart requires.</div>"
+    )
+
+
+def page(header, sections):
+    scope = header["project"] + (f" / {header['component']}" if header["component"] else "")
+    errors = header["errors"]
+    warn = (f'<span class="warn-inline">{errors} sync error(s) outstanding</span>'
+            if errors else "")
+    body = "".join(
+        f"<h2>{esc(title)}</h2>" + "".join(charts) for title, charts in sections
+    )
+    return (
+        '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{esc(scope)} flow report</title><style>{CSS}</style></head><body>"
+        f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
+        f"{esc(header['since'])}. Synced {esc(header['synced'])}. {warn}</p></header>"
+        + body
+        + "</body></html>\n"
+    )
 
 
 def svg(width, height, body):

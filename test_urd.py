@@ -2902,6 +2902,91 @@ def test_small_multiples_empty_data_renders_a_note():
     assert "no data" in render.small_multiples({}, x="wk", y="n").lower()
 
 
+def _header(**over):
+    base = {"project": "PROJ", "component": "TEAM", "since": "2026-01-01",
+            "synced": "2026-08-13T17:00:00", "errors": 0, "issues": 41}
+    return {**base, **over}
+
+
+def test_the_page_states_the_scope_it_covers():
+    """A report must never be mistaken for one covering a different slice."""
+    html = render.page(_header(), [("Flow health", ["<p>chart</p>"])])
+    # The composed scope, not two substrings that could each appear anywhere.
+    assert "PROJ / TEAM" in html
+    assert "2026-01-01" in html
+    assert "2026-08-13T17:00:00" in html
+    assert "Flow health" in html
+    assert html.count("<p>chart</p>") == 1
+    assert "<title>" in html and html.rstrip().endswith("</html>")
+
+
+def test_a_scope_with_no_component_says_so_without_a_stray_separator():
+    html = render.page(_header(component=None), [])
+    assert "PROJ" in html
+    assert "/" not in html[html.index("<h1>"):html.index("</h1>")]
+
+
+def test_a_scope_containing_markup_is_escaped_not_injected():
+    html = render.page(_header(project="P&D", component="<script>x</script>"), [])
+    assert "<script>" not in html
+    assert "P&amp;D" in html
+
+
+def test_outstanding_sync_errors_are_visible_in_the_header():
+    """41 tickets and 3 errors: the 3 has to be the error count, not the ticket count."""
+    html = render.page(_header(errors=3), [])
+    assert "3 sync error" in html
+    # And the warning is conditional, not decoration that is always on.
+    assert "sync error" not in render.page(_header(errors=0), [])
+
+
+def test_a_chart_below_its_threshold_becomes_a_warning_not_a_plot():
+    strip = render.coverage_strip("Points per person", 4, 100, 0.5)
+    assert "4 of 100" in strip
+    assert "4%" in strip     # the coverage actually measured
+    assert "50%" in strip    # the threshold it fell short of
+    assert "<svg" not in strip
+
+
+def test_a_coverage_strip_with_no_tickets_at_all_does_not_divide_by_zero():
+    strip = render.coverage_strip("Points per person", 0, 0, 0.5)
+    assert "0 of 0" in strip
+
+
+def test_every_class_the_page_emits_is_styled():
+    """An unstyled warning is an invisible warning, which is the failure this guards."""
+    emitted = render.page(_header(errors=3), []) + render.coverage_strip("X", 1, 10, 0.5)
+    classes = set(re.findall(r'class="([\w-]+)"', emitted))
+    assert classes, "no classes found: the regex, not the page, is what broke"
+    for cls in classes:
+        # The lookahead is load-bearing, not tidiness. A plain `f".{cls}" in CSS`
+        # is satisfied by any longer selector sharing the prefix: `.warn` matches
+        # inside `.warn-inline`, so the whole `.warn` rule could be deleted with
+        # this test still green. `[\w-]` is CSS's ident continuation set.
+        selector = re.compile(rf"\.{re.escape(cls)}(?![\w-])")
+        assert selector.search(render.CSS), f"class {cls} is emitted but never styled"
+
+
+def test_report_writes_a_standalone_file_with_no_external_references():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    out = os.path.join(tempfile.mkdtemp(), "report.html")
+    assert urd.report(con, out) == 0
+    html = pathlib.Path(out).read_text()
+    assert html.startswith("<!doctype html>")
+    # Every way a saved file could still reach the network, not just one of them.
+    for pattern in (r"https?:", r"//\w", r"@import", r"\bsrc\s*=", r"\bhref\s*=", r"url\("):
+        assert not re.search(pattern, html), f"{pattern} would fetch from the network"
+
+
+def test_the_report_header_reflects_the_database_it_read():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    out = os.path.join(tempfile.mkdtemp(), "report.html")
+    urd.report(con, out)
+    html = pathlib.Path(out).read_text()
+    expected = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    assert f"{expected} tickets" in html
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

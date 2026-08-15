@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 
 import duckdb
 
+import render
+
 KEYCHAIN_SERVICE = "urd"
 PAGE_SIZE = 100
 TIMEOUT_S = 30
@@ -632,6 +634,27 @@ def derive(con, status_order, start_status, review_status):
         print(f"{field}: {rate:.0%} empty")
 
 
+def report(con, path="report.html"):
+    scope = load_scope(con)
+    header = {
+        "project": scope["project"] or "unknown",
+        "component": scope["component"],
+        "since": scope["earliest_since"] or "unknown",
+        "synced": scope["last_sync_at"] or "never",
+        "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
+        "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
+    }
+    with open(path, "w") as fh:
+        fh.write(render.page(header, render_sections(con)))
+    print(f"wrote {path}")
+    return 0
+
+
+def render_sections(con):
+    """Charts arrive in Tasks 10 to 13; until then the page is empty but valid."""
+    return []
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="urd", description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DB_DEFAULT)
@@ -686,8 +709,8 @@ def main(argv=None):
         )
         return 0
 
-    print(f"{args.verb}: not implemented yet", file=sys.stderr)
-    return 1
+    if args.verb == "report":
+        return report(con)
 
 
 if __name__ == "__main__":
