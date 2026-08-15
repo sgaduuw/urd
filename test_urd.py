@@ -67,7 +67,7 @@ def test_rework_counts_only_backward_transitions():
     )
 
 
-def test_statuses_outside_the_order_rank_last_and_are_reported():
+def test_statuses_outside_the_order_are_excluded_from_rework():
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened")
     urd.derive(con, "To Do,In Progress,Done", "In Progress", "Review")
@@ -76,7 +76,8 @@ def test_statuses_outside_the_order_rank_last_and_are_reported():
         "WHERE to_status NOT IN (SELECT status FROM status_order)"
     ).fetchall()
     assert unknown == [("Review",)]
-    # Review ranks last, so Review to In Progress is no longer counted as rework.
+    # Transitions touching an unlisted status are excluded from rework, so any transition
+    # involving Review is dropped by the INNER JOIN and not counted as rework.
     assert con.execute("SELECT count(*) FROM rework").fetchone()[0] == 0
 
 
@@ -135,20 +136,6 @@ def test_cycle_times_respects_configured_start_status():
     assert 12.0 < days < 13.0, f"Expected cycle_days ~12.33, got {days}"
 
 
-def test_unknown_statuses_are_found_by_query():
-    """The query that finds unknown statuses must execute and return correct results."""
-    con = urd.open_db(_tmpdb())
-    load_fixtures(con, "reopened")
-    urd.derive(con, "To Do,In Progress,Done", "In Progress", "Review")
-    # The derive function should have created the transitions and status_order tables
-    unknown = con.execute(
-        "SELECT DISTINCT to_status FROM transitions "
-        "WHERE to_status NOT IN (SELECT status FROM status_order) ORDER BY 1"
-    ).fetchall()
-    # Review appears as a to_status but is not in status_order
-    assert unknown == [("Review",)], f"Expected [('Review',)], got {unknown}"
-
-
 def test_derive_reports_unknown_statuses_to_output():
     """Derive must report unknown statuses when they are found."""
     import io
@@ -182,45 +169,66 @@ def test_main_wiring_honors_derive_arguments():
     load_fixtures(con, "reopened")
     con.close()
 
-    # Call main with explicit derive arguments
+    # Call main with explicit derive arguments that differ from fixtures
     result = urd.main(
         [
             "--db", db, "derive",
-            "--status-order", "To Do,In Progress,Done",
-            "--start-status", "In Progress",
+            "--status-order", "To Do,In Progress,Review,Done",
+            "--start-status", "Review",
             "--review-status", "Done"
         ]
     )
     assert result == 0, "main() derive should return 0 on success"
 
-    # Verify the config was saved and used
+    # Verify the config was saved with the provided values
     con = urd.open_db(db)
     scope = urd.load_scope(con)
-    assert scope["status_order"] == "To Do,In Progress,Done"
-    assert scope["start_status"] == "In Progress"
+    assert scope["status_order"] == "To Do,In Progress,Review,Done", (
+        f"Expected explicit status_order, got {scope['status_order']}"
+    )
+    assert scope["start_status"] == "Review", (
+        f"Expected explicit start_status, got {scope['start_status']}"
+    )
+    assert scope["review_status"] == "Done", (
+        f"Expected explicit review_status, got {scope['review_status']}"
+    )
     con.close()
 
 
 def test_main_derive_uses_stored_config_when_no_arguments():
-    """main() must use stored config when no --status-order flag is given."""
+    """main() must use stored config when no derive flags are given."""
     db = _tmpdb()
     con = urd.open_db(db)
     load_fixtures(con, "reopened")
     con.close()
 
-    # First call with explicit config
+    # First call with explicit config that differs from fixtures
     urd.main(
         [
             "--db", db, "derive",
-            "--status-order", "To Do,In Progress,Done",
-            "--start-status", "In Progress",
-            "--review-status", "Done"
+            "--status-order", "To Do,In Progress,Review,Done",
+            "--start-status", "Review",
+            "--review-status", "In Progress"
         ]
     )
 
-    # Second call with no config should reuse stored config
+    # Second call with no flags should reuse stored config exactly
     result = urd.main(["--db", db, "derive"])
     assert result == 0, "main() derive should succeed with stored config"
+
+    # Verify the config remained unchanged (was not reset to fixtures' values)
+    con = urd.open_db(db)
+    scope = urd.load_scope(con)
+    assert scope["status_order"] == "To Do,In Progress,Review,Done", (
+        f"Expected stored status_order, got {scope['status_order']}"
+    )
+    assert scope["start_status"] == "Review", (
+        f"Expected stored start_status, got {scope['start_status']}"
+    )
+    assert scope["review_status"] == "In Progress", (
+        f"Expected stored review_status, got {scope['review_status']}"
+    )
+    con.close()
 
 
 def test_metric_views_have_correct_timestamp_types():
@@ -244,6 +252,18 @@ def test_metric_views_have_correct_timestamp_types():
             assert types["ts"] == "TIMESTAMP", (
                 f"{view_name}.ts should be TIMESTAMP, got {types['ts']}"
             )
+
+
+def test_no_bare_sql_now_anywhere():
+    """DuckDB's now() is TIMESTAMPTZ. A per-column type check only sees columns a view exposes,
+    so a now() inside a COALESCE fallback or a WHERE filter is invisible to it. Pin the source:
+    every SQL now() must carry AT TIME ZONE 'UTC' to be naive UTC."""
+    source = (pathlib.Path(__file__).parent / "urd.py").read_text()
+    bare = [
+        ln for ln in source.splitlines()
+        if "now()" in ln and "AT TIME ZONE 'UTC'" not in ln and "_now()" not in ln
+    ]
+    assert bare == [], f"Found bare now() without AT TIME ZONE 'UTC': {bare}"
 
 
 def test_derive_rejects_duplicate_statuses():

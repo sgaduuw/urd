@@ -541,6 +541,8 @@ CREATE OR REPLACE VIEW closures AS
 SELECT t.key, t.ts, t.author_id
 FROM transitions t JOIN statuses s ON s.name = t.to_status
 WHERE s.category = 'done';
+-- Modelling decision: one row per transition into a done status; a ticket reopened and
+-- reclosed appears twice.
 
 CREATE OR REPLACE VIEW cycle_times AS
 SELECT i.key,
@@ -551,25 +553,28 @@ FROM issues i
 JOIN transitions t ON t.key = i.key AND t.to_status = (SELECT start_status FROM sync_state)
 WHERE i.resolved IS NOT NULL
 GROUP BY i.key, i.resolved;
+-- Modelling decision: cycle time runs from the first entry into start_status, so a ticket
+-- reopened months later carries the whole gap.
 
 CREATE OR REPLACE VIEW rework AS
+-- A status not in status_order is excluded from rework entirely. The INNER JOINs enforce
+-- that: a transition is rework only if both endpoints have known positions and the target
+-- position is less (earlier in the workflow). A transition with any unknown endpoint is
+-- dropped by the join and never considered. Upgrade path: infer position from observed
+-- transition frequency to handle partially configured workflows.
 SELECT t.key, t.ts, t.from_status, t.to_status, t.author_id
 FROM transitions t
-LEFT JOIN status_order sf ON sf.status = t.from_status
-LEFT JOIN status_order st ON st.status = t.to_status
-WHERE st.pos IS NOT NULL AND sf.pos IS NOT NULL
-  AND st.pos < sf.pos;
+INNER JOIN status_order sf ON sf.status = t.from_status
+INNER JOIN status_order st ON st.status = t.to_status
+WHERE st.pos < sf.pos;
 """
-# ponytail: a status not in status_order is excluded from rework entirely, not positioned.
-# Upgrade path: infer position from observed transition frequency to handle partially configured
-# workflows.
 
 
 def derive(con, status_order, start_status, review_status):
-    """Build metric views from raw_issues. Metric views are late-bound to sync_state, so
-    they reflect the current configuration without re-derive when config changes. A NULL
-    start_status empties cycle_times rather than raising; this permits experimentation
-    with --start-status without loss of other data."""
+    """Build metric views from raw_issues. Only cycle_times is late-bound to sync_state; it
+    reads start_status at query time so configuration changes reflect without re-derive. rework
+    and closures read the status_order and statuses tables that derive rebuilds, so they change
+    only on re-derive."""
     if not status_order or not start_status:
         raise SystemExit(
             "derive needs --status-order and --start-status on the first run, for example:\n"
@@ -579,7 +584,7 @@ def derive(con, status_order, start_status, review_status):
 
     # Validate status_order before persisting: no duplicates, no empties
     statuses = [s.strip() for s in status_order.split(",")]
-    if not statuses or any(not s for s in statuses):
+    if any(not s for s in statuses):
         raise SystemExit(
             "--status-order must be a non-empty comma-separated list with no "
             "empty items"
