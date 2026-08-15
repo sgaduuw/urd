@@ -760,6 +760,15 @@ def stacked(rows, x, band, value):
     gap = 2  # dataviz: 2px surface gap, both between bars and between segments
     bar_w = max(band_w - gap * 2, 1)
 
+    # One tick label per bar is unreadable well before it is wrong: a 26-week
+    # cumulative flow puts 26 ten-character dates into 480px. Thin to however
+    # many actually fit, using the same 7px/character estimate _legend and
+    # _y_tick_pad use rather than a guessed constant, and keep the first so the
+    # axis always states where it starts.
+    widest = max((len(str("" if v is None else v)) for v in x_order), default=1)
+    fits = max(1, int(plot_w // (widest * 7 + 8)))
+    labelled = list(range(0, n, max(1, -(-n // fits))))
+
     by_x = {}
     for r in rows:
         by_x.setdefault(r.get(x), []).append(r)
@@ -827,10 +836,24 @@ def stacked(rows, x, band, value):
                 f'<text x="{band_x + bar_w / 2:.1f}" y="{cursor - 4:.1f}" '
                 f'class="value-label" text-anchor="middle">{esc(_fmt_num(running))}</text>'
             )
-        parts.append(
-            f'<text x="{band_x + bar_w / 2:.1f}" y="{bottom + 16}" class="tick" '
-            f'text-anchor="middle">{esc("" if xv is None else xv)}</text>'
-        )
+        if i in labelled:
+            # Outermost labels anchor away from the edge, interior ones stay
+            # centred: identical rule to `axes`, which every other renderer's
+            # x-axis already goes through. `stacked` builds its own axis, so it
+            # did not inherit the fix and overflowed the viewBox on first
+            # contact with real dates.
+            if len(labelled) == 1:
+                anchor = "middle"
+            elif i == labelled[0]:
+                anchor = "start"
+            elif i == labelled[-1]:
+                anchor = "end"
+            else:
+                anchor = "middle"
+            parts.append(
+                f'<text x="{band_x + bar_w / 2:.1f}" y="{bottom + 16}" class="tick" '
+                f'text-anchor="{anchor}">{esc("" if xv is None else xv)}</text>'
+            )
 
     title = f'<title>{esc(value)} by {esc(band)}, over {esc(x)}</title>'
     return svg(width, height, title + "".join(parts) + legend)

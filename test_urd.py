@@ -2890,6 +2890,46 @@ def test_stacked_empty_data_renders_a_note():
     assert "no data" in render.stacked([], x="wk", band="status", value="n").lower()
 
 
+def _stacked_tick_labels(out):
+    """(anchor, text) for each x-axis tick, in document order."""
+    return re.findall(r'class="tick" text-anchor="(\w+)">([^<]*)</text>', out)
+
+
+def _weeks(n):
+    return [{"day": f"2026-{1 + i % 12:02d}-{1 + i % 28:02d}", "status": s, "tickets": 1 + i % 4}
+            for i in range(n) for s in ("To Do", "In Progress", "Review")]
+
+
+def test_stacked_thins_x_labels_to_what_actually_fits():
+    """26 weeks is an ordinary cumulative flow, and it put 26 ten-character dates
+    into 480px. The count must fall well below the bar count, not track it."""
+    for n in (13, 26, 52, 222):
+        dates = [t for _, t in _stacked_tick_labels(render.stacked(
+            _weeks(n), x="day", band="status", value="tickets")) if t.startswith("2026")]
+        assert 1 < len(dates) <= 8, f"{n} bars produced {len(dates)} date labels"
+
+
+def test_stacked_anchors_its_outermost_x_labels_away_from_the_frame():
+    """A centred label on the last bar is centred on the plot's own right edge, so
+    half of it always leaves the viewBox. `axes` fixes this for every renderer
+    that shares it; `stacked` builds its own axis and did not inherit it."""
+    ticks = [(a, t) for a, t in _stacked_tick_labels(
+        render.stacked(_weeks(26), x="day", band="status", value="tickets"))
+        if t.startswith("2026")]
+    assert ticks[0][0] == "start" and ticks[-1][0] == "end"
+    assert all(a == "middle" for a, _ in ticks[1:-1])
+    # A lone label has no edge to run off, so it stays centred.
+    single = [a for a, t in _stacked_tick_labels(render.stacked(
+        _weeks(1), x="day", band="status", value="tickets")) if t.startswith("2026")]
+    assert single == ["middle"]
+
+
+def test_stacked_stays_in_frame_across_realistic_x_counts():
+    for n in (1, 2, 5, 13, 26, 52, 222):
+        _assert_content_within_viewbox(
+            render.stacked(_weeks(n), x="day", band="status", value="tickets"), f"x={n}")
+
+
 def test_scatter_empty_data_renders_a_note():
     assert "no data" in render.scatter([], x="x", y="y").lower()
 
