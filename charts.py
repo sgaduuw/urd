@@ -73,7 +73,10 @@ CHARTS = [
                 SELECT date_trunc('week', ts) AS week, count(*) AS closed
                 FROM closures GROUP BY 1
             )
-            SELECT COALESCE(c.week, d.week) AS week,
+            -- ::DATE because date_trunc returns a TIMESTAMP, and the axis label is
+            -- the value's own str(): a weekly chart was printing '2026-01-05 00:00:00',
+            -- nineteen characters of which the last eight are always midnight.
+            SELECT COALESCE(c.week, d.week)::DATE AS week,
                    COALESCE(c.created, 0) AS created,
                    COALESCE(d.closed, 0) AS closed
             FROM c FULL OUTER JOIN d ON c.week = d.week

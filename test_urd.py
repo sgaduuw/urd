@@ -3055,6 +3055,21 @@ def test_sections_render_in_a_fixed_order():
     assert ordered == ["Flow health", spare], "sections follow CHARTS order, not SECTIONS"
 
 
+def test_no_chart_axis_label_carries_a_midnight_timestamp():
+    """A tick label is the bucket value's own str(), and date_trunc returns a
+    TIMESTAMP, so a weekly bucket prints '2026-01-05 00:00:00': nineteen
+    characters of which the last eight are always midnight. It also crowds the
+    axis badly enough that thinning drops most of the labels. Cast to ::DATE."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    checked = 0
+    for section, figures in urd.render_sections(con):
+        for markup in figures:
+            for label in re.findall(r'class="tick"[^>]*>([^<]*)</text>', markup):
+                assert "00:00:00" not in label, f"{section}: axis label {label!r}"
+                checked += 1
+    assert checked, "no tick labels found at all; the regex is what broke"
+
+
 def test_every_rendered_chart_stays_inside_its_frame():
     """Every chart the report draws, against the frame it draws into.
 
