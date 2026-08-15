@@ -12,3 +12,7 @@
 __pycache__/
 .ruff_cache/
 .pytest_cache/
+
+# SDD workspace: scratch reports that quote leak terms as test data.
+# Never publishable, and never needed by a reader of this repo.
+.superpowers/
