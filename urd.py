@@ -572,7 +572,7 @@ WHERE st.pos < sf.pos;
 
 
 def derive(con, status_order, start_status, review_status):
-    """Rebuild every derived table and view from raw_issues.
+    """Rebuild the derived tables and views from raw_issues.
 
     Offline and idempotent: this reads only what sync already fetched, so a
     changed metric definition costs a derive run rather than a refetch.

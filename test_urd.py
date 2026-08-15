@@ -169,9 +169,9 @@ def test_main_wiring_honors_derive_arguments():
     load_fixtures(con, "reopened")
     con.close()
 
-    # Call main with explicit arguments that differ from fixtures
-    # Fixtures store: "To Do,In Progress,Review,Done" with start_status="In Progress"
-    # We pass: "To Do,Review,Done,In Progress" (reordered) with start_status="Done"
+    # Call main with explicit arguments where at least status_order differs from fixtures
+    # Fixtures store: status_order="To Do,In Progress,Review,Done" with start_status="In Progress"
+    # We pass: status_order="To Do,Review,Done,In Progress" (reordered) with start_status="Done"
     result = urd.main(
         [
             "--db", db, "derive",
@@ -216,14 +216,21 @@ def test_main_derive_uses_stored_config_when_no_arguments():
         ]
     )
 
-    # Second call with no flags should reuse stored config
+    # Between calls, drop the changes table to prove the second call rebuilds it
+    con = urd.open_db(db)
+    con.execute("DROP TABLE changes")
+    con.close()
+
+    # Second call with no flags should reuse stored config and rebuild changes table
     result = urd.main(["--db", db, "derive"])
     assert result == 0, "main() derive should succeed with stored config"
 
-    # Verify derive actually ran and used the stored config by checking derived table counts
+    # Verify derive actually ran by checking that changes table exists and is populated
     con = urd.open_db(db)
-    issues_count = con.execute("SELECT count(*) FROM issues").fetchone()[0]
-    assert issues_count > 0, "derive should have populated issues table"
+    changes_exists = con.execute(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='changes')"
+    ).fetchone()[0]
+    assert changes_exists, "derive should have rebuilt the changes table"
     changes_count = con.execute("SELECT count(*) FROM changes").fetchone()[0]
     assert changes_count > 0, "derive should have populated changes table"
 
@@ -265,22 +272,22 @@ def test_metric_views_have_correct_timestamp_types():
 
 
 def test_no_bare_sql_now_anywhere():
-    """DuckDB's now() is TIMESTAMPTZ. A per-line check cannot catch now() inside a COALESCE
-    fallback or WHERE filter on the same line. Pin the source per occurrence: every bare now()
-    or current_timestamp in urd.py must carry AT TIME ZONE 'UTC'."""
+    """DuckDB's now() is TIMESTAMPTZ. Column-type tests only see columns a view
+    exposes, so a now() in a WHERE filter or a COALESCE fallback is invisible to
+    them, and that is how Task 5's Critical entered. Require every SQL now() to
+    be immediately followed by the UTC cast: a cast elsewhere on the line does
+    not make an earlier occurrence safe."""
     import re
     source = (pathlib.Path(__file__).parent / "urd.py").read_text()
-    # Find all bare now() or current_timestamp calls without AT TIME ZONE 'UTC'
-    # Must match: now(), current_timestamp (optionally with parens)
-    # Must NOT match: _now(), "AT TIME ZONE 'UTC'"
-    bare = re.findall(
-        r"(?:(?<!_)now\(\)|current_timestamp(?:\(\))?)"
-        r"(?!.*AT TIME ZONE 'UTC')",
+    # Find all bare now() not immediately followed by AT TIME ZONE 'UTC'
+    # Negative lookahead (?!\s*AT TIME ZONE 'UTC') checks what follows right after
+    bad = [m.start() for m in re.finditer(
+        r"\bnow\(\)(?!\s*AT TIME ZONE 'UTC')",
         source
-    )
-    assert bare == [], (
-        f"Found bare now()/current_timestamp without AT TIME ZONE 'UTC': {bare}"
-    )
+    )]
+    # Also check for current_timestamp without the cast
+    bad += [m.start() for m in re.finditer(r"\bcurrent_timestamp\b", source)]
+    assert bad == [], [source[max(0, i - 60):i + 40] for i in bad]
 
 
 def test_derive_rejects_duplicate_statuses():
@@ -353,13 +360,14 @@ def test_closures_ts_values_are_real_timestamps():
 
 def test_rework_ts_values_are_real_timestamps():
     """rework.ts values must be real transition timestamps, not constants."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    ts_values = con.execute("SELECT DISTINCT ts FROM rework ORDER BY ts").fetchall()
-    assert len(ts_values) >= 1, "rework should have timestamps"
-    if len(ts_values) >= 2:
-        # If multiple values, they should vary
-        min_ts, max_ts = ts_values[0][0], ts_values[-1][0]
-        assert min_ts != max_ts, "rework.ts should vary when multiple transitions exist"
+    con = _derived("reopened")
+    ts_values = con.execute("SELECT ts FROM rework WHERE key = 'PROJ-1'").fetchall()
+    assert len(ts_values) == 1, "reopened fixture has exactly one rework transition"
+    # PROJ-1 has one rework: Review -> In Progress on Jan 9 at 09:00:00
+    ts = ts_values[0][0]
+    assert ts == datetime(2026, 1, 9, 9, 0, 0), (
+        f"rework.ts should be the transition timestamp (Jan 9 09:00), not a constant; got {ts}"
+    )
 
 
 def test_derive_without_required_arguments_raises():
@@ -367,17 +375,58 @@ def test_derive_without_required_arguments_raises():
     con = urd.open_db(_tmpdb())
     load_fixtures(con, "reopened")
 
+    # Test missing status_order (empty string is falsy)
     try:
         urd.derive(con, "", "In Progress", "Review")
         raise AssertionError("Expected SystemExit for missing status_order")
     except SystemExit as e:
-        assert "status-order" in str(e) or "start-status" in str(e).lower()
+        error_str = str(e).lower()
+        assert "status-order" in error_str or "start-status" in error_str, (
+            f"Expected error mentioning status-order or start-status; got {error_str}"
+        )
 
+    # Test missing start_status (empty string is falsy)
     try:
         urd.derive(con, "To Do,In Progress,Done", "", "Review")
         raise AssertionError("Expected SystemExit for missing start_status")
     except SystemExit as e:
-        assert "start-status" in str(e).lower()
+        assert "start-status" in str(e).lower(), (
+            f"Expected error mentioning start-status; got {str(e)}"
+        )
+
+
+def test_derive_prints_correct_counts():
+    """The printed counts must reflect actual row counts, not be hardcoded."""
+    import io
+    import sys as sys_module
+
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+
+    # Capture stdout to check printed counts
+    old_stdout = sys_module.stdout
+    sys_module.stdout = io.StringIO()
+
+    try:
+        urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+        output = sys_module.stdout.getvalue()
+    finally:
+        sys_module.stdout = old_stdout
+
+    # Verify the printed counts match actual row counts
+    issues_count = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    changes_count = con.execute("SELECT count(*) FROM changes").fetchone()[0]
+    sprints_count = con.execute("SELECT count(*) FROM issue_sprints").fetchone()[0]
+
+    assert f"derived {issues_count} issues" in output, (
+        f"Output should say '{issues_count} issues', got: {output}"
+    )
+    assert f"{changes_count} changes" in output, (
+        f"Output should say '{changes_count} changes', got: {output}"
+    )
+    assert f"{sprints_count} sprint memberships" in output, (
+        f"Output should say '{sprints_count} sprint memberships', got: {output}"
+    )
 
 
 def test_status_list_whitespace_is_stripped():
