@@ -6,11 +6,12 @@ names flow straight through with no adapter. That isolation is the point:
 this is the one file in the project a reader can understand without knowing
 anything about the domain it happens to be charting.
 
-Charts follow the `dataviz` skill: a fixed-order categorical palette (never
-cycled, never picked by rank), thin marks, recessive gridlines, a legend for
-two or more series, and both a light and a dark theme defined explicitly
-(never inherited) since the report is a static file opened directly in a
-browser.
+Charts follow the `dataviz` skill: a fixed-order categorical palette (colour
+identity within one chart never changes; `_slot` does wrap past 8 slots, an
+accepted ceiling documented on `_slot` itself, not a claim that it never
+happens), thin marks, recessive gridlines, a legend for two or more series,
+and both a light and a dark theme defined explicitly (never inherited) since
+the report is a static file opened directly in a browser.
 """
 
 import decimal
@@ -21,8 +22,10 @@ import math
 # Fixed hue order is the CVD-safety mechanism: within one chart, slot N always
 # means the same series. `_slot` below does wrap past 8 (see its own docstring
 # for why that's an accepted ceiling here, not a claim that it never happens).
-# This list also drives CSS's --sN tokens (see CSS below), so it is the one
-# place a colour is spelled out; nothing else hand-copies these hex values.
+# This list drives CSS's --sN tokens (see CSS below): it is the one place a
+# *categorical* colour is spelled out. PALETTE_MUTED below is the equivalent
+# for chrome (gridlines, axis text), a separate constant since those aren't
+# identity colours and CSS generates its own tokens from each independently.
 PALETTE = [
     "#2a78d6",  # 1 blue
     "#eb6834",  # 2 orange
@@ -45,6 +48,10 @@ _PALETTE_DARK = [
 
 # Roles used for chart chrome (gridlines, axis rules, tick/label text), as
 # opposed to data marks. Same roles as PALETTE but never used for identity.
+# Drives CSS's light-mode --grid/--baseline/--muted tokens below, the same
+# way PALETTE drives --sN: without that link this would be a second,
+# unguarded copy of colours the CSS template also hard-codes, exactly the
+# disconnect PALETTE's own generation step exists to avoid.
 PALETTE_MUTED = {
     "grid": "#e1e0d9",
     "baseline": "#c3c2b7",
@@ -74,9 +81,9 @@ _CSS_TEMPLATE = """
   --surface: #fcfcfb;
   --text-primary: #0b0b0b;
   --text-secondary: #52514e;
-  --muted: #898781;
-  --grid: #e1e0d9;
-  --baseline: #c3c2b7;
+  --muted: __MUTED_TEXT__;
+  --grid: __MUTED_GRID__;
+  --baseline: __MUTED_BASELINE__;
   --border: rgba(11, 11, 11, 0.10);
 __LIGHT_TOKENS__
 }
@@ -146,6 +153,9 @@ CSS = (
     _CSS_TEMPLATE
     .replace("__LIGHT_TOKENS__", _token_block(PALETTE, "  "))
     .replace("__DARK_TOKENS__", _token_block(_PALETTE_DARK, "    "))
+    .replace("__MUTED_TEXT__", PALETTE_MUTED["text"])
+    .replace("__MUTED_GRID__", PALETTE_MUTED["grid"])
+    .replace("__MUTED_BASELINE__", PALETTE_MUTED["baseline"])
     .strip()
 )
 
@@ -344,11 +354,19 @@ def axes(rows, x, y, width, height, zero_floor=False):
 
 
 def _legend(names, y0, width, x0=46, row_h=18):
-    """A colour-key + label per series, wrapped onto additional rows so it
-    never runs past `width` and gets cropped by the viewBox with nothing to
-    show it happened. Returns (markup, height): height is how many pixels
-    the (possibly multi-row) legend occupies, so the caller can grow the
-    chart to fit it rather than guess one fixed row of space.
+    """A colour-key + label per series, wrapped onto additional rows so a
+    realistic list (six-plus status names) doesn't overflow `width` and get
+    cropped by the viewBox with nothing to show it happened. Returns
+    (markup, height): height is how many pixels the (possibly multi-row)
+    legend occupies, so the caller can grow the chart to fit it rather than
+    guess one fixed row of space.
+
+    This wraps entries that don't fit on the current row; it cannot wrap a
+    single entry that alone is wider than a whole row, since there is
+    nothing to break it against. That residual case needs a series name
+    wider than the chart itself, which none of this module's callers
+    produce (status names, assignee names), so it's left as a known limit
+    rather than built for.
 
     dataviz: a legend is always present for two or more series (the
     dependable identity channel, worst to lose for `stacked`, whose bands
@@ -360,9 +378,9 @@ def _legend(names, y0, width, x0=46, row_h=18):
     for i, name in enumerate(names):
         # ponytail: advances the cursor by a rough characters-per-label
         # estimate instead of measured text width (no renderer available
-        # offline). At this size the only consequence is wrapping a little
-        # earlier or later than a real font would; entries themselves
-        # always render (that's the wrap's job), never run off the edge.
+        # offline). The only consequence is wrapping a little earlier or
+        # later than a real font would; see the docstring for the one
+        # entry shape (wider than a whole row) this can't wrap regardless.
         w = 18 + 7 * len(str(name)) + 16
         if current and cx + w > width - 10:
             rows.append(current)
@@ -381,7 +399,10 @@ def _legend(names, y0, width, x0=46, row_h=18):
                 f'<line x1="{cx}" y1="{y}" x2="{cx + 14}" y2="{y}" stroke="{color}" '
                 f'stroke-width="3" stroke-linecap="round" />'
             )
-            parts.append(f'<text x="{cx + 18}" y="{y + 4}" class="legend-label">{esc(name)}</text>')
+            label = "" if name is None else name
+            parts.append(
+                f'<text x="{cx + 18}" y="{y + 4}" class="legend-label">{esc(label)}</text>'
+            )
     return "".join(parts), len(rows) * row_h + 4
 
 
@@ -419,7 +440,14 @@ def bars(rows, labels, series):
         band_x = left + i * band_w
         for j, s in enumerate(series):
             v = _num(row.get(s))
-            v = 0 if v is None else v
+            if v is None:
+                # Missing/non-numeric, not zero: draw no mark for this bar,
+                # the same way lines/scatter/stacked/small_multiples treat a
+                # missing point. Drawing a fake zero-height bar with a
+                # "<title>0</title>" tooltip would claim a measured zero
+                # where there's actually no data for this series in this
+                # band, which is a different fact.
+                continue
             y0, y1 = sy(0), sy(v)
             top_y, h = (y1, y0 - y1) if v >= 0 else (y0, y1 - y0)
             bx = band_x + gap + j * (bar_w + gap)
@@ -439,6 +467,7 @@ def bars(rows, labels, series):
                     f'text-anchor="middle">{esc(_fmt_num(v))}</text>'
                 )
         label = row.get(labels)
+        label = "" if label is None else label
         parts.append(
             f'<text x="{band_x + band_w / 2:.1f}" y="{bottom + 16}" class="tick" '
             f'text-anchor="middle">{esc(label)}</text>'
@@ -464,6 +493,7 @@ def lines(rows, x, series):
     grid_markup, sx, sy = axes(rows, x, series, width, base_h)
 
     parts = [grid_markup]
+    placed_label_ys = []
     for j, s in enumerate(series):
         pts, last_v = [], None
         for r in rows:
@@ -490,11 +520,24 @@ def lines(rows, x, series):
         # visible direct labels or the table view. Every series gets its
         # endpoint value labelled (not just the line drawn), so a low-
         # contrast slot at 3+ series still has its magnitude readable
-        # without relying on colour or a hover state.
-        parts.append(
-            f'<text x="{lx + 6:.1f}" y="{ly + 4:.1f}" class="value-label">'
-            f"{esc(_fmt_num(last_v))}</text>"
-        )
+        # without relying on colour or a hover state. Right-anchored just
+        # left of the dot (not left-anchored past it) so the label stays
+        # inside the plot's own right edge instead of running past the
+        # viewBox: lx is always <= the plot's right edge, and text-anchor
+        # "end" grows the text leftward from that point, never rightward
+        # past it.
+        #
+        # dataviz: "when end-labels collide, don't stack them" (converging
+        # series). Skip a label that would land within one line-height of
+        # an already-placed one; the dot, the <title> tooltip, the legend
+        # and the table view all still carry that series' value, so nothing
+        # is gated, only the redundant on-chart text for a crowded cluster.
+        if all(abs(ly - py) >= 12 for py in placed_label_ys):
+            parts.append(
+                f'<text x="{lx - 6:.1f}" y="{ly + 4:.1f}" class="value-label" text-anchor="end">'
+                f"{esc(_fmt_num(last_v))}</text>"
+            )
+            placed_label_ys.append(ly)
 
     title = f'<title>{esc(", ".join(series))} over {esc(x)}</title>'
     return svg(width, height, title + "".join(parts) + legend)
@@ -503,7 +546,10 @@ def lines(rows, x, series):
 def stacked(rows, x, band, value):
     """Stacked bar chart from long-format rows: one bar per distinct `x`,
     split into segments named by `band`, each segment's height proportional
-    to `value`. A band's colour comes from its first-seen order in *this*
+    to `value` and floored at 1px so a small non-zero band stays visible
+    instead of disappearing (a value that reaches the plot at all is real
+    data, and the inter-segment gap below must not be able to swallow it
+    whole). A band's colour comes from its first-seen order in *this*
     dataset (dataviz: colour must follow the entity, never its position in
     a given stack); if a later call filters the same band set differently,
     the caller is responsible for keeping bands in the same relative order,
@@ -555,12 +601,22 @@ def stacked(rows, x, band, value):
             if v <= 0:
                 continue
             y0, y1 = sy(running), sy(running + v)
-            if seg_idx > 0:
-                y0 -= gap  # open a surface gap below every segment but the first
+            nat_h = y0 - y1
+            # Only spend the inter-segment gap if the segment survives it:
+            # a small band (5 out of a 1000+5+200 stack) can be smaller than
+            # the 2px gap itself, and inserting it unconditionally rendered
+            # that band at 0.0 height, present only as an invisible rect
+            # with a tooltip. Skipping the gap there (segments still get
+            # their surface-colour ring from the tooltip hover, just not
+            # this static separator) and flooring at 1px keeps every
+            # positive value visible, matching the docstring's promise.
+            if seg_idx > 0 and nat_h - gap >= 1:
+                y0 -= gap
+            height = max(y0 - y1, 1)
             parts.append(
                 f'<rect x="{band_x:.1f}" y="{y1:.1f}" width="{bar_w:.1f}" '
-                f'height="{max(y0 - y1, 0):.1f}" fill="{color_of[b]}">'
-                f"<title>{esc(b)}: {esc(_fmt_num(v))}</title></rect>"
+                f'height="{height:.1f}" fill="{color_of[b]}">'
+                f'<title>{esc("" if b is None else b)}: {esc(_fmt_num(v))}</title></rect>'
             )
             running += v
             seg_idx += 1
@@ -576,7 +632,7 @@ def stacked(rows, x, band, value):
             )
         parts.append(
             f'<text x="{band_x + bar_w / 2:.1f}" y="{bottom + 16}" class="tick" '
-            f'text-anchor="middle">{esc(xv)}</text>'
+            f'text-anchor="middle">{esc("" if xv is None else xv)}</text>'
         )
 
     title = f'<title>{esc(value)} by {esc(band)}, over {esc(x)}</title>'
@@ -652,7 +708,13 @@ def table(rows, headers, shade=None):
             v = r.get(h)
             cell_text = esc("" if v is None else v)
             shade_v = _num(v) if shade and h == shade else None
-            if shade_v is not None and shade_max:
+            # shade_max > 0, not just truthy: an all-negative shade column
+            # gives a negative shade_max, which is still truthy, and
+            # max(shade_v, 0) / shade_max then divides a non-negative
+            # numerator by a negative denominator, producing fill-opacity
+            # values like "-0.00" for a docstring that promises the largest
+            # cell renders at full strength.
+            if shade_v is not None and shade_max > 0:
                 opacity = max(shade_v, 0) / shade_max
                 cells.append(
                     '<td class="shaded"><svg class="cell-shade" viewBox="0 0 1 1" '
@@ -681,10 +743,19 @@ def small_multiples(groups, x, y):
     one person per week with no gap-filling: an independent x per facet
     puts a different week under "column 1" in every panel, so the columns
     can't be compared even though the y-axis now agrees. Categories are
-    collected across every facet up front (same first-seen-order approach as
-    the shared y-max), and a facet missing a category breaks its line there
-    rather than joining straight across the gap, which would draw a silent
-    stretch as though output had been steady through it.
+    collected across every facet up front, unlike the shared y-max: the
+    y-max is a single number, order-independent, but the category *list*
+    needs an actual order, and first-seen across concatenated facets is
+    just facet iteration order, not a real timeline (a facet missing a
+    middle category would jumble the shared axis, e.g. w1, w3, w2 instead
+    of w1, w2, w3 if the facet holding w2 happens to come second). Sorting
+    the collected set fixes that, and is the order this precondition
+    depends on: **x must be a naturally-ordered, comparably-typed value**
+    (a date or week string, or all-numeric), the same assumption every
+    small-multiples facet grid already makes about its shared x-axis. A
+    facet missing a category breaks its line there rather than joining
+    straight across the gap, which would draw a silent stretch as though
+    output had been steady through it.
     """
     items = list(groups.items()) if hasattr(groups, "items") else list(groups)
     if not items:
@@ -698,14 +769,14 @@ def small_multiples(groups, x, y):
     if shared_max <= 0:
         shared_max = 1
 
-    # Sorted, not first-seen: first-seen across concatenated facets is just
-    # facet iteration order (whichever facet happens to come first contributes
-    # its categories first), not a real timeline. A facet missing a middle
-    # category (the whole point of this function) would then jumble the
-    # shared axis, e.g. w1, w3, w2 instead of w1, w2, w3. x here is always a
-    # naturally-ordered value in a small-multiples facet grid (a date or week
-    # string), so sorting is the axis callers actually want.
-    shared_cats = sorted({r.get(x) for _, facet_rows in items for r in facet_rows})
+    # key=(c is None, str(c)): a total order over anything, including a
+    # NULL week from a LEFT JOIN (sorted first, ahead of every real value)
+    # or a facet grid mixing str and int x-values (str(c) compares fine
+    # even when the raw values wouldn't); plain sorted() raises TypeError
+    # on either. See the docstring above for why sorting instead of
+    # first-seen order is the right axis in the first place.
+    cats = {r.get(x) for _, facet_rows in items for r in facet_rows}
+    shared_cats = sorted(cats, key=lambda c: (c is None, str(c)))
     n_cats = len(shared_cats)
     cat_index = {c: i for i, c in enumerate(shared_cats)}
 
@@ -735,7 +806,7 @@ def small_multiples(groups, x, y):
         g = [f'<g transform="translate({ox},{oy})">']
         g.append(
             f'<text x="{fw / 2}" y="12" class="facet-title" text-anchor="middle">'
-            f"{esc(title)}</text>"
+            f'{esc("" if title is None else title)}</text>'
         )
 
         if not facet_rows:
