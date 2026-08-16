@@ -207,10 +207,9 @@ CHARTS = [
         key="per_fix_version",
         section="Reporting outward",
         title="Delivered versus open, per version",
-        kind="bars",
+        kind="hbars",
         caption="The delivery view. One bar pair per version a ticket is tagged with.",
-        options={"labels": "fix_version", "series": ["delivered", "dropped", "open"],
-                 "interactive": True},
+        options={"labels": "fix_version", "series": ["delivered", "dropped", "open"]},
         # UNNEST, so a ticket tagged with two versions counts in both rather than
         # being dropped or arbitrarily attributed to one.
         sql="""
@@ -275,10 +274,10 @@ CHARTS = [
         key="rework_per_sprint",
         section="Retro",
         title="Rework per sprint",
-        kind="bars",
+        kind="hbars",
         caption="Transitions that moved a ticket backwards through the workflow. "
                 "The single best retro chart, and one no built-in report draws.",
-        options={"labels": "sprint", "series": ["backward_moves"], "interactive": True},
+        options={"labels": "sprint", "series": ["backward_moves"]},
         # Attributed by when the transition happened, not by the ticket's latest
         # sprint: a backward move belongs to the sprint it occurred in.
         sql="""
@@ -304,10 +303,10 @@ CHARTS = [
         key="carry_over",
         section="Retro",
         title="Carried into each sprint",
-        kind="bars",
+        kind="hbars",
         caption="Tickets that were already in an earlier sprint. Persistent "
                 "carry-over means the sprint is being planned optimistically.",
-        options={"labels": "sprint", "series": ["carried"], "interactive": True},
+        options={"labels": "sprint", "series": ["carried"]},
         sql="""
             SELECT sprint_name AS sprint, count(DISTINCT key) AS carried
             FROM issue_sprints
@@ -326,11 +325,10 @@ CHARTS = [
         key="cycle_per_sprint",
         section="Retro",
         title="Cycle time per sprint",
-        kind="bars",
+        kind="hbars",
         caption="Median and 85th percentile days per sprint. Tightening is the "
                 "thing to look for, not the absolute value.",
-        options={"labels": "sprint", "series": ["median_days", "p85_days"],
-                 "interactive": True},
+        options={"labels": "sprint", "series": ["median_days", "p85_days"]},
         # Attributed to the ticket's LAST sprint rather than to whichever sprint
         # window contains its resolution. Work routinely closes after the sprint
         # that carried it (PROJ-1 resolves the day after its sprint ends), and
@@ -417,11 +415,11 @@ CHARTS = [
         key="review_load",
         section="People",
         title="Review load",
-        kind="bars",
+        kind="hbars",
         caption="Who moves work out of the review status, counting a rejection "
                 "back to in-progress as well as an approval. This is the "
                 "invisible contribution: no built-in report exposes it.",
-        options={"labels": "reviewer", "series": ["reviews"], "interactive": True},
+        options={"labels": "reviewer", "series": ["reviews"]},
         sql="""
             SELECT COALESCE(p.display_name, 'Automation') AS reviewer,
                    count(*) AS reviews
@@ -470,10 +468,10 @@ CHARTS = [
         key="points_per_person",
         section="People",
         title="Story points closed per person",
-        kind="bars",
+        kind="hbars",
         caption="Only meaningful if the field is filled consistently, which the "
                 "coverage figure tells you.",
-        options={"labels": "person", "series": ["points"], "interactive": True},
+        options={"labels": "person", "series": ["points"]},
         sql="""
             SELECT COALESCE(p.display_name, 'Unassigned') AS person,
                    sum(i.story_points) AS points

@@ -155,9 +155,17 @@ about internal work.
 
 Every chart is upgraded in the browser: lines, scatters, stacks, bars and small
 multiples all gain hover readouts and drag-to-zoom. On a stack, hovering reads the
-band's own value rather than the running total it sits on. On bars the axis is
+band's own value rather than the running total it sits on. On vertical bars the axis is
 categorical, so the names travel with the data and hover gives the whole name
-rather than the three characters the axis has room for. Small multiples stay small
+rather than the three characters the axis has room for.
+
+Charts whose categories are names use horizontal bars instead, and are not
+upgraded. A name gets a whole line there rather than the width of a bar, so every
+one is written in full and every value is printed at the end of its bar: there is
+nothing left for zoom to reveal. Hovering still names the bar, through the SVG's
+own tooltip and no script at all. These charts grow taller as rows are added
+rather than thinning, on the principle that a page scrolls and a one-pixel bar
+means nothing. Small multiples stay small
 multiples, one panel per person on shared scales, because folding 25 people into
 one chart would be interactive and would be a different chart.
 

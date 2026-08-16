@@ -828,6 +828,75 @@ def bars(rows, labels, series):
     return svg(width, height, title + "".join(parts) + legend)
 
 
+def hbars(rows, labels, series):
+    """Horizontal grouped bars: one row per category, bars growing rightward.
+
+    Exists because a vertical bar chart gives each category name the width of its
+    band, which on twenty people is 21px and on fifty sprints is 8px, so names
+    arrive as "Phi…" or vanish. Rotating the chart gives every name a whole line
+    and its full text.
+
+    The trade this makes is the opposite of `bars`: height grows with the row
+    count instead of bars thinning, so the chart gets taller and stays readable
+    rather than staying put and becoming a smear. A page scrolls; a bar cannot be
+    narrower than a pixel and still mean anything.
+
+    The left gutter is measured from the longest label at the same 7px/character
+    estimate the rest of this module uses, capped so one pathological name cannot
+    take the whole width.
+    """
+    if not rows:
+        return '<p class="empty">no data</p>'
+
+    width = 480
+    row_h, bar_h = 22, 14
+    per_row = max(len(series), 1)
+    widest = max((len(str(r.get(labels) or "")) for r in rows), default=1)
+    pad_l = min(int(widest * 7) + 10, 220)
+    pad_r, pad_t, pad_b = 46, 8, 20
+    plot_w = max(width - pad_l - pad_r, 40)
+    band_h = row_h * per_row
+    height = pad_t + band_h * len(rows) + pad_b
+
+    values = [_num(r.get(name)) for r in rows for name in series]
+    v_max = max([v for v in values if v is not None] or [0])
+    legend, legend_h = _legend(series, height, width) if len(series) > 1 else ("", 0)
+
+    parts = []
+    for i, row in enumerate(rows):
+        top = pad_t + i * band_h
+        name = "" if row.get(labels) is None else str(row.get(labels))
+        # The gutter is capped, so a pathological name still has to be cut or it
+        # runs off the left edge: a 40-character label overflowed to -66 before
+        # this existed. Realistic names fit whole, which is the point of the
+        # renderer; the <title> carries the original either way.
+        room = max(int((pad_l - 6) / 7), 1)
+        shown = name if len(name) <= room else name[: max(room - 1, 1)] + "…"
+        parts.append(
+            f'<text x="{pad_l - 6}" y="{top + band_h / 2 + 4:.1f}" class="tick" '
+            f'text-anchor="end">{esc(shown)}<title>{esc(name)}</title></text>'
+        )
+        for j, s in enumerate(series):
+            v = _num(row.get(s))
+            if v is None:
+                continue
+            # Zero draws nothing rather than a stub: a stub reads as a small
+            # measured value, which is a different fact from none.
+            bar_w = 0.0 if v_max <= 0 else max(v, 0) / v_max * plot_w
+            y = top + j * row_h + (row_h - bar_h) / 2
+            parts.append(
+                f'<rect class="bar" x="{pad_l}" y="{y:.1f}" width="{bar_w:.1f}" '
+                f'height="{bar_h}" rx="3" fill="{_slot(j)}">'
+                f"<title>{esc(name)}, {esc(s)}: {esc(_fmt_num(v))}</title></rect>"
+            )
+            parts.append(
+                f'<text x="{pad_l + bar_w + 4:.1f}" y="{y + bar_h - 3:.1f}" '
+                f'class="value-label">{esc(_fmt_num(v))}</text>'
+            )
+    title = f'<title>{esc(", ".join(series))} by {esc(labels)}</title>'
+    return svg(width, height + legend_h, title + "".join(parts) + legend)
+
+
 def lines(rows, x, series):
     """Multi-series line chart sharing one x axis and one y-scale across
     every series in `series`, so their magnitudes compare honestly. Each
@@ -1309,7 +1378,8 @@ def small_multiples(groups, x, y):
 
 
 FIGURE_KINDS = frozenset(
-    {"table", "matrix", "lines", "stacked", "scatter", "bars", "small_multiples"}
+    {"table", "matrix", "lines", "stacked", "scatter", "bars", "hbars",
+     "small_multiples"}
 )
 
 
@@ -1498,6 +1568,8 @@ def figure(chart, rows, subtitle, con, link_base=None):
         body = scatter(rows, o["x"], o["y"], guides)
     elif chart.kind == "bars":
         body = bars(rows, o["labels"], o["series"])
+    elif chart.kind == "hbars":
+        body = hbars(rows, o["labels"], o["series"])
     elif chart.kind == "small_multiples":
         # The primitive takes facet title -> rows; a spec only names the column to
         # facet on, so the grouping happens here rather than in every spec's SQL.

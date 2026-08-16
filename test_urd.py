@@ -3260,6 +3260,67 @@ def test_every_script_the_page_carries_is_inline():
     assert "uPlot" in html, "the charting library is not embedded"
 
 
+def _people_bars(n, prefix="Firstname Surname "):
+    return [{"person": f"{prefix}{i}", "points": 100 - i * 3} for i in range(n)]
+
+
+def test_hbars_writes_every_category_name_in_full():
+    """The whole reason this renderer exists: a vertical bar gives a name 21px and
+    gets "Phi…", where a horizontal one gives it a whole line."""
+    out = render.hbars(_people_bars(20), labels="person", series=["points"])
+    for row in _people_bars(20):
+        # The label carries a <title> after its text, so the closing tag is not
+        # what follows the name.
+        assert f">{row['person']}<title>" in out, row["person"]
+    assert "…" not in out, "a realistic name should never be cut"
+
+
+def test_hbars_bar_length_is_proportional_to_value():
+    out = render.hbars([{"k": "a", "v": 100}, {"k": "b", "v": 50}, {"k": "c", "v": 0}],
+                       labels="k", series=["v"])
+    widths = [float(w) for w in re.findall(r'<rect[^>]*class="bar"[^>]*width="([\d.]+)"', out)]
+    assert len(widths) == 3, widths
+    assert abs(widths[0] - 2 * widths[1]) < 1.0, widths
+    assert widths[2] == 0, "a zero value must draw nothing, not a stub"
+
+
+def test_hbars_grows_taller_rather_than_thinner_with_more_rows():
+    """The failure this replaces is bars shrinking to a pixel. Height is the axis
+    that scales here, so a row keeps its thickness however many there are."""
+    small = render.hbars(_people_bars(5), labels="person", series=["points"])
+    large = render.hbars(_people_bars(40), labels="person", series=["points"])
+    height = lambda svg: float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', svg).group(1))  # noqa: E731
+    assert height(large) > height(small) * 4
+    bar_h = lambda svg: {float(h) for h in re.findall(  # noqa: E731
+        r'<rect[^>]*class="bar"[^>]*height="([\d.]+)"', svg)}
+    assert bar_h(small) == bar_h(large), "a row must not thin out as rows are added"
+
+
+def test_hbars_stays_inside_its_frame_at_any_row_count():
+    for n in (1, 5, 20, 40):
+        _assert_content_within_viewbox(
+            render.hbars(_people_bars(n), labels="person", series=["points"]), f"hbars n={n}")
+
+
+def test_hbars_leaves_room_for_the_longest_name():
+    """The gutter grows to fit the longest label, up to a cap. Past the cap the
+    label is cut rather than allowed off the edge, and the full text stays in the
+    tooltip."""
+    short = render.hbars([{"k": "a", "v": 1}], labels="k", series=["v"])
+    long = render.hbars([{"k": "a" * 40, "v": 1}], labels="k", series=["v"])
+    assert "<title>" + "a" * 40 + "</title>" in long, "the full name must survive"
+    # (?<![a-z]) or this matches the rx="3" corner radius: [^>]*x=" cheerfully
+    # eats the r. It did, and reported a gutter of 3 for every label length.
+    gutter = lambda svg: float(re.search(  # noqa: E731
+        r'<rect[^>]*class="bar"[^>]*(?<![a-z])x="([\d.]+)"', svg).group(1))
+    assert gutter(long) > gutter(short)
+    _assert_content_within_viewbox(long, "hbars long name")
+
+
+def test_hbars_empty_data_renders_a_note():
+    assert "no data" in render.hbars([], labels="k", series=["v"]).lower()
+
+
 def test_stacked_empty_data_renders_a_note():
     assert "no data" in render.stacked([], x="wk", band="status", value="n").lower()
 
@@ -3794,11 +3855,11 @@ def test_a_bar_island_carries_its_categories_as_labels():
     index and the names travel alongside. Without them an upgraded chart would
     label its axis 0, 1, 2, which is worse than the truncated names it replaced."""
     con = _derived("reopened", "two_sprints")
-    chart, rows = _flow_rows(con, "per_fix_version")
+    chart, rows = _flow_rows(con, "per_epic")
     payload = render.plot_payload(chart, rows)
     assert payload["kind"] == "bars"
     assert payload["x"] == list(range(len(rows)))
-    assert payload["labels"] == [r["fix_version"] for r in rows]
+    assert payload["labels"] == [r["epic"] for r in rows]
     assert payload["time"] is False
     for series in payload["series"]:
         assert series["data"] == [r[series["label"]] for r in rows]
@@ -3806,7 +3867,7 @@ def test_a_bar_island_carries_its_categories_as_labels():
 
 def test_bar_series_keep_the_palette_slots_the_svg_gave_them():
     con = _derived("reopened", "two_sprints")
-    chart, rows = _flow_rows(con, "per_fix_version")
+    chart, rows = _flow_rows(con, "per_epic")
     payload = render.plot_payload(chart, rows)
     assert [s["slot"] for s in payload["series"]] == [
         i % 8 + 1 for i in range(len(chart.options["series"]))]
@@ -3822,6 +3883,15 @@ def test_every_chart_that_can_be_interactive_is():
     for kind in ("lines", "scatter", "stacked", "bars", "small_multiples"):
         missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("interactive")]
         assert not missing, f"{kind} charts not upgraded: {missing}"
+    # hbars is deliberately not upgraded, and this states it rather than letting
+    # the omission look like an oversight. A horizontal bar chart is readable as
+    # drawn: every name is written in full and every value is printed at the end
+    # of its bar, so there is nothing for zoom to reveal. Hovering a bar still
+    # gives name, series and value through the SVG's own <title>, with no script
+    # involved. Reach for uPlot here only if these charts ever grow past a
+    # comfortable scroll.
+    assert by_kind.get("hbars"), "the exemption below is describing nothing"
+    assert not [c.key for c in by_kind["hbars"] if c.options.get("interactive")]
     for kind in ("table", "matrix"):
         missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("sortable")]
         assert not missing, f"{kind} charts not sortable: {missing}"
@@ -3905,10 +3975,8 @@ def test_a_data_island_cannot_close_its_own_script_tag():
 
 
 def test_interactivity_is_declared_on_plot_kinds_only():
-    """A bar chart with nine categories is finished when it is drawn. Interactivity
-    is for charts too dense to read, not a badge every chart collects."""
-    interactive = {c.key for c in chart_specs.CHARTS if c.options.get("interactive")}
-    assert "review_load" in interactive and "cycle_per_sprint" in interactive
+    """A chart that is readable as drawn is finished when it is drawn.
+    Interactivity is a fix for density, not a badge every chart collects."""
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
             assert chart.kind in ("lines", "scatter", "stacked", "bars",
