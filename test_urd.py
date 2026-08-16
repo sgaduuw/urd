@@ -4054,6 +4054,24 @@ def test_interactivity_is_declared_on_plot_kinds_only():
                                   "multiline", "small_multiples"), f"{chart.key}: {chart.kind}"
 
 
+def test_a_stacked_band_is_filled_opaquely():
+    """A stack is drawn largest cumulative first with smaller bands painted over
+    it, so a translucent fill shows every band underneath and renders each one as
+    a blend of itself and all its predecessors. The static SVG fills opaquely;
+    the upgraded chart has to agree or the two disagree on sight.
+
+    Source-level, because the alternative is a browser. It reads the one line that
+    decides the fill rather than the whole script."""
+    # Both "fill:" and "stacked": several lines mention a fill, and the first of
+    # them is a points config belonging to the facet panels.
+    candidates = [ln for ln in render.PLOT_SCRIPT.splitlines()
+                  if "fill:" in ln and "stacked" in ln]
+    assert len(candidates) == 1, candidates
+    fill_line = candidates[0]
+    assert "+ '66'" not in fill_line and '+ "66"' not in fill_line, (
+        f"translucent stacked fill: {fill_line.strip()}")
+
+
 def test_the_embedded_javascript_parses():
     """JavaScript living in a Python string is the one part of this report that
     nothing else checks: ruff does not read it, and a syntax error ships a page

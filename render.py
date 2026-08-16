@@ -319,7 +319,10 @@ PLOT_SCRIPT = """
         label: s.label,
         stroke: colour,
         width: stacked ? 1 : (scatter ? 0 : 2),
-        fill: stacked ? colour + '66' : (bars ? colour : null),
+        /* Opaque, like the SVG. A stack paints smaller bands over larger ones,
+           so any alpha lets every band underneath show through and each one
+           renders as a blend of itself and all its predecessors. */
+        fill: (stacked || bars) ? colour : null,
         paths: bars ? uPlot.paths.bars({ size: [0.85, 40] }) : null,
         points: { show: !stacked && !bars, size: scatter ? 5 : 4,
                   stroke: colour, fill: colour },
