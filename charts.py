@@ -286,7 +286,7 @@ CHARTS = [
             JOIN issue_sprints s
               ON s.key = r.key AND r.ts >= s.start AND r.ts < s."end"
             GROUP BY 1
-            ORDER BY min(s.start)
+            ORDER BY min(s.start) DESC
         """,
         # From the first live run: 64 tickets carried rework and the project used
         # no sprints, so this drew a bare "no data" that reads as "no rework",
@@ -312,7 +312,7 @@ CHARTS = [
             FROM issue_sprints
             WHERE ordinal > 1
             GROUP BY 1
-            ORDER BY min(start)
+            ORDER BY min(start) DESC
         """,
         # Same reason as rework_per_sprint: with no sprints anywhere this drew an
         # empty chart rather than saying the project does not use them.
@@ -346,7 +346,7 @@ CHARTS = [
             FROM cycle_times c
             JOIN last_sprint s ON s.key = c.key AND s.rn = 1
             GROUP BY 1
-            ORDER BY min(s.start)
+            ORDER BY min(s.start) DESC
         """,
         # Counts what the chart plots (cycle times that have a sprint) over what it
         # would plot if every ticket had one, not sprint membership over all issues.

@@ -2791,7 +2791,9 @@ def test_small_multiples_sorts_integer_categories_numerically_not_lexically():
     gs = re.findall(r'<g transform="translate\([\d.]+,[\d.]+\)">(.*?)</g>', out, re.DOTALL)
     local_x = {}
     for body in gs:
-        title = re.search(r'class="facet-title"[^>]*>([^<]+)<', body).group(1)
+        # The bare group name, from the nested <title>: the visible heading now
+        # carries the panel total after it.
+        title = re.search(r"<title>([^<]*)</title>", body).group(1)
         cx = re.search(r'<circle cx="([\d.]+)"', body).group(1)
         local_x[title] = float(cx)
     assert local_x["low"] < local_x["high"]
@@ -3822,6 +3824,28 @@ def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
     assert payload["time"] is True, "a weekly axis should be a time axis"
 
 
+def test_each_small_multiple_states_its_own_total():
+    """Twenty-five sparklines with no numbers on them are a shape, not a chart:
+    a reader can see who is busier without learning how busy anyone is."""
+    groups = {"Alder": [{"w": 1, "n": 3}, {"w": 2, "n": 4}],
+              "Birch": [{"w": 1, "n": 1}, {"w": 2, "n": 1}]}
+    out = render.small_multiples(groups, x="w", y="n")
+    # The heading is followed by a nested <title> holding the bare name, so the
+    # text does not run up to </text> any more.
+    titles = re.findall(r'class="facet-title"[^>]*>([^<]*)<title>', out)
+    assert titles == ["Alder \u00b7 7", "Birch \u00b7 2"], titles
+
+
+def test_a_small_multiple_states_the_scale_its_panels_share():
+    """The panels are comparable only because they share a y-scale, and that is
+    worth nothing to a reader who cannot see what the scale is."""
+    groups = {"Alder": [{"w": 1, "n": 3}, {"w": 2, "n": 9}],
+              "Birch": [{"w": 1, "n": 1}]}
+    out = render.small_multiples(groups, x="w", y="n")
+    # A bare "9" appears in path coordinates, so this asks for the labelled form.
+    assert re.search(r'>peak 9\b', out), "the shared peak must be stated in words"
+
+
 def test_small_multiples_stay_small_multiples_when_upgraded():
     """The point of this chart is one panel each, on shared axes, so it is not read
     as a leaderboard. Turning 25 people into 25 overlaid lines would be
@@ -4134,6 +4158,21 @@ def test_retro_charts_are_all_present():
     assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint", "points_vs_cycle"}
 
 
+def test_the_sprint_charts_run_newest_first():
+    """Horizontal bars read top-down, so newest first puts the sprint you care
+    about at the top instead of at the end of a fifty-row scroll."""
+    con = _derived("reopened", "two_sprints")
+    for key, column in (("rework_per_sprint", "sprint"),
+                        ("carry_over", "sprint"),
+                        ("cycle_per_sprint", "sprint")):
+        chart, rows = _flow_rows(con, key)
+        names = [r[column] for r in rows]
+        # The fixtures run Sprint B (starting 01-05) then Sprint A (01-19), named
+        # so that start order disagrees with both name and id order.
+        assert names == sorted(names), f"{key}: {names}"
+        assert names[0] == "Sprint A" or len(names) < 2, f"{key}: {names}"
+
+
 def test_rework_is_attributed_to_the_sprint_it_happened_in():
     """No fixture ticket has both a rework row and more than one sprint, so on
     fixture data alone "attribute by transition time" and "attribute to the
@@ -4244,7 +4283,7 @@ def test_small_multiples_renders_one_panel_per_person():
     assert len(people) >= 2, "fixture has too few people to tell panels apart"
     out = render.figure(chart, rows, "sub", con)
     for person in people:
-        assert f">{person}</text>" in out, f"no panel titled {person}"
+        assert f"<title>{person}</title>" in out, f"no panel titled {person}"
     for chunk in re.findall(r"<svg\b.*?</svg>", out, re.S):
         _assert_content_within_viewbox(chunk, "throughput")
 

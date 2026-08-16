@@ -276,12 +276,17 @@ PLOT_SCRIPT = """
         cell.className = 'facet';
         var caption = document.createElement('div');
         caption.className = 'facet-name';
-        caption.textContent = facet.title;
+        /* Matches the SVG heading it replaces, total and all. */
+        caption.textContent = facet.title + ' \u00b7 ' + facet.total;
         cell.appendChild(caption);
         grid.appendChild(cell);
         var colour = token('--s1', '#2a78d6');
         new uPlot({
-          width: 150, height: 90, legend: { show: false },
+          width: 150, height: 90,
+          /* The legend IS the numbers here: a 150px panel has no room for axes,
+             so without a readout an upgraded facet says even less than the SVG
+             it replaced, which at least prints its total in the heading. */
+          legend: { show: true },
           cursor: { drag: { x: true, y: false } },
           scales: { x: { time: true }, y: { range: [0, spec.yMax || 1] } },
           axes: [{ show: false }, { show: false }],
@@ -1320,9 +1325,15 @@ def small_multiples(groups, x, y):
         col, row = idx % cols, idx // cols
         ox, oy = col * fw, row * fh
         g = [f'<g transform="translate({ox},{oy})">']
+        # The panel's own total, because twenty-five sparklines with no numbers on
+        # them show who is busier without ever saying how busy anyone is. The
+        # shape answers "when", the total answers "how much", and the shared peak
+        # printed once below answers "compared with what".
+        facet_total = sum(v for v in (_num(r.get(y)) for r in facet_rows) if v is not None)
+        heading = ("" if title is None else str(title)) + f" \u00b7 {_fmt_num(facet_total)}"
         g.append(
             f'<text x="{fw / 2}" y="12" class="facet-title" text-anchor="middle">'
-            f'{esc("" if title is None else title)}</text>'
+            f"{esc(heading)}<title>{esc('' if title is None else title)}</title></text>"
         )
 
         if not facet_rows:
@@ -1373,8 +1384,18 @@ def small_multiples(groups, x, y):
         g.append("</g>")
         parts.append("".join(g))
 
+    # The panels are comparable only because they share a y-scale, and that is
+    # worth nothing to a reader who cannot see what the scale is. Stated once,
+    # below the grid, rather than repeated on twenty-five panels.
+    peak = max((v for v in (_num(r.get(y)) for _, rows_ in items for r in rows_)
+                if v is not None), default=0)
+    footer_y = height + 12
+    parts.append(
+        f'<text x="0" y="{footer_y}" class="tick">peak {esc(_fmt_num(peak))} '
+        f"{esc(y)} per {esc(x)}, shared by every panel</text>"
+    )
     title = f'<title>{esc(y)} by {esc(x)}, one panel per group</title>'
-    return svg(width, height, title + "".join(parts))
+    return svg(width, height + 18, title + "".join(parts))
 
 
 FIGURE_KINDS = frozenset(
@@ -1486,6 +1507,8 @@ def _facets_payload(o, rows):
         "yLabel": y_key,
         "yMax": max(values) if values else 0,
         "facets": [{"title": "" if g is None else str(g),
+                    "total": sum(v for t in axis
+                                 if (v := at.get((g, t))) is not None),
                     "data": [at.get((g, t)) for t in axis]} for g in groups],
     }
 

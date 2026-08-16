@@ -167,7 +167,9 @@ own tooltip and no script at all. These charts grow taller as rows are added
 rather than thinning, on the principle that a page scrolls and a one-pixel bar
 means nothing. Small multiples stay small
 multiples, one panel per person on shared scales, because folding 25 people into
-one chart would be interactive and would be a different chart.
+one chart would be interactive and would be a different chart. Each panel prints
+its own total in its heading and the shared peak is stated once below the grid,
+so the shapes can be read as quantities rather than only against each other.
 
 A stack with more bands than the palette has colours folds its smallest into one
 `Other`, because two identically coloured bands touching each other cannot be
