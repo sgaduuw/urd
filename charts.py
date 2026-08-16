@@ -391,11 +391,17 @@ CHARTS = [
         key="throughput_per_person",
         section="People",
         title="Tickets closed per week, per person",
-        kind="small_multiples",
-        caption="One small chart each, deliberately: the same data as a ranked "
-                "bar chart, without inviting a reading it does not support. "
-                "Attributed to the assignee at close.",
-        options={"group": "person", "x": "week", "y": "closed", "interactive": True},
+        kind="multiline",
+        caption="One line each, on one set of axes. Click a name in the legend to "
+                "isolate it, and drag across the chart to zoom. Attributed to the "
+                "assignee at close.",
+        # One chart rather than 25 panels. The panels were legible individually and
+        # hopeless for the comparison people actually want, which is who is
+        # carrying what over the same weeks. With more people than the palette has
+        # colours, three share each: the legend and the hover readout are what
+        # separate them, which is why this shape needs the upgrade more than most.
+        options={"band": "person", "x": "week", "y": "closed", "value": "closed",
+                 "interactive": True},
         # ::DATE for consistency with the other time-bucketed charts. Not for the
         # midnight-label guard: small multiples emit facet titles and no tick
         # labels, so that guard never reaches this chart.

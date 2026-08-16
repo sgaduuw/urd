@@ -989,6 +989,28 @@ def lines(rows, x, series):
     return svg(width, height, title + "".join(parts) + legend)
 
 
+def multiline(rows, x, band, value):
+    """One line per group, all on one chart, from long-format rows.
+
+    Pivots here rather than in SQL because the column list depends on who happens
+    to have closed a ticket, and a query cannot name columns it does not know.
+    Everything else, the legend, the palette, the endpoint labels and the frame
+    handling, is `lines`, which already does all of it.
+
+    A group missing an x gets None rather than 0, so its line breaks there
+    instead of drawing a straight stretch through a week it was absent for.
+
+    With more groups than PALETTE has slots, colours repeat: on 25 people, three
+    share each. The legend and the per-point readout are what tell those apart,
+    which is why this shape wants the interactive upgrade more than most.
+    """
+    bands = list(dict.fromkeys(r.get(band) for r in rows))
+    xs = list(dict.fromkeys(r.get(x) for r in rows))
+    at = {(r.get(x), r.get(band)): r.get(value) for r in rows}
+    wide = [{x: xv, **{b: at.get((xv, b)) for b in bands}} for xv in xs]
+    return lines(wide, x, [b for b in bands if b is not None])
+
+
 def stacked(rows, x, band, value):
     """Stacked bar chart from long-format rows: one bar per distinct `x`,
     split into segments named by `band`, each segment's height proportional
@@ -1400,7 +1422,7 @@ def small_multiples(groups, x, y):
 
 FIGURE_KINDS = frozenset(
     {"table", "matrix", "lines", "stacked", "scatter", "bars", "hbars",
-     "small_multiples"}
+     "multiline", "small_multiples"}
 )
 
 
@@ -1426,6 +1448,14 @@ def plot_payload(chart, rows):
         return _bars_payload(o, rows)
     if chart.kind == "small_multiples":
         return _facets_payload(o, rows)
+    if chart.kind == "multiline":
+        # Same pivot the renderer does, so the upgrade and the SVG plot one shape.
+        bands = [b for b in dict.fromkeys(r.get(o["band"]) for r in rows) if b is not None]
+        xs = list(dict.fromkeys(r.get(o["x"]) for r in rows))
+        at = {(r.get(o["x"]), r.get(o["band"])): r.get(o["value"]) for r in rows}
+        rows = [{o["x"]: xv, **{b: at.get((xv, b)) for b in bands}} for xv in xs]
+        chart = chart._replace(kind="lines", options={**o, "series": bands})
+        o = chart.options
     x_key = o["x"]
     xs = [r.get(x_key) for r in rows]
     stamps = [_epoch(x) for x in xs]
@@ -1593,6 +1623,8 @@ def figure(chart, rows, subtitle, con, link_base=None):
         body = bars(rows, o["labels"], o["series"])
     elif chart.kind == "hbars":
         body = hbars(rows, o["labels"], o["series"])
+    elif chart.kind == "multiline":
+        body = multiline(rows, o["x"], o["band"], o["value"])
     elif chart.kind == "small_multiples":
         # The primitive takes facet title -> rows; a spec only names the column to
         # facet on, so the grouping happens here rather than in every spec's SQL.

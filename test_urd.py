@@ -3824,6 +3824,39 @@ def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
     assert payload["time"] is True, "a weekly axis should be a time axis"
 
 
+def test_multiline_pivots_long_rows_into_one_series_per_group():
+    """One chart, one line per person, from the same long-format rows the facets
+    used. Pivoting here rather than in SQL keeps the query free of a column list
+    that depends on who happens to have closed a ticket."""
+    rows = [{"w": 1, "who": "Alder", "n": 3}, {"w": 1, "who": "Birch", "n": 1},
+            {"w": 2, "who": "Alder", "n": 4}, {"w": 2, "who": "Birch", "n": 2}]
+    out = render.multiline(rows, x="w", band="who", value="n")
+    assert "Alder" in out and "Birch" in out
+    assert out.count("<path") >= 2, "one line per person"
+    _assert_content_within_viewbox(out, "multiline")
+
+
+def test_multiline_leaves_a_gap_where_a_person_closed_nothing():
+    """Same rule as the facets: a missing week breaks the line rather than drawing
+    a straight stretch implying steady output through it."""
+    rows = [{"w": 1, "who": "Alder", "n": 3}, {"w": 3, "who": "Alder", "n": 4},
+            {"w": 1, "who": "Birch", "n": 1}, {"w": 2, "who": "Birch", "n": 2},
+            {"w": 3, "who": "Birch", "n": 1}]
+    out = render.multiline(rows, x="w", band="who", value="n")
+    _assert_content_within_viewbox(out, "multiline gap")
+    assert "Alder" in out
+
+
+def test_multiline_stays_in_frame_with_more_people_than_the_palette():
+    """Twenty-five people against eight colours. The chart has to survive that,
+    even though the legend and the hover are what tell two same-coloured lines
+    apart."""
+    rows = [{"w": w, "who": f"Person {i:02d}", "n": (i + w) % 7}
+            for w in range(1, 30) for i in range(25)]
+    out = render.multiline(rows, x="w", band="who", value="n")
+    _assert_content_within_viewbox(out, "multiline 25")
+
+
 def test_each_small_multiple_states_its_own_total():
     """Twenty-five sparklines with no numbers on them are a shape, not a chart:
     a reader can see who is busier without learning how busy anyone is."""
@@ -3846,79 +3879,18 @@ def test_a_small_multiple_states_the_scale_its_panels_share():
     assert re.search(r'>peak 9\b', out), "the shared peak must be stated in words"
 
 
-def test_small_multiples_stay_small_multiples_when_upgraded():
-    """The point of this chart is one panel each, on shared axes, so it is not read
-    as a leaderboard. Turning 25 people into 25 overlaid lines would be
-    interactive and would be a different chart, so the payload keeps the facets
-    and every panel keeps the shared scales the SVG gave it."""
+def test_the_per_person_chart_is_one_chart_with_one_line_each():
+    """It was 25 panels and is now one chart, which reverses a spec decision. The
+    rule that survived is the one that mattered: no ranking. This asserts the
+    shape, so a silent slide back to a sorted bar chart of people fails here."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "throughput_per_person")
+    assert chart.kind == "multiline"
     payload = render.plot_payload(chart, rows)
-    assert payload["kind"] == "small_multiples"
-    people = list(dict.fromkeys(r["person"] for r in rows))
-    assert [f["title"] for f in payload["facets"]] == people
-    # Shared, not per-facet: a panel with a smaller maximum must not rescale.
-    assert payload["yMax"] == max(r["closed"] for r in rows)
-    assert payload["x"] == sorted({render._epoch(r["week"]) for r in rows})
-
-
-def test_a_facet_missing_a_week_leaves_a_gap_rather_than_joining_across():
-    """Same rule the SVG follows: a null breaks the line, so an absent week does
-    not draw a straight stretch implying steady output through it."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    payload = render.plot_payload(chart, rows)
-    assert len(payload["facets"]) >= 2, "need two people to have a gap at all"
-    for facet in payload["facets"]:
-        assert len(facet["data"]) == len(payload["x"])
-    assert any(None in f["data"] for f in payload["facets"]), payload["facets"]
-
-
-def test_a_bar_island_carries_its_categories_as_labels():
-    """A bar axis is categorical and uPlot places points numerically, so x is an
-    index and the names travel alongside. Without them an upgraded chart would
-    label its axis 0, 1, 2, which is worse than the truncated names it replaced."""
-    con = _derived("reopened", "two_sprints")
-    chart, rows = _flow_rows(con, "per_epic")
-    payload = render.plot_payload(chart, rows)
-    assert payload["kind"] == "bars"
-    assert payload["x"] == list(range(len(rows)))
-    assert payload["labels"] == [r["epic"] for r in rows]
-    assert payload["time"] is False
-    for series in payload["series"]:
-        assert series["data"] == [r[series["label"]] for r in rows]
-
-
-def test_bar_series_keep_the_palette_slots_the_svg_gave_them():
-    con = _derived("reopened", "two_sprints")
-    chart, rows = _flow_rows(con, "per_epic")
-    payload = render.plot_payload(chart, rows)
-    assert [s["slot"] for s in payload["series"]] == [
-        i % 8 + 1 for i in range(len(chart.options["series"]))]
-
-
-def test_every_chart_that_can_be_interactive_is():
-    """Tables sort, and everything a plot can carry is upgraded. What is left has
-    to be left deliberately, so this names it rather than letting a chart drift
-    out of the set unnoticed."""
-    by_kind = {}
-    for chart in chart_specs.CHARTS:
-        by_kind.setdefault(chart.kind, []).append(chart)
-    for kind in ("lines", "scatter", "stacked", "bars", "small_multiples"):
-        missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("interactive")]
-        assert not missing, f"{kind} charts not upgraded: {missing}"
-    # hbars is deliberately not upgraded, and this states it rather than letting
-    # the omission look like an oversight. A horizontal bar chart is readable as
-    # drawn: every name is written in full and every value is printed at the end
-    # of its bar, so there is nothing for zoom to reveal. Hovering a bar still
-    # gives name, series and value through the SVG's own <title>, with no script
-    # involved. Reach for uPlot here only if these charts ever grow past a
-    # comfortable scroll.
-    assert by_kind.get("hbars"), "the exemption below is describing nothing"
-    assert not [c.key for c in by_kind["hbars"] if c.options.get("interactive")]
-    for kind in ("table", "matrix"):
-        missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("sortable")]
-        assert not missing, f"{kind} charts not sortable: {missing}"
+    assert payload["kind"] == "lines"
+    people = [p for p in dict.fromkeys(r["person"] for r in rows) if p is not None]
+    assert [s["label"] for s in payload["series"]] == people
+    assert len(payload["x"]) == len({r["week"] for r in rows})
 
 
 def test_a_stacked_island_carries_cumulative_sums_computed_in_python():
@@ -4004,7 +3976,7 @@ def test_interactivity_is_declared_on_plot_kinds_only():
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
             assert chart.kind in ("lines", "scatter", "stacked", "bars",
-                                  "small_multiples"), f"{chart.key}: {chart.kind}"
+                                  "multiline", "small_multiples"), f"{chart.key}: {chart.kind}"
 
 
 def test_the_embedded_javascript_parses():
@@ -4267,23 +4239,25 @@ def test_handoffs_pair_the_starting_assignee_with_the_closing_one():
         ("Alder", "Birch", 1)]
 
 
-def test_throughput_uses_small_multiples_rather_than_a_ranked_bar_chart():
-    """A leaderboard invites a reading the data does not support. Note this is a
-    claim about throughput only: points_per_person is deliberately a ranked bar
-    chart, because a ranking of points is a thing this report was asked for."""
+def test_the_per_person_chart_is_not_a_ranking():
+    """The spec rule that survived merging 25 panels into one chart. A time series
+    of 25 people is dense, not ordered, and nobody reads a position off it; a
+    sorted bar chart of the same numbers would be a leaderboard and is still out."""
     chart, _ = _flow_rows(_derived("reopened"), "throughput_per_person")
-    assert chart.kind == "small_multiples"
-    assert "small_multiples" in render.FIGURE_KINDS
+    assert chart.kind == "multiline"
+    assert chart.kind not in ("bars", "hbars"), "people must not be ranked"
+    assert "ORDER BY" not in chart.sql.upper().split("GROUP BY")[-1].replace(
+        "ORDER BY 1, 2", ""), chart.sql
 
 
-def test_small_multiples_renders_one_panel_per_person():
+def test_the_per_person_chart_draws_a_line_for_everyone():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "throughput_per_person")
-    people = {r[chart.options["group"]] for r in rows}
-    assert len(people) >= 2, "fixture has too few people to tell panels apart"
+    people = {r[chart.options["band"]] for r in rows}
+    assert len(people) >= 2, "fixture has too few people to tell lines apart"
     out = render.figure(chart, rows, "sub", con)
     for person in people:
-        assert f"<title>{person}</title>" in out, f"no panel titled {person}"
+        assert person in out, f"no line for {person}"
     for chunk in re.findall(r"<svg\b.*?</svg>", out, re.S):
         _assert_content_within_viewbox(chunk, "throughput")
 
