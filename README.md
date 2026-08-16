@@ -220,20 +220,18 @@ Remembered between runs; pass `1900-01-01` to go back to everything. The header
 states the window, because a windowed report and a whole-history one look
 identical otherwise.
 
-Every chart obeys it. A ticket counts if it was created or resolved inside the
-window; an event counts if it happened inside it. That is one rule and it is
-applied everywhere, which means it changes what some charts mean rather than just
-how long they are:
+A ticket counts if it was created or resolved inside the window; an event counts
+if it happened inside it. That changes what some charts mean rather than just how
+long they are: **progress per epic** and **per version** become what moved in the
+window, not how far along the whole thing is.
 
-- **Aging work in progress** drops any ticket created before the window, which is
-  exactly the oldest ones the chart exists to surface. On a six-month window
-  against a two-year project it hid every ticket over 580 days old.
-- **Progress per epic** and **per version** become what moved in the window
-  rather than how far along the whole thing is.
-
-If that is the wrong trade for a chart, the fix is to drop `in_window` from its
-query; a test will then tell you which chart is no longer obeying the flag, which
-is the point of the test.
+One chart is exempt. **Aging work in progress** is always current, because a
+window drops any ticket created before it, which is exactly the oldest work the
+chart exists to find: a six-month window hid every open ticket over 580 days old.
+Exemptions live in `WINDOW_EXEMPT` in `charts.py` and the header reads them, so a
+report never claims a coverage it does not have. A test checks the two agree in
+both directions, so a chart cannot quietly stop obeying the flag, and an
+exemption cannot outlive the chart it names.
 
 ## Coverage figures
 

@@ -3666,7 +3666,8 @@ def test_figure_refuses_a_kind_no_renderer_handles():
 
 def _header(**over):
     base = {"project": "PROJ", "component": "TEAM", "since": "2026-01-01",
-            "synced": "2026-08-13T17:00:00", "errors": 0, "issues": 41, "window": None}
+            "synced": "2026-08-13T17:00:00", "errors": 0, "issues": 41,
+            "window": None, "exempt": []}
     return {**base, **over}
 
 
@@ -4199,9 +4200,27 @@ def test_every_chart_respects_the_report_window():
     report a different period from the one beside it, which is worse than a chart
     that is simply wrong: the reader has no way to tell."""
     for chart in chart_specs.CHARTS:
-        assert "in_window(" in chart.sql, f"{chart.key} ignores --since"
-        if chart.coverage:
+        exempt = chart.key in chart_specs.WINDOW_EXEMPT
+        used = "in_window(" in chart.sql
+        assert used != exempt, (
+            f"{chart.key}: exempt={exempt} but "
+            f"{'uses' if used else 'ignores'} the window")
+        if chart.coverage and not exempt:
             assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores --since"
+    stray = set(chart_specs.WINDOW_EXEMPT) - {c.key for c in chart_specs.CHARTS}
+    assert not stray, f"exemption for a chart that no longer exists: {stray}"
+
+
+def test_the_exempt_chart_really_does_ignore_the_window():
+    """The exemption is the point of the flag for this chart, so it is measured
+    rather than trusted: the oldest open tickets must survive a window that
+    postdates them."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, before = _flow_rows(con, "aging_wip")
+    urd.set_report_window(con, "2030-01-01")
+    _, after = _flow_rows(con, "aging_wip")
+    assert [r["key"] for r in after] == [r["key"] for r in before], "the window bit"
+    assert before, "fixture has no open tickets, so this proves nothing"
 
 
 def test_a_window_narrows_every_chart_that_has_data_outside_it():
@@ -4213,6 +4232,8 @@ def test_a_window_narrows_every_chart_that_has_data_outside_it():
         assert after[key] <= before[key], f"{key} grew: {before[key]} -> {after[key]}"
     narrowed = [k for k in before if after[k] < before[k]]
     assert len(narrowed) >= 5, f"a February window barely changed anything: {narrowed}"
+    for key in chart_specs.WINDOW_EXEMPT:
+        assert after[key] == before[key], f"{key} is exempt but narrowed"
 
 
 def test_an_unset_window_leaves_every_chart_whole():
@@ -4230,6 +4251,12 @@ def test_the_page_states_the_window_every_chart_obeys():
     windowed = render.page(_header(window="2026-03-01"), [])
     assert "2026-03-01 onward" in windowed
     assert "onward" not in render.page(_header(), [])
+    # "Every chart" stopped being true the moment one was exempted, and a header
+    # that overclaims is worse than one that says nothing: a reader quotes the
+    # aging table as if it covered the window.
+    named = render.page(_header(window="2026-03-01", exempt=["Aging work in progress"]), [])
+    assert "Every chart" not in named, named[named.index("<header>"):][:400]
+    assert "Aging work in progress" in named
 
 
 def test_a_report_window_is_remembered_and_validated():

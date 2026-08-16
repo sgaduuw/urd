@@ -48,6 +48,13 @@ THRESHOLDS = {"default": DEFAULT_TIER, "points": POINTS_TIER}
 # enough that the x-axis stays readable and the report stops growing.
 WINDOW_WEEKS = 26
 
+# Charts that deliberately ignore `report --since`, and why. A dict rather than a
+# comment because the report header reads it: a page claiming every chart covers
+# a window while one does not is worse than no claim at all.
+WINDOW_EXEMPT = {
+    "aging_wip": "always current, so the window would hide the oldest work it exists to find",
+}
+
 
 class Chart(NamedTuple):
     key: str
@@ -71,7 +78,8 @@ CHARTS = [
         title="Aging work in progress",
         kind="table",
         caption="Open tickets by days in their current status. The chart that "
-                "changes what you do today.",
+                "changes what you do today. Ignores --since: a window drops any "
+                "ticket created before it, which is exactly the oldest work here.",
         options={"headers": ["key", "status", "assignee", "days"], "shade": "days",
                  "sortable": True, "links": ["key"]},
         sql="""
@@ -82,7 +90,7 @@ CHARTS = [
             LEFT JOIN people p ON p.account_id = i.assignee_id
             JOIN (SELECT key, max(entered) AS entered FROM status_durations GROUP BY key) d
                  ON d.key = i.key
-            WHERE i.status_category <> 'done' AND in_window(i.created)
+            WHERE i.status_category <> 'done'
             ORDER BY days DESC
             LIMIT 40
         """,

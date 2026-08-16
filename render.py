@@ -408,8 +408,18 @@ def page(header, sections):
     # Stated because every chart obeys it, including the ones where it changes
     # what a chart means: aging work in progress drops any ticket created before
     # the window, which is exactly the oldest ones it exists to surface.
-    window = (f"<strong>Every chart covers {esc(header['window'])} onward.</strong> "
-              if header.get("window") else "")
+    # Derived from the specs by report(), not restated here: a chart exempted
+    # later would otherwise leave this sentence quietly false, and a header that
+    # overclaims is worse than one that says nothing, because a reader quotes the
+    # exempt chart as if it covered the window too.
+    exempt = header.get("exempt") or []
+    if not header.get("window"):
+        window = ""
+    elif exempt:
+        window = (f"<strong>Charts cover {esc(header['window'])} onward, except "
+                  f"{esc(', '.join(exempt))}, which is always current.</strong> ")
+    else:
+        window = f"<strong>Every chart covers {esc(header['window'])} onward.</strong> "
     body = "".join(
         f"<h2>{esc(title)}</h2>" + "".join(charts) for title, charts in sections
     )

@@ -908,6 +908,8 @@ def report(con, path="report.html", tiers=None):
         "since": scope["earliest_since"] or "unknown",
         "synced": scope["last_sync_at"] or "never",
         "window": scope["report_since"],
+        "exempt": [c.title for c in chart_specs.CHARTS
+                   if c.key in chart_specs.WINDOW_EXEMPT],
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
