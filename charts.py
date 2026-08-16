@@ -311,14 +311,18 @@ CHARTS = [
         sql="""
             SELECT i.story_points, c.cycle_days
             FROM issues i JOIN cycle_times c ON c.key = i.key
-            WHERE i.story_points IS NOT NULL
+            -- > 0 rather than IS NOT NULL: this instance stores an unestimated
+            -- ticket as 0, not NULL, so IS NOT NULL reported 100% coverage while
+            -- 69% of tickets carried no estimate and 131 of 309 plotted points
+            -- sat on the x axis at zero.
+            WHERE i.story_points > 0
             ORDER BY i.story_points
         """,
         # Rows actually plotted over rows that could be, not points-present over all
         # issues: a ticket with points but no cycle time never reaches this chart.
         coverage="""
             SELECT (SELECT count(*) FROM issues i JOIN cycle_times c ON c.key = i.key
-                    WHERE i.story_points IS NOT NULL),
+                    WHERE i.story_points > 0),
                    (SELECT count(*) FROM cycle_times)
         """,
         threshold=POINTS_THRESHOLD,
@@ -411,13 +415,14 @@ CHARTS = [
                    sum(i.story_points) AS points
             FROM issues i
             LEFT JOIN people p ON p.account_id = i.assignee_id
-            WHERE i.status_category = 'done' AND i.story_points IS NOT NULL
+            -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
+            WHERE i.status_category = 'done' AND i.story_points > 0
             GROUP BY 1
             ORDER BY points DESC
         """,
         coverage="""
             SELECT (SELECT count(*) FROM issues
-                    WHERE story_points IS NOT NULL AND status_category = 'done'),
+                    WHERE story_points > 0 AND status_category = 'done'),
                    (SELECT count(*) FROM issues WHERE status_category = 'done')
         """,
         threshold=POINTS_THRESHOLD,

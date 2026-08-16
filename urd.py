@@ -480,7 +480,10 @@ def derive_issues(con):
                 if acct:
                     people[acct] = who.get("displayName")
         points = f.get(points_field) if points_field else None
-        missing_points += points is None
+        # A zero is an unestimated ticket, not an estimate of zero, so it counts
+        # as missing here too. Otherwise this prints 0% empty on a field that
+        # 69% of tickets never had filled in.
+        missing_points += not points
         rows.append(
             [
                 key, key.split("-")[0], (f.get("issuetype") or {}).get("name"),

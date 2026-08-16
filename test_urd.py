@@ -2956,6 +2956,63 @@ def test_bars_empty_data_renders_a_note():
     assert "no data" in render.bars([], labels="label", series=["done"]).lower()
 
 
+def _people_rows(n):
+    return [{"person": f"Firstname Surname {i}", "points": 100 - i} for i in range(n)]
+
+
+def test_a_bar_tooltip_names_the_row_it_belongs_to():
+    """Story points per person put seventeen full names on a 480px axis, where a
+    band is 26px and a name needs about 133. The axis label cannot carry the
+    identity at that width, so the tooltip has to."""
+    out = render.bars(_people_rows(3), labels="person", series=["points"])
+    tips = re.findall(r"<title>([^<]*)</title>", out)
+    assert any("Firstname Surname 0" in t and "100" in t for t in tips), tips
+
+
+def test_bar_x_labels_are_shortened_to_what_their_band_can_hold():
+    """Seventeen overlapping names are noise, not a label. Shortened they still
+    order and distinguish the bars, and the tooltip carries the full name."""
+    out = render.bars(_people_rows(17), labels="person", series=["points"])
+    ticks = re.findall(r'class="tick"[^>]*>([^<]*)</text>', out)
+    names = [t for t in ticks if "Firstname"[:2] in t or "…" in t]
+    assert names, f"no shortened person labels found in {ticks}"
+    assert all(len(t) <= 8 for t in names), f"labels still too wide: {names}"
+    # A roomy chart must not be shortened at all.
+    wide = render.bars(_people_rows(2), labels="person", series=["points"])
+    assert "Firstname Surname 0" in wide, "a two-bar chart should keep its full labels"
+
+
+def test_bars_stay_in_frame_with_many_named_categories():
+    for n in (2, 5, 12, 17, 30):
+        _assert_content_within_viewbox(
+            render.bars(_people_rows(n), labels="person", series=["points"]), f"bars n={n}")
+
+
+def test_axes_thins_category_labels_so_interior_ones_stay_in_frame():
+    """From the first live report: created-versus-closed has 30 weekly buckets and
+    an INTERIOR label overflowed the right edge by 4.2px. axes anchored only the
+    first and last tick, so the second from the end still ran out, and 30
+    ten-character dates overlapped into noise besides."""
+    rows = [{"week": f"2026-{1 + i // 4:02d}-{1 + (i % 4) * 7:02d}",
+             "created": i % 5, "closed": i % 3} for i in range(30)]
+    out = render.lines(rows, x="week", series=["created", "closed"])
+    _assert_content_within_viewbox(out, "lines 30 weeks")
+    dates = [t for t in re.findall(r'class="tick"[^>]*>([^<]*)</text>', out)
+             if t.startswith("2026")]
+    assert 1 < len(dates) <= 8, f"30 buckets produced {len(dates)} date labels"
+
+
+def test_stacked_keeps_its_total_label_in_frame_when_floors_accumulate():
+    """The live cumulative flow has 9 bands and a tallest stack of 689. Each tiny
+    band is floored to 1px, and nine of those lifted the total label 0.7px above
+    the frame: the documented overshoot grows with band count."""
+    rows = [{"day": f"d{i}", "status": s, "tickets": 1 if s != "big" else 400}
+            for i in range(6)
+            for s in ("big", "b", "c", "d", "e", "f", "g", "h", "i")]
+    out = render.stacked(rows, x="day", band="status", value="tickets")
+    _assert_content_within_viewbox(out, "stacked 9 bands")
+
+
 def test_stacked_empty_data_renders_a_note():
     assert "no data" in render.stacked([], x="wk", band="status", value="n").lower()
 

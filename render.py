@@ -488,6 +488,17 @@ def axes(rows, x, y, width, height, zero_floor=False):
     # and the same happens on the left. Anchor those two away from the
     # edge instead (same principle as the endpoint-label fix in `lines`);
     # interior ticks keep "middle" since they have room on both sides.
+    # Anchoring the outermost two is not enough on its own: with 30 weekly
+    # buckets the label *second from the end* still ran 4.2px past the frame,
+    # because every interior one stays centred and they are only ever as far
+    # apart as the categories are. Thin to what fits first, on the same
+    # 7px/character estimate used elsewhere, which also stops 30 ten-character
+    # dates from overlapping into noise.
+    widest = max((len(str(lbl)) for _, lbl in tick_items), default=1)
+    fits = max(1, int(plot_w // (widest * 7 + 8)))
+    step = max(1, -(-len(tick_items) // fits))
+    tick_items = tick_items[::step]
+
     n_ticks = len(tick_items)
     for idx, (xp, label) in enumerate(tick_items):
         if n_ticks > 1 and idx == 0:
@@ -593,6 +604,8 @@ def bars(rows, labels, series):
     parts = [y_markup]
     for i, row in enumerate(rows):
         band_x = left + i * band_w
+        row_label = row.get(labels)
+        row_label = "" if row_label is None else str(row_label)
         for j, s in enumerate(series):
             v = _num(row.get(s))
             if v is None:
@@ -614,15 +627,25 @@ def bars(rows, labels, series):
             parts.append(
                 f'<rect x="{bx:.1f}" y="{top_y:.1f}" width="{bar_w:.1f}" '
                 f'height="{max(h, 0):.1f}" rx="4" fill="{color}">'
-                f"<title>{esc(s)}: {esc(_fmt_num(v))}</title></rect>"
+                # The row's own name leads, because the axis label under a narrow
+                # band is shortened or unreadable and this is then the only place
+                # the bar says who it is. The series name still follows it, so a
+                # grouped chart stays unambiguous.
+                f"<title>{esc(row_label + ', ' if row_label else '')}"
+                f"{esc(s)}: {esc(_fmt_num(v))}</title></rect>"
             )
             if h > 12:  # only label a bar tall enough for the text to fit
                 parts.append(
                     f'<text x="{bx + bar_w / 2:.1f}" y="{top_y - 4:.1f}" class="value-label" '
                     f'text-anchor="middle">{esc(_fmt_num(v))}</text>'
                 )
-        label = row.get(labels)
-        label = "" if label is None else label
+        # A band 26px wide cannot hold a 19-character name. Seventeen people on a
+        # 480px axis overlapped into noise, and with five the outermost label left
+        # the frame entirely. Shorten to what the band holds, using the same
+        # 7px/character estimate as _legend and _y_tick_pad, and let the per-bar
+        # tooltip carry the full name. A roomy chart is left untouched.
+        fits = max(1, int(band_w / 7))
+        label = row_label if len(row_label) <= fits else row_label[: max(1, fits - 1)] + "…"
         parts.append(
             f'<text x="{band_x + band_w / 2:.1f}" y="{bottom + 16}" class="tick" '
             f'text-anchor="middle">{esc(label)}</text>'
@@ -841,8 +864,17 @@ def stacked(rows, x, band, value):
             # not sy(running): the two only differ when a segment was
             # floor-inflated, and the label must sit at what's actually
             # drawn, not the untouched math.
+            #
+            # Clamped to the cap height, because that difference is not as
+            # rare as this docstring once claimed: the 1px floor is spent
+            # per segment, so the overshoot grows with band count. The live
+            # cumulative flow has 9 bands and pushed the label 0.7px above
+            # the frame. Below the clamp the label sits over the top
+            # segment rather than outside the chart, which is the better of
+            # the two failures.
+            label_y = max(cursor - 4, 8)
             parts.append(
-                f'<text x="{band_x + bar_w / 2:.1f}" y="{cursor - 4:.1f}" '
+                f'<text x="{band_x + bar_w / 2:.1f}" y="{label_y:.1f}" '
                 f'class="value-label" text-anchor="middle">{esc(_fmt_num(running))}</text>'
             )
         if i in labelled:
