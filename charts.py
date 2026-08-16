@@ -9,10 +9,18 @@ from typing import NamedTuple
 
 SECTIONS = ("Flow health", "Reporting outward", "Retro", "People")
 
-# Optional-field charts are held to a lower bar than always-available ones,
-# matching the rule that a field empty on half the tickets is worth showing with
-# a caveat but not worth showing bare.
-POINTS_THRESHOLD = 0.5
+# Optional-field charts are held to a lower bar than always-available ones: a
+# field most tickets skip is still worth showing with a caveat, where an
+# always-available one going quiet means something is wrong.
+#
+# 0.35 rather than the original 0.5 because of what the first live run measured:
+# 195 of 517 closed tickets carry a real estimate, so at 0.5 the points charts
+# hid themselves on the one project they were written for. Set deliberately just
+# under that, which is the honest position: the number is a judgement about how
+# little data is still worth plotting, not a property of the data. The caption
+# carries the coverage figure either way, so a reader always sees what the chart
+# is drawn from.
+POINTS_THRESHOLD = 0.35
 DEFAULT_THRESHOLD = 0.7
 
 # How far back the time series charts look. Long enough to show a trend, short
