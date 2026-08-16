@@ -211,4 +211,100 @@ CHARTS = [
             ORDER BY 1, 2
         """,
     ),
+    Chart(
+        key="rework_per_sprint",
+        section="Retro",
+        title="Rework per sprint",
+        kind="bars",
+        caption="Transitions that moved a ticket backwards through the workflow. "
+                "The single best retro chart, and one no built-in report draws.",
+        options={"labels": "sprint", "series": ["backward_moves"]},
+        # Attributed by when the transition happened, not by the ticket's latest
+        # sprint: a backward move belongs to the sprint it occurred in.
+        sql="""
+            SELECT s.sprint_name AS sprint, count(*) AS backward_moves
+            FROM rework r
+            JOIN issue_sprints s
+              ON s.key = r.key AND r.ts >= s.start AND r.ts < s."end"
+            GROUP BY 1
+            ORDER BY min(s.start)
+        """,
+    ),
+    Chart(
+        key="carry_over",
+        section="Retro",
+        title="Carried into each sprint",
+        kind="bars",
+        caption="Tickets that were already in an earlier sprint. Persistent "
+                "carry-over means the sprint is being planned optimistically.",
+        options={"labels": "sprint", "series": ["carried"]},
+        sql="""
+            SELECT sprint_name AS sprint, count(DISTINCT key) AS carried
+            FROM issue_sprints
+            WHERE ordinal > 1
+            GROUP BY 1
+            ORDER BY min(start)
+        """,
+    ),
+    Chart(
+        key="cycle_per_sprint",
+        section="Retro",
+        title="Cycle time per sprint",
+        kind="bars",
+        caption="Median and 85th percentile days per sprint. Tightening is the "
+                "thing to look for, not the absolute value.",
+        options={"labels": "sprint", "series": ["median_days", "p85_days"]},
+        # Attributed to the ticket's LAST sprint rather than to whichever sprint
+        # window contains its resolution. Work routinely closes after the sprint
+        # that carried it (PROJ-1 resolves the day after its sprint ends), and
+        # the window version dropped every such ticket, leaving the chart empty
+        # while its coverage still reported 100%.
+        sql="""
+            WITH last_sprint AS (
+                SELECT key, sprint_name, start,
+                       row_number() OVER (PARTITION BY key ORDER BY ordinal DESC) AS rn
+                FROM issue_sprints
+            )
+            SELECT s.sprint_name AS sprint,
+                   quantile_cont(c.cycle_days, 0.5) AS median_days,
+                   quantile_cont(c.cycle_days, 0.85) AS p85_days
+            FROM cycle_times c
+            JOIN last_sprint s ON s.key = c.key AND s.rn = 1
+            GROUP BY 1
+            ORDER BY min(s.start)
+        """,
+        # Counts what the chart plots (cycle times that have a sprint) over what it
+        # would plot if every ticket had one, not sprint membership over all issues.
+        coverage="""
+            SELECT (SELECT count(*) FROM cycle_times c WHERE EXISTS
+                      (SELECT 1 FROM issue_sprints s WHERE s.key = c.key)),
+                   (SELECT count(*) FROM cycle_times)
+        """,
+    ),
+    Chart(
+        key="points_vs_cycle",
+        section="Retro",
+        title="Story points versus actual cycle time",
+        kind="scatter",
+        caption="Whether the estimates carry information. If the cloud is flat, "
+                "the points are ritual.",
+        options={"x": "story_points", "y": "cycle_days", "guides_sql": """
+            SELECT quantile_cont(cycle_days, 0.5), quantile_cont(cycle_days, 0.85)
+            FROM cycle_times
+        """},
+        sql="""
+            SELECT i.story_points, c.cycle_days
+            FROM issues i JOIN cycle_times c ON c.key = i.key
+            WHERE i.story_points IS NOT NULL
+            ORDER BY i.story_points
+        """,
+        # Rows actually plotted over rows that could be, not points-present over all
+        # issues: a ticket with points but no cycle time never reaches this chart.
+        coverage="""
+            SELECT (SELECT count(*) FROM issues i JOIN cycle_times c ON c.key = i.key
+                    WHERE i.story_points IS NOT NULL),
+                   (SELECT count(*) FROM cycle_times)
+        """,
+        threshold=POINTS_THRESHOLD,
+    ),
 ]

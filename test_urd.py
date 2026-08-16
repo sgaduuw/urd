@@ -3239,12 +3239,80 @@ def test_bars_is_renderable_now_that_charts_ask_for_it():
     assert {c.kind for c in chart_specs.CHARTS} <= render.FIGURE_KINDS
 
 
-def test_sections_render_in_a_fixed_order_with_two_populated():
-    """Now that a second section holds charts, the real list is long enough for
-    its order to mean something."""
+def test_the_real_section_list_leads_in_the_declared_order():
+    """The stand-in list in test_sections_render_in_a_fixed_order proves the
+    ordering rule; this one proves the real charts obey it.
+
+    It asserts a prefix rather than the whole list on purpose: pinning the exact
+    list means every task that populates a new section breaks this test and gets
+    it "fixed" by pasting in the new answer, which is how a test stops being read.
+    Comparing against a rebuild of render_sections' own filter would be worse
+    still, since reversing SECTIONS would reorder both sides and prove nothing."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     titles = [title for title, _ in urd.render_sections(con)]
-    assert titles == ["Flow health", "Reporting outward"]
+    assert len(titles) >= 2, "needs two populated sections to say anything about order"
+    assert titles[:2] == ["Flow health", "Reporting outward"]
+    assert set(titles) <= set(chart_specs.SECTIONS)
+
+
+def test_retro_charts_are_all_present():
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
+    assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint", "points_vs_cycle"}
+
+
+def test_rework_is_attributed_to_the_sprint_it_happened_in():
+    """No fixture ticket has both a rework row and more than one sprint, so on
+    fixture data alone "attribute by transition time" and "attribute to the
+    ticket's last sprint" return the same answer and this test cannot tell them
+    apart. PROJ-1 gets a later second sprint here so the two models disagree."""
+    con = _derived("reopened", "two_sprints")
+    con.execute(
+        "INSERT INTO issue_sprints VALUES ('PROJ-1', 3, 'Sprint A', 'closed', "
+        "TIMESTAMP '2026-01-19 09:00', TIMESTAMP '2026-02-02 09:00', 2)")
+    _, rows = _flow_rows(con, "rework_per_sprint")
+    # The backward move is at 2026-01-09, inside Sprint B's window. Attributing to
+    # the ticket's last sprint would answer Sprint A.
+    assert [(r["sprint"], r["backward_moves"]) for r in rows] == [("Sprint B", 1)]
+
+
+def test_carry_over_counts_tickets_not_memberships():
+    con = _derived("reopened", "two_sprints")
+    _, rows = _flow_rows(con, "carry_over")
+    # The fixtures name sprints so that array order disagrees with both id and name
+    # order (id 7 "Sprint B" first, then id 3 "Sprint A"), so a query that leans on
+    # either instead of `ordinal` gets a different answer here.
+    assert {r["sprint"]: r["carried"] for r in rows} == {"Sprint A": 1}
+
+
+def test_cycle_per_sprint_keeps_tickets_that_closed_after_their_sprint_ended():
+    """Work routinely closes after the sprint that carried it: PROJ-1 resolves
+    2026-01-20 and its only sprint ended 2026-01-19. Attributing by resolution
+    date inside the sprint window drops it, and the chart draws nothing."""
+    con = _derived("reopened", "two_sprints")
+    _, rows = _flow_rows(con, "cycle_per_sprint")
+    assert [r["sprint"] for r in rows] == ["Sprint B"]
+    assert rows[0]["median_days"] > 0
+
+
+def test_a_coverage_query_counts_the_rows_its_chart_actually_plots():
+    """A coverage query that measures anything else lets an empty chart through
+    its own gate: cycle_per_sprint reported 2 of 2 while plotting zero rows."""
+    con = _derived("reopened", "two_sprints")
+    for chart in chart_specs.CHARTS:
+        if not chart.coverage:
+            continue
+        numerator, denominator = con.execute(chart.coverage).fetchone()
+        plotted = len(con.execute(chart.sql).fetchall())
+        assert numerator <= denominator, f"{chart.key}: {numerator} of {denominator}"
+        if numerator:
+            assert plotted, f"{chart.key}: coverage {numerator}/{denominator} but no rows"
+
+
+def test_points_charts_are_held_to_the_lower_threshold():
+    chart, _ = _flow_rows(_derived("reopened", "two_sprints"), "points_vs_cycle")
+    assert chart.threshold == chart_specs.POINTS_THRESHOLD
+    assert chart.threshold < chart_specs.DEFAULT_THRESHOLD
+    assert chart.coverage is not None
 
 
 if __name__ == "__main__":
