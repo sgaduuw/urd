@@ -1,0 +1,131 @@
+# urd
+
+urd mirrors one Jira project's ticket history into a local DuckDB database and
+renders it into a static HTML report. It is read only: every request to Jira
+is a GET, and urd never writes anything back.
+
+## Setup
+
+Store the API token once, in the macOS keychain:
+
+```
+security add-generic-password -s urd -a <email> -w
+```
+
+(`URD_TOKEN` in the environment works too, and skips the keychain entirely.)
+
+First run needs the full scope:
+
+```
+uv run --with duckdb python urd.py sync \
+  --site example.atlassian.net --email you@example.com \
+  --project PROJ --component TEAM --since 2026-01-01
+uv run --with duckdb python urd.py derive \
+  --status-order "To Do,In Progress,Review,Done" \
+  --start-status "In Progress" --review-status "Review"
+uv run --with duckdb python urd.py report
+```
+
+Every flag there is remembered in `sync_state`. From the second run on:
+
+```
+uv run --with duckdb python urd.py sync
+uv run --with duckdb python urd.py derive
+uv run --with duckdb python urd.py report
+open report.html
+```
+
+## The three verbs
+
+`sync` fetches issues matching the persisted project, component and `since`
+scope from Jira, and writes the raw JSON into `raw_issues`. It is the only
+verb that touches the network, and the only one that writes `raw_issues`. A
+ticket already stored is refetched only if its `updated` timestamp moved.
+
+`derive` rebuilds every relational table and view (`issues`, `changes`,
+`issue_sprints`, and the metric views: `transitions`, `status_durations`,
+`closures`, `cycle_times`, `rework`) from `raw_issues`. It is pure and
+offline: no network call, and safe to rerun as often as you like. Changing a
+metric's definition, or the workflow's status order, costs a `derive` run,
+never a refetch.
+
+`report` reads the derived views and writes `report.html`: one file, inline
+SVG, no JavaScript, no external references. Open it directly in a browser.
+
+## Widening the window
+
+```
+uv run --with duckdb python urd.py sync --since 2025-01-01
+```
+
+`keys_to_fetch` (see `urd.py`) applies one rule regardless of direction:
+fetch a key not already stored, or whose `updated` has moved. Pushing
+`--since` further back only fetches the newly included, older issues;
+everything already held is left alone.
+
+## The charts
+
+**Flow health**
+- Aging work in progress: open tickets by days in their current status, the chart that changes what you do today.
+- Created versus closed per week: where the two lines diverge, the backlog is growing.
+- Cumulative flow: tickets per status, sampled once a week. A widening band is a queue.
+- Cycle time: one point per closed ticket. The 85th percentile is the number you can promise, the median is the one you'll be asked for.
+- Median days in status, by issue type: where the weeks actually go, review queues show up here first.
+
+**Reporting outward**
+- Delivered versus open, per version: one bar pair per version a ticket is tagged with.
+- Progress per epic: tickets done and still open, per parent. Parents outside the scope of this report appear by key alone.
+- Ticket type mix per month: how much of each month was planned work, a growing bug or incident band is the interesting case.
+
+**Retro**
+- Rework per sprint: transitions that moved a ticket backwards through the workflow, the single best retro chart and one no built-in report draws.
+- Carried into each sprint: tickets already in an earlier sprint. Persistent carry-over means the sprint is being planned optimistically.
+- Cycle time per sprint: median and 85th percentile days per sprint. Tightening is the thing to look for, not the absolute value.
+- Story points versus actual cycle time: whether the estimates carry information. A flat cloud means the points are ritual.
+
+**People**
+- Tickets closed per week, per person: one small chart each, deliberately, so the same data doesn't invite a reading a ranked bar chart doesn't support. Attributed to the assignee at close.
+- Review load: who moves work out of the review status, counting a rejection back to in-progress the same as an approval. No built-in report exposes this.
+- Handoffs: who starts work that someone else finishes. Read down the rows for what a person hands on, across for what they pick up.
+- Story points closed per person: only meaningful if the field is filled consistently, which the coverage figure tells you.
+
+## Coverage figures
+
+Some charts carry a `coverage` query alongside their main one: a numerator
+and denominator, e.g. tickets with a cycle time over tickets resolved at all.
+At or above the chart's threshold (0.7 for most charts, 0.5 for one built on
+a genuinely optional field, Story Points), the caption gains an "(N of M
+tickets)" note. Below the threshold, `run_chart` (`urd.py`) skips the chart
+entirely and renders `coverage_strip` (`render.py`) instead: one sentence
+stating the shortfall against the threshold. That is the difference between
+a chart resting on data most tickets don't carry and one that is honestly
+absent.
+
+## Adding a chart
+
+Append one `Chart` entry to `charts.py`: title, kind, SQL, caption, and
+optionally a coverage query and threshold. Run the tests. Done. Nothing in
+`urd.py` or `render.py` needs to change.
+
+A `kind` no renderer in `render.py` handles does not render as a blank space
+in the browser: the test suite asserts every chart's `kind` is one
+`render.FIGURE_KINDS` covers, and that assertion fails first.
+
+## Requirements
+
+Python 3.11 or later. `_ts` in `urd.py` parses Jira's two timestamp shapes
+(`...+0000` on issue fields, `...Z` on the Sprint field) with
+`datetime.fromisoformat`, which only accepts both shapes natively from 3.11
+onward. On 3.10 it raises `ValueError`.
+
+## Privacy
+
+`urd.duckdb` and `report.html` contain real names, account ids and ticket
+keys pulled straight from Jira. Both are gitignored. `tests/no-leaks.sh`
+guards the repository itself: it scans every file that could be published,
+every commit message and the commit author identity for anything
+employer-specific, and must pass before every commit.
+
+## Licence
+
+MIT. See `LICENSE`.
