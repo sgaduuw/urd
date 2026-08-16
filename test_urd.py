@@ -3150,16 +3150,33 @@ def test_time_in_status_ignores_time_spent_already_done():
     assert "Done" not in {r["status"] for r in rows}
 
 
-def test_cycle_time_falls_below_its_threshold_in_the_fixtures():
-    """skipped_progress resolves without ever entering start_status, so coverage
-    is 1 of 2. The chart must say so rather than plot one point as if it were the
-    whole picture. If this test fails, the threshold or the fixture moved."""
+def test_a_chart_sitting_exactly_on_its_threshold_draws():
+    """skipped_progress resolves without ever entering start_status, so cycle time
+    covers 1 of 2, which is exactly DEFAULT_THRESHOLD once it dropped to 0.5.
+
+    run_chart strips on `share < threshold`, so the threshold is the minimum
+    coverage required rather than a bar to clear, and a chart landing precisely on
+    it draws. Worth pinning rather than deleting: coverage figures land on round
+    boundaries often, and this exact chart crossed one when the default moved."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
     numerator, denominator = con.execute(chart.coverage).fetchone()
     assert (numerator, denominator) == (1, 2)
+    assert numerator / denominator == chart.threshold, "fixture no longer sits on the boundary"
     out = urd.run_chart(con, chart)
-    assert "1 of 2" in out and "<svg" not in out
+    assert "<svg" in out, "a chart exactly at its threshold should draw"
+    assert "1 of 2 tickets" in out, "coverage still belongs in the caption when it draws"
+
+
+def test_a_chart_just_below_its_threshold_strips():
+    """The other side of the same boundary, on the same chart, so the two cannot
+    drift apart: one nudge downward and it must refuse to draw."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
+    strict = chart._replace(threshold=chart.threshold + 0.01)
+    out = urd.run_chart(con, strict)
+    assert "<svg" not in out
+    assert "1 of 2" in out
 
 
 def test_sections_render_in_a_fixed_order():

@@ -21,7 +21,17 @@ SECTIONS = ("Flow health", "Reporting outward", "Retro", "People")
 # carries the coverage figure either way, so a reader always sees what the chart
 # is drawn from.
 POINTS_THRESHOLD = 0.35
-DEFAULT_THRESHOLD = 0.7
+# 0.5 rather than the original 0.7, on the same evidence and for the same reason
+# as POINTS_THRESHOLD. The first live run put the three affected charts at 60%,
+# 64% and 52%, so 0.7 hid all three on data that was perfectly worth reading, and
+# it had been chosen before any real data existed.
+#
+# This is close to the floor of what the mechanism is still worth having. Below
+# about a third, a strip stops being a judgement and becomes a way of never
+# saying no, at which point the caption's coverage figure is doing all the work
+# and the threshold may as well go. Move it again only against a measurement,
+# never to make one more chart appear.
+DEFAULT_THRESHOLD = 0.5
 
 # How far back the time series charts look. Long enough to show a trend, short
 # enough that the x-axis stays readable and the report stops growing.
