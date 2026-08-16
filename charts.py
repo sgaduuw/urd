@@ -72,7 +72,8 @@ CHARTS = [
         kind="table",
         caption="Open tickets by days in their current status. The chart that "
                 "changes what you do today.",
-        options={"headers": ["key", "status", "assignee", "days"], "shade": "days"},
+        options={"headers": ["key", "status", "assignee", "days"], "shade": "days",
+                 "sortable": True},
         sql="""
             SELECT i.key, i.status,
                    COALESCE(p.display_name, 'Unassigned') AS assignee,
@@ -175,7 +176,8 @@ CHARTS = [
         # 1145 tickets and another held 1, and shaded by days alone the two rows
         # looked equally authoritative. Shading stays on days; the count is there
         # to say how much weight the number can carry.
-        options={"headers": ["type", "status", "days", "tickets"], "shade": "days"},
+        options={"headers": ["type", "status", "days", "tickets"], "shade": "days",
+                 "sortable": True},
         # Done-category statuses are excluded because status_durations closes an
         # open span at now(): a closed ticket's Done span measures time since
         # resolution, which read 207 days in the fixtures and swamped the real
@@ -426,7 +428,8 @@ CHARTS = [
         kind="matrix",
         caption="Who starts work that someone else finishes. Read down the rows "
                 "for what a person hands on, across for what they pick up.",
-        options={"headers": ["started_by", "finished_by", "tickets"], "shade": "tickets"},
+        options={"headers": ["started_by", "finished_by", "tickets"], "shade": "tickets",
+                 "sortable": True},
         sql="""
             WITH started AS (   -- assignee display name at the first move into the start status
                 SELECT t.key,

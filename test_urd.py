@@ -3386,6 +3386,27 @@ def test_the_cumulative_flow_is_a_weekly_snapshot_not_a_daily_sum():
     assert len({r["day"] for r in rows}) <= 27
 
 
+def test_every_table_chart_is_sortable():
+    """Every table in the report is 40 rows or more, which is past the point of
+    scanning by eye. Asserted as a rule over the specs rather than chart by chart
+    so a table added later has to make the same decision deliberately: a genuinely
+    short one may opt out, but it cannot forget."""
+    tables = [c for c in chart_specs.CHARTS if c.kind in ("table", "matrix")]
+    assert tables
+    missing = [c.key for c in tables if not c.options.get("sortable")]
+    assert not missing, f"table charts without sorting: {missing}"
+
+
+def test_a_sortable_spec_actually_renders_the_sort_hooks():
+    """The option is only a promise until figure passes it through; this is the
+    end-to-end half, so a spec saying sortable cannot render an inert table."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "aging_wip")
+    out = render.figure(chart, rows, "sub", con)
+    assert 'class="urd sortable"' in out, out[:300]
+    assert 'aria-sort="none"' in out
+
+
 def test_time_in_status_shows_the_population_each_median_rests_on():
     """Flows skip statuses, so the rows of this matrix are medians over different
     and sometimes tiny populations: on the real project one status carried 1145

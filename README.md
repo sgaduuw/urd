@@ -161,6 +161,11 @@ page still fetches nothing: no CDN, no library, no external reference of any kin
 Progress per epic is the chart that prompted it. At 141 epics, grouped bars came
 to 423 marks in 480px, about one pixel each.
 
+All four tables sort: aging work in progress (40 rows), median days in status
+(44), handoffs (66) and progress per epic (141). Every one is past the point of
+scanning by eye. A table added later must opt in deliberately, which a test
+enforces: a genuinely short one may decline, but it cannot forget.
+
 ## Coverage figures
 
 Some charts carry a `coverage` query alongside their main one: a numerator
