@@ -185,6 +185,46 @@ CSS = (
 )
 
 
+# Inline, first-party, and additive only: every table it touches is already
+# complete and readable in the markup, so a page opened with script disabled
+# loses sorting and nothing else. Nothing is computed here that Python could
+# have computed, which is what keeps the numbers diffable.
+#
+# Sorting is by the cell's text, numerically when every value in the column
+# parses as a number. aria-sort is both the announced state and the only stored
+# state, so there is no second copy to drift.
+SORT_SCRIPT = """
+document.querySelectorAll('table.sortable').forEach(function (table) {
+  var head = table.tHead.rows[0];
+  Array.prototype.forEach.call(head.cells, function (cell, index) {
+    function apply() {
+      var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+      var descending = cell.getAttribute('aria-sort') !== 'descending';
+      var numeric = rows.every(function (row) {
+        var text = row.cells[index].textContent.trim();
+        return text === '' || !isNaN(Number(text));
+      });
+      rows.sort(function (a, b) {
+        var x = a.cells[index].textContent.trim();
+        var y = b.cells[index].textContent.trim();
+        if (numeric) { return (Number(x) - Number(y)) * (descending ? -1 : 1); }
+        return x.localeCompare(y) * (descending ? -1 : 1);
+      });
+      Array.prototype.forEach.call(head.cells, function (other) {
+        other.setAttribute('aria-sort', 'none');
+      });
+      cell.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
+      rows.forEach(function (row) { table.tBodies[0].appendChild(row); });
+    }
+    cell.addEventListener('click', apply);
+    cell.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); apply(); }
+    });
+  });
+});
+"""
+
+
 def esc(text):
     """Escape a value for interpolation into SVG/HTML markup and attributes.
 
@@ -239,7 +279,7 @@ def page(header, sections):
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
         f"{esc(header['since'])}. Synced {esc(header['synced'])}. {warn}</p></header>"
         + body
-        + "</body></html>\n"
+        + f"<script>{SORT_SCRIPT}</script></body></html>\n"
     )
 
 
@@ -945,7 +985,7 @@ def scatter(rows, x, y, guides=()):
     return svg(width, height, title + "".join(parts))
 
 
-def table(rows, headers, shade=None):
+def table(rows, headers, shade=None, sortable=False):
     """An HTML table. When `shade` names a numeric column, that column's
     cells get a background wash (an inline SVG rect, so its opacity is
     independent of the text sitting in front of it) whose opacity is
@@ -960,7 +1000,17 @@ def table(rows, headers, shade=None):
         shade_values = [n for r in rows for n in (_num(r.get(shade)),) if n is not None]
         shade_max = max(shade_values) if shade_values else 0
 
-    thead = "".join(f"<th>{esc(h)}</th>" for h in headers)
+    # Sorting is opt-in per chart. A three-row matrix does not need it, and the
+    # attributes alone would promise behaviour the reader then tries to use.
+    # tabindex and aria-sort go on every header so the control is reachable
+    # without a mouse and announces its state; SORT_SCRIPT reads aria-sort as
+    # the source of truth rather than keeping its own.
+    if sortable:
+        thead = "".join(
+            f'<th tabindex="0" role="columnheader" aria-sort="none">{esc(h)}</th>'
+            for h in headers)
+    else:
+        thead = "".join(f"<th>{esc(h)}</th>" for h in headers)
 
     body_rows = []
     for r in rows:
@@ -988,7 +1038,7 @@ def table(rows, headers, shade=None):
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
 
     return (
-        f'<table class="urd"><thead><tr>{thead}</tr></thead>'
+        f'<table class="urd{" sortable" if sortable else ""}"><thead><tr>{thead}</tr></thead>'
         f'<tbody>{"".join(body_rows)}</tbody></table>'
     )
 
@@ -1131,7 +1181,7 @@ def figure(chart, rows, subtitle, con):
     """
     o = chart.options
     if chart.kind in ("table", "matrix"):
-        body = table(rows, o["headers"], o.get("shade"))
+        body = table(rows, o["headers"], o.get("shade"), sortable=o.get("sortable", False))
     elif chart.kind == "lines":
         body = lines(rows, o["x"], o["series"])
     elif chart.kind == "stacked":

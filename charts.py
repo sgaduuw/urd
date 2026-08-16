@@ -218,19 +218,24 @@ CHARTS = [
         key="per_epic",
         section="Reporting outward",
         title="Progress per epic",
-        kind="bars",
-        caption="Tickets done and still open, per parent. Parents outside the scope "
-                "of this report appear by key alone.",
-        # done and open rather than done and total: the two are disjoint and sum to
-        # the total, so the pair is an honest side-by-side read. done against total
-        # puts a bar inside another bar and invites reading them as separate work.
-        options={"labels": "epic", "series": ["delivered", "dropped", "open"]},
+        kind="table",
+        caption="Tickets per parent, sortable by any column. Parents outside the "
+                "scope of this report appear by key alone.",
+        # A table, not bars. The first real project has 141 epics, which as grouped
+        # bars is 423 marks in 480px at 1.03px each: not a crowded chart, no chart
+        # at all. A table reads at any row count, and sorting is what a reader
+        # actually wants here, so this is the one chart that opts into it.
+        # delivered/dropped/open stay disjoint and sum to the total.
+        options={"headers": ["epic", "delivered", "dropped", "open", "percent_done"],
+                 "shade": "percent_done", "sortable": True},
         sql="""
             SELECT parent AS epic,
                    count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)
                        AS delivered,
                    count(*) FILTER (WHERE abandoned) AS dropped,
-                   count(*) FILTER (WHERE status_category <> 'done') AS open
+                   count(*) FILTER (WHERE status_category <> 'done') AS open,
+                   round(100.0 * count(*) FILTER (WHERE status_category = 'done'
+                                                    AND NOT abandoned) / count(*)) AS percent_done
             FROM issues
             WHERE parent IS NOT NULL
             GROUP BY 1

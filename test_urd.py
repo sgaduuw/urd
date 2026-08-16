@@ -3215,6 +3215,49 @@ def test_stacked_keeps_its_total_label_in_frame_when_floors_accumulate():
     _assert_content_within_viewbox(out, "stacked 9 bands")
 
 
+def _epic_rows(n):
+    return [{"epic": f"PROJ-{100 + i}", "delivered": i, "dropped": n - i, "open": i % 3}
+            for i in range(n)]
+
+
+def test_a_sortable_table_is_complete_before_any_script_runs():
+    """The spec amendment allows script only as an addition. Every row, every
+    number and the header text must be in the markup, so the page prints and
+    archives exactly as it did when it was inert."""
+    out = render.table(_epic_rows(5), headers=["epic", "delivered", "dropped", "open"],
+                       shade="delivered", sortable=True)
+    for row in _epic_rows(5):
+        assert row["epic"] in out
+    assert out.count("<tr") == 6, "five rows plus a header"
+    assert "sortable" in out
+
+
+def test_a_sortable_header_is_reachable_without_a_mouse():
+    out = render.table(_epic_rows(3), headers=["epic", "delivered"], sortable=True)
+    # (?=[ >]) so <thead> does not match: <th followed by "ead" is still a <th prefix.
+    headers = re.findall(r"<th(?=[ >])[^>]*>", out)
+    assert headers, out
+    assert all('tabindex="0"' in h for h in headers), headers
+    assert all("aria-sort=" in h for h in headers), headers
+
+
+def test_a_plain_table_gains_no_script_hooks():
+    """Sorting is opt-in per chart: a three-row matrix does not need it and must
+    not carry the attributes that imply it."""
+    out = render.table(_epic_rows(3), headers=["epic", "delivered"])
+    assert "sortable" not in out
+    assert "tabindex" not in out
+
+
+def test_the_page_carries_its_script_inline_and_only_as_one_block():
+    html = render.page(_header(), [("S", [render.table(_epic_rows(2), headers=["epic"],
+                                                       sortable=True)])])
+    assert html.count("<script") == 1
+    assert "</script>" in html
+    # Same guarantee as the stylesheet: nothing is fetched to make the page work.
+    assert not re.search(r"<script[^>]*\bsrc\s*=", html)
+
+
 def test_stacked_empty_data_renders_a_note():
     assert "no data" in render.stacked([], x="wk", band="status", value="n").lower()
 
@@ -3560,8 +3603,14 @@ def test_a_scope_with_no_component_says_so_without_a_stray_separator():
 
 
 def test_a_scope_containing_markup_is_escaped_not_injected():
+    """The page now ships one <script> of its own, so `"<script>" not in html` is
+    no longer the test: it would pass or fail for the wrong reason either way.
+    Assert on the injected payload itself, and that the page's own script is the
+    only one present."""
     html = render.page(_header(project="P&D", component="<script>x</script>"), [])
-    assert "<script>" not in html
+    assert "<script>x</script>" not in html, "the scope value was injected raw"
+    assert "&lt;script&gt;x&lt;/script&gt;" in html, "the scope value was not escaped"
+    assert html.count("<script") == 1, "a second script element appeared from data"
     assert "P&amp;D" in html
 
 
@@ -3607,7 +3656,12 @@ def test_report_writes_a_standalone_file_with_no_external_references():
     html = pathlib.Path(out).read_text()
     assert html.startswith("<!doctype html>")
     # Every way a saved file could still reach the network, not just one of them.
-    for pattern in (r"https?:", r"//\w", r"@import", r"\bsrc\s*=", r"\bhref\s*=", r"url\("):
+    # The protocol-relative pattern requires a quote or paren in front of it. A
+    # bare //\w also matches a JavaScript line comment, and the page now carries
+    # inline script; the point of the check is a URL in an attribute or a url(),
+    # which is exactly what the delimiter pins down.
+    for pattern in (r"https?:", r"""['"(]//\w""", r"@import", r"\bsrc\s*=",
+                    r"\bhref\s*=", r"url\("):
         assert not re.search(pattern, html), f"{pattern} would fetch from the network"
 
 
@@ -3643,7 +3697,8 @@ def test_epic_chart_series_are_disjoint_and_sum_to_the_total():
     particular names."""
     con = _derived("reopened", "two_sprints")
     chart, rows = _flow_rows(con, "per_epic")
-    assert chart.options["series"] == ["delivered", "dropped", "open"]
+    assert chart.options["headers"] == [
+        "epic", "delivered", "dropped", "open", "percent_done"]
     assert [(r["epic"], r["delivered"], r["dropped"], r["open"]) for r in rows] == [
         ("PROJ-100", 1, 0, 1)]
     total = con.execute(

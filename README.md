@@ -146,6 +146,21 @@ The flag drives `closures.abandoned` (per closure event) and `issues.abandoned`
 (current state). Both exist because a ticket can close more than once, and a
 current-state field cannot say which of those events was which.
 
+## Sorting
+
+`report.html` carries one inline script, first-party and about 30 lines. It makes
+tables with a `sortable` option sort by any column, click or Enter on the header,
+numerically when the column is numeric.
+
+It is additive only. Every table is complete and readable in the markup before
+the script runs, so a page opened with JavaScript disabled loses sorting and
+nothing else, and stays printable. Nothing is computed in the browser that Python
+could have computed, which is what keeps the numbers diffable between runs. The
+page still fetches nothing: no CDN, no library, no external reference of any kind.
+
+Progress per epic is the chart that prompted it. At 141 epics, grouped bars came
+to 423 marks in 480px, about one pixel each.
+
 ## Coverage figures
 
 Some charts carry a `coverage` query alongside their main one: a numerator
