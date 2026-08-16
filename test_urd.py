@@ -3150,9 +3150,60 @@ def test_time_in_status_ignores_time_spent_already_done():
     assert "Done" not in {r["status"] for r in rows}
 
 
+def test_a_threshold_override_changes_whether_a_chart_draws():
+    """The knobs had been retuned twice by editing source. Cycle time covers 1 of
+    2 in the fixtures, exactly the default tier, so a nudge either way flips it."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
+    lenient = urd.run_chart(con, chart, {"default": 0.5, "points": 0.35})
+    strict = urd.run_chart(con, chart, {"default": 0.6, "points": 0.35})
+    assert "<svg" in lenient
+    assert "<svg" not in strict and "1 of 2" in strict
+
+
+def test_a_points_chart_follows_its_own_tier_not_the_default():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart = next(c for c in chart_specs.CHARTS if c.key == "points_vs_cycle")
+    assert chart.tier == "points"
+    # Default set impossibly high, points tier at zero: the points chart must
+    # still draw, which it cannot do if it is reading the wrong tier.
+    out = urd.run_chart(con, chart, {"default": 1.0, "points": 0.0})
+    assert "<svg" in out
+
+
+def test_an_unknown_threshold_tier_is_rejected_rather_than_ignored():
+    """A typo that is silently dropped leaves the operator certain they changed
+    something, which is the failure mode this whole tool keeps tripping over."""
+    try:
+        urd.parse_thresholds(["poitns=0.4"])
+    except SystemExit as exc:
+        assert "poitns" in str(exc) and "points" in str(exc)
+    else:
+        raise AssertionError("a mistyped tier was accepted")
+
+
+def test_a_threshold_that_is_not_a_share_is_rejected():
+    for bad in ("points=high", "points=1.5", "points=-0.2", "points", "=0.4"):
+        try:
+            urd.parse_thresholds([bad])
+        except SystemExit:
+            continue
+        raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_thresholds_round_trip_through_the_database():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.save_scope(con, thresholds=urd.format_thresholds({"default": 0.9, "points": 0.1}))
+    got = urd.stored_thresholds(con)
+    assert got["default"] == 0.9 and got["points"] == 0.1
+    # An unset database falls back to the declared defaults, not to zero.
+    fresh = urd.open_db(_tmpdb())
+    assert urd.stored_thresholds(fresh) == chart_specs.THRESHOLDS
+
+
 def test_a_chart_sitting_exactly_on_its_threshold_draws():
     """skipped_progress resolves without ever entering start_status, so cycle time
-    covers 1 of 2, which is exactly DEFAULT_THRESHOLD once it dropped to 0.5.
+    covers 1 of 2, which is exactly the default tier once it dropped to 0.5.
 
     run_chart strips on `share < threshold`, so the threshold is the minimum
     coverage required rather than a bar to clear, and a chart landing precisely on
@@ -3162,7 +3213,8 @@ def test_a_chart_sitting_exactly_on_its_threshold_draws():
     chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
     numerator, denominator = con.execute(chart.coverage).fetchone()
     assert (numerator, denominator) == (1, 2)
-    assert numerator / denominator == chart.threshold, "fixture no longer sits on the boundary"
+    limit = chart_specs.THRESHOLDS[chart.tier]
+    assert numerator / denominator == limit, "fixture no longer sits on the boundary"
     out = urd.run_chart(con, chart)
     assert "<svg" in out, "a chart exactly at its threshold should draw"
     assert "1 of 2 tickets" in out, "coverage still belongs in the caption when it draws"
@@ -3173,8 +3225,9 @@ def test_a_chart_just_below_its_threshold_strips():
     drift apart: one nudge downward and it must refuse to draw."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
-    strict = chart._replace(threshold=chart.threshold + 0.01)
-    out = urd.run_chart(con, strict)
+    nudged = dict(chart_specs.THRESHOLDS)
+    nudged[chart.tier] += 0.01
+    out = urd.run_chart(con, chart, nudged)
     assert "<svg" not in out
     assert "1 of 2" in out
 
@@ -3467,8 +3520,8 @@ def test_a_coverage_query_counts_the_rows_its_chart_actually_plots():
 
 def test_points_charts_are_held_to_the_lower_threshold():
     chart, _ = _flow_rows(_derived("reopened", "two_sprints"), "points_vs_cycle")
-    assert chart.threshold == chart_specs.POINTS_THRESHOLD
-    assert chart.threshold < chart_specs.DEFAULT_THRESHOLD
+    assert chart.tier == "points"
+    assert chart_specs.THRESHOLDS["points"] < chart_specs.THRESHOLDS["default"]
     assert chart.coverage is not None
 
 

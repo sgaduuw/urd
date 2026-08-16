@@ -2,7 +2,8 @@
 
 Each spec is data: a query, a renderer kind, and the column names that renderer
 needs. `coverage` is SQL returning one row of (numerator, denominator); when the
-share falls below `threshold` the chart is replaced by a strip saying so, which
+share falls below the chart's THRESHOLDS tier it is replaced by a strip saying so,
+which
 is the difference between a chart that is missing and one that is quietly wrong.
 """
 from typing import NamedTuple
@@ -20,7 +21,7 @@ SECTIONS = ("Flow health", "Reporting outward", "Retro", "People")
 # little data is still worth plotting, not a property of the data. The caption
 # carries the coverage figure either way, so a reader always sees what the chart
 # is drawn from.
-POINTS_THRESHOLD = 0.35
+POINTS_TIER = 0.35
 # 0.5 rather than the original 0.7, on the same evidence and for the same reason
 # as POINTS_THRESHOLD. The first live run put the three affected charts at 60%,
 # 64% and 52%, so 0.7 hid all three on data that was perfectly worth reading, and
@@ -31,7 +32,17 @@ POINTS_THRESHOLD = 0.35
 # saying no, at which point the caption's coverage figure is doing all the work
 # and the threshold may as well go. Move it again only against a measurement,
 # never to make one more chart appear.
-DEFAULT_THRESHOLD = 0.5
+DEFAULT_TIER = 0.5
+
+# A chart names a TIER rather than carrying a number, so both knobs can be
+# retuned from the command line without editing code. Both values above were
+# moved twice in one sitting by editing source, which is what prompted this.
+#   urd report --threshold points=0.4 --threshold default=0.6
+# Overrides are remembered in sync_state, the same way the sync scope is.
+# ponytail: two tiers, no per-chart override. Upgrade path when one chart
+# genuinely needs its own number is to accept a chart key here as a third kind
+# of name; nothing else has to change.
+THRESHOLDS = {"default": DEFAULT_TIER, "points": POINTS_TIER}
 
 # How far back the time series charts look. Long enough to show a trend, short
 # enough that the x-axis stays readable and the report stops growing.
@@ -50,7 +61,7 @@ class Chart(NamedTuple):
     # treat it as read-only.
     options: dict = {}
     coverage: str | None = None
-    threshold: float = DEFAULT_THRESHOLD
+    tier: str = "default"   # a key of THRESHOLDS, not a number
 
 
 CHARTS = [
@@ -343,7 +354,7 @@ CHARTS = [
                     WHERE i.story_points > 0),
                    (SELECT count(*) FROM cycle_times)
         """,
-        threshold=POINTS_THRESHOLD,
+        tier="points",
     ),
     Chart(
         key="throughput_per_person",
@@ -443,6 +454,6 @@ CHARTS = [
                     WHERE story_points > 0 AND status_category = 'done'),
                    (SELECT count(*) FROM issues WHERE status_category = 'done')
         """,
-        threshold=POINTS_THRESHOLD,
+        tier="points",
     ),
 ]

@@ -176,6 +176,7 @@ SCOPE_COLUMNS = (
     "earliest_since",
     "last_sync_at",
     "fetched_fields",
+    "thresholds",
 )
 
 SCHEMA = """
@@ -188,7 +189,8 @@ CREATE TABLE IF NOT EXISTS raw_issues (
 CREATE TABLE IF NOT EXISTS sync_state (
     site VARCHAR, email VARCHAR, project VARCHAR, component VARCHAR,
     status_order VARCHAR, start_status VARCHAR, review_status VARCHAR,
-    earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR
+    earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR,
+    thresholds VARCHAR
 );
 CREATE TABLE IF NOT EXISTS sync_errors (
     -- "at" is quoted: DuckDB classifies it as a type_function keyword, and an
@@ -675,7 +677,7 @@ def derive(con, status_order, start_status, review_status):
         print(f"{field}: {rate:.0%} empty")
 
 
-def report(con, path="report.html"):
+def report(con, path="report.html", tiers=None):
     scope = load_scope(con)
     header = {
         "project": scope["project"] or "unknown",
@@ -686,20 +688,60 @@ def report(con, path="report.html"):
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
     with open(path, "w") as fh:
-        fh.write(render.page(header, render_sections(con)))
+        fh.write(render.page(header, render_sections(con, tiers)))
     print(f"wrote {path}")
     return 0
 
 
-def run_chart(con, chart):
+def parse_thresholds(pairs, base=None):
+    """`tier=share` strings into a {tier: float} map, over `base`.
+
+    Every failure mode exits rather than being skipped. A mistyped tier that is
+    silently dropped is the worst outcome available here: the operator sees a
+    clean run and believes the number changed.
+    """
+    tiers = dict(base or chart_specs.THRESHOLDS)
+    for pair in pairs or ():
+        name, sep, raw = str(pair).partition("=")
+        if not sep or not name:
+            raise SystemExit(f"--threshold wants tier=share, got {pair!r}")
+        if name not in chart_specs.THRESHOLDS:
+            raise SystemExit(
+                f"unknown threshold tier {name!r}; "
+                f"have {', '.join(sorted(chart_specs.THRESHOLDS))}"
+            )
+        try:
+            share = float(raw)
+        except ValueError:
+            raise SystemExit(f"--threshold {name}: {raw!r} is not a number") from None
+        if not 0 <= share <= 1:
+            raise SystemExit(f"--threshold {name}: {share} is not a share between 0 and 1")
+        tiers[name] = share
+    return tiers
+
+
+def format_thresholds(tiers):
+    """The stored form, and the same `tier=share` shape the flag takes, so the
+    column can be read back through parse_thresholds without a second parser."""
+    return ",".join(f"{name}={share}" for name, share in sorted(tiers.items()))
+
+
+def stored_thresholds(con):
+    stored = load_scope(con)["thresholds"]
+    return parse_thresholds(stored.split(",") if stored else [])
+
+
+def run_chart(con, chart, tiers=None):
     """Run one spec and hand its rows to the renderer its kind names."""
+    tiers = chart_specs.THRESHOLDS if tiers is None else tiers
     subtitle = chart.caption
     if chart.coverage:
         numerator, denominator = con.execute(chart.coverage).fetchone()
         numerator, denominator = numerator or 0, denominator or 0
         share = 0 if not denominator else numerator / denominator
-        if share < chart.threshold:
-            return render.coverage_strip(chart.title, numerator, denominator, chart.threshold)
+        limit = tiers[chart.tier]
+        if share < limit:
+            return render.coverage_strip(chart.title, numerator, denominator, limit)
         subtitle += f" ({numerator} of {denominator} tickets)"
     cursor = con.execute(chart.sql)
     columns = [d[0] for d in cursor.description]
@@ -707,11 +749,11 @@ def run_chart(con, chart):
     return render.figure(chart, rows, subtitle, con)
 
 
-def render_sections(con):
+def render_sections(con, tiers=None):
     return [
         (
             section,
-            [run_chart(con, c) for c in chart_specs.CHARTS if c.section == section],
+            [run_chart(con, c, tiers) for c in chart_specs.CHARTS if c.section == section],
         )
         for section in chart_specs.SECTIONS
         if any(c.section == section for c in chart_specs.CHARTS)
@@ -735,7 +777,11 @@ def main(argv=None):
     p_derive.add_argument("--start-status", help="the status at which cycle time starts")
     p_derive.add_argument("--review-status", help="the status reviewers move work out of")
 
-    sub.add_parser("report", help="write report.html from the derived tables")
+    p_report = sub.add_parser("report", help="write report.html from the derived tables")
+    p_report.add_argument(
+        "--threshold", action="append", metavar="TIER=SHARE",
+        help="minimum coverage before a chart is replaced by a strip, e.g. "
+             "points=0.4. Repeatable, remembered between runs.")
 
     p_sql = sub.add_parser("sql", help="run a query against the database")
     p_sql.add_argument("query")
@@ -773,7 +819,9 @@ def main(argv=None):
         return 0
 
     if args.verb == "report":
-        return report(con)
+        tiers = parse_thresholds(args.threshold, base=stored_thresholds(con))
+        save_scope(con, thresholds=format_thresholds(tiers))
+        return report(con, tiers=tiers)
 
 
 if __name__ == "__main__":

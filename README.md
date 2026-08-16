@@ -93,19 +93,37 @@ everything already held is left alone.
 
 Some charts carry a `coverage` query alongside their main one: a numerator
 and denominator, e.g. tickets with a cycle time over tickets resolved at all.
-At or above the chart's threshold (0.7 for most charts, 0.5 for one built on
-a genuinely optional field, Story Points), the caption gains an "(N of M
-tickets)" note. Below the threshold, `run_chart` (`urd.py`) skips the chart
-entirely and renders `coverage_strip` (`render.py`) instead: one sentence
-stating the shortfall against the threshold. That is the difference between
-a chart resting on data most tickets don't carry and one that is honestly
-absent.
+At or above the chart's threshold, the caption gains an "(N of M tickets)"
+note. Below it, `run_chart` (`urd.py`) skips the chart entirely and renders
+`coverage_strip` (`render.py`) instead: one sentence stating the shortfall.
+That is the difference between a chart resting on data most tickets don't
+carry and one that is honestly absent.
+
+A chart names a *tier* rather than a number. There are two, and both can be
+set per run and are then remembered:
+
+```
+uv run --with duckdb python urd.py report --threshold default=0.5 --threshold points=0.35
+```
+
+`default` covers most charts; `points` covers the two built on Story Points,
+which is genuinely optional. A mistyped tier is an error rather than a
+silently ignored flag.
+
+These are judgements about how little data is still worth plotting, not
+properties of the data, and the shipped values were set just under what one
+real project measures. Lower them against a measurement, such as a chart that
+draws something misleading, rather than to make one more chart appear: below
+roughly a third the strip stops being a judgement and the caption's coverage
+figure is doing all the work.
 
 ## Adding a chart
 
 Append one `Chart` entry to `charts.py`: title, kind, SQL, caption, and
-optionally a coverage query and threshold. Run the tests. Done. Nothing in
-`urd.py` or `render.py` needs to change.
+optionally a coverage query and a `tier`. Run the tests. Done. Nothing in
+`urd.py` or `render.py` needs to change, unless the chart names a `kind` no
+renderer handles yet, which the test suite fails on rather than leaving as a
+blank space in the report.
 
 A `kind` no renderer in `render.py` handles does not render as a blank space
 in the browser: the test suite asserts every chart's `kind` is one
