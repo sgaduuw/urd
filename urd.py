@@ -162,6 +162,15 @@ class Jira:
     def statuses(self):
         return self.get("/status")
 
+    def project_statuses(self, project):
+        """Statuses in one project's workflow, grouped by issue type.
+
+        Needs no admin rights, unlike /workflow/search, which is the endpoint
+        that would return the transition graph. Used to tell a status the project
+        still uses from one that only appears in history.
+        """
+        return self.get(f"/project/{urllib.parse.quote(project)}/statuses")
+
 
 # One row, upserted. Settings live with the scope because there is no second
 # thing to configure, and two tables holding one row each is one table too many.
@@ -200,6 +209,15 @@ CREATE TABLE IF NOT EXISTS sync_errors (
 );
 CREATE TABLE IF NOT EXISTS fields (
     id VARCHAR PRIMARY KEY, name VARCHAR, null_rate DOUBLE
+);
+CREATE TABLE IF NOT EXISTS workflow_statuses (
+    -- Statuses the project's CURRENT workflow contains, as opposed to every
+    -- status seen in its history. Empty means unknown, which is treated as "all
+    -- of them": the call needs no admin but can still fail, and an older
+    -- database has no rows here at all.
+    -- ponytail: the API returns these per issue type and this flattens them.
+    -- Upgrade path is a second column when a chart needs per-type workflows.
+    status VARCHAR PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS statuses (
     name VARCHAR PRIMARY KEY, category VARCHAR
@@ -297,7 +315,7 @@ def sync(con, jira):
     # Before anything is fetched, not after: the field list is built from the
     # `fields` table, so resolving it afterwards left a first run asking for the
     # built-ins only, forever.
-    _refresh_lookups(con, jira)
+    _refresh_lookups(con, jira, scope["project"])
     fields = fetch_fields(con)
 
     jql = build_jql(scope["project"], scope["component"], scope["earliest_since"])
@@ -352,19 +370,50 @@ def sync(con, jira):
     return 0
 
 
-def _refresh_lookups(con, jira):
+def _refresh_lookups(con, jira, project=None):
     """Field ids and the status name to category map, both resolved by name so
     no instance specific id is ever compiled in."""
     con.execute("DELETE FROM fields")
     for field in jira.fields():
         con.execute("INSERT INTO fields VALUES (?, ?, NULL) ON CONFLICT (id) DO NOTHING",
                     [field["id"], field.get("name")])
+    _refresh_workflow_statuses(con, jira, project)
     con.execute("DELETE FROM statuses")
     for status in jira.statuses():
         con.execute(
             "INSERT INTO statuses VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
             [status["name"], (status.get("statusCategory") or {}).get("key")],
         )
+
+
+def _refresh_workflow_statuses(con, jira, project):
+    """Record which statuses each project in scope currently uses.
+
+    Failure is not fatal and is not silent either. The listing degrades to
+    treating every observed status as current, which is what it did before this
+    existed, so a missing permission costs a hint rather than a run.
+    """
+    getter = getattr(jira, "project_statuses", None)
+    if not project or getter is None:
+        # Explicit rather than a swallowed AttributeError: several test doubles
+        # implement only the calls they exercise, and a real client that somehow
+        # lacked this should not look like a permissions problem.
+        return
+    names = set()
+    for key in (k.strip() for k in project.split(",")):
+        if not key:
+            continue
+        try:
+            for issue_type in getter(key):
+                names.update(s.get("name") for s in issue_type.get("statuses", []))
+        except SystemExit as err:
+            print(f"could not read {key}'s workflow statuses ({err}); "
+                  "every observed status will be treated as current", file=sys.stderr)
+            return
+    con.execute("DELETE FROM workflow_statuses")
+    rows = [(n,) for n in sorted(x for x in names if x)]
+    if rows:
+        con.executemany("INSERT INTO workflow_statuses VALUES (?)", rows)
 
 
 ISSUES_SCHEMA = """
@@ -642,6 +691,8 @@ def observed_statuses(con):
     worth editing, not one worth trusting.
     """
     categories = dict(con.execute("SELECT name, category FROM statuses").fetchall())
+    # Empty means unknown, and unknown must not mark every status retired.
+    workflow = {r[0] for r in con.execute("SELECT status FROM workflow_statuses").fetchall()}
     seen = {}
     for (raw,) in con.execute("SELECT json FROM raw_issues").fetchall():
         issue = json.loads(raw)
@@ -690,6 +741,7 @@ def observed_statuses(con):
             "current": stat["current"],
             "entries": stat["entries"],
             "median_days": median,
+            "in_workflow": (name in workflow) if workflow else True,
         })
     rows.sort(key=lambda r: (_CATEGORY_RANK.get(r["category"], 1), r["median_days"], r["status"]))
     return rows
@@ -700,14 +752,21 @@ def format_statuses(rows):
     if not rows:
         return "no statuses found in the fetched data; run sync first"
     out = ["statuses found in the fetched data:",
-           f"  {'category':<14} {'status':<28} {'now':>5} {'entered':>8} {'median day':>11}"]
+           f"  {'category':<14} {'status':<28} {'now':>5} {'entered':>8} "
+           f"{'median day':>11}  in workflow"]
     for r in rows:
         out.append(f"  {str(r['category'] or '?'):<14} {r['status']:<28} "
-                   f"{r['current']:>5} {r['entries']:>8} {r['median_days']:>11.1f}")
-    flow = [r["status"] for r in rows if r["category"] != "done"]
-    done = [r["status"] for r in rows if r["category"] == "done"]
+                   f"{r['current']:>5} {r['entries']:>8} {r['median_days']:>11.1f}"
+                   f"  {'yes' if r['in_workflow'] else 'retired'}")
+    current = [r for r in rows if r["in_workflow"]]
+    flow = [r["status"] for r in current if r["category"] != "done"]
+    done = [r["status"] for r in current if r["category"] == "done"]
+    retired = len(rows) - len(current)
     out.append("")
     out.append("ordered by category, then by how long work takes to reach each one.")
+    if retired:
+        out.append(f"{retired} status(es) are not in the project's current workflow and are "
+                   "left out of the line below; they remain real history.")
     out.append("a parking status such as Blocked sorts earlier than it belongs; edit before use:")
     out.append(f'  --status-order "{",".join(flow + done)}"')
     return "\n".join(out)

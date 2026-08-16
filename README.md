@@ -109,9 +109,22 @@ statuses found in the fetched data:
 The same listing replaces the first-run error, because otherwise `derive` asks
 for an order over statuses it is the only thing able to enumerate.
 
-The suggested order is a heuristic worth editing, not trusting. A parking status
-such as Blocked sits in the `new` category yet is entered mid-flow, so it sorts
-earlier than it belongs. Statuses left out of `--status-order` are excluded from
+The "in workflow" column comes from the project's own status list, fetched by
+`sync`. A status marked `retired` appears in the history but not in the project's
+current workflow, usually because it was removed or arrived with a ticket moved
+in from elsewhere. Those are left out of the suggested `--status-order` while
+staying in the listing, since they are still real history. If that call is
+unavailable, every status is treated as current and the listing behaves as it
+did before.
+
+The order is by status category, then by the median days from ticket creation to
+each ticket's *first* arrival at that status. First arrival, not every arrival:
+a status re-entered after rework is reached late, and counting every visit sorts
+it before the status that feeds it.
+
+It is still a heuristic worth editing rather than trusting. A parking status such
+as Blocked or On Hold sits mid-flow but is not a workflow position at all, so it
+sorts earlier than it belongs and is usually better left out entirely. Statuses left out of `--status-order` are excluded from
 rework detection entirely, which is the right home for parking states.
 
 ## Delivered, dropped, open

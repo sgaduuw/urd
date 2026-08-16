@@ -189,6 +189,81 @@ def test_observed_statuses_are_ordered_by_when_work_reaches_them():
     assert names.index("To Do") < names.index("In Progress")
 
 
+class _WorkflowJira:
+    """A fake that answers the per-project status call.
+
+    Standalone rather than subclassing _FieldJira, which is defined further down:
+    a base class has to exist when the class statement runs, and these tests read
+    better next to the feature than next to the fake.
+    """
+
+    def __init__(self, workflow=("To Do", "In Progress", "Done")):
+        self.workflow = list(workflow)
+        self.asked_projects = []
+
+    def search(self, jql):
+        yield "PROJ-1", "u1"
+
+    def issue(self, key, fields):
+        return {"key": key, "fields": {"updated": "u1"}}
+
+    def fields(self):
+        return []
+
+    def statuses(self):
+        return []
+
+    def project_statuses(self, project):
+        self.asked_projects.append(project)
+        return [{"name": "Task", "statuses": [{"name": n} for n in self.workflow]}]
+
+
+def test_sync_records_the_statuses_in_the_project_workflow():
+    con = _scoped_db()
+    jira = _WorkflowJira()
+    urd.sync(con, jira)
+    assert jira.asked_projects == ["PROJ"]
+    stored = {r[0] for r in con.execute("SELECT status FROM workflow_statuses").fetchall()}
+    assert stored == {"To Do", "In Progress", "Done"}
+
+
+def test_each_project_in_a_comma_separated_scope_is_asked():
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ,OTHER",
+                   earliest_since="2026-01-01")
+    jira = _WorkflowJira()
+    urd.sync(con, jira)
+    assert jira.asked_projects == ["PROJ", "OTHER"]
+
+
+def test_a_status_the_project_workflow_no_longer_has_is_marked_not_dropped():
+    """Six of fifteen statuses on the real project are historical or arrived with
+    tickets moved in from elsewhere. They are still real history, so they stay in
+    the listing; they just leave the line the operator has to write."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    con.execute("INSERT INTO workflow_statuses VALUES ('To Do'), ('In Progress'), ('Done')")
+    rows = {s["status"]: s for s in urd.observed_statuses(con)}
+    assert rows["Review"]["in_workflow"] is False
+    assert rows["In Progress"]["in_workflow"] is True
+    listing = urd.format_statuses(list(rows.values()))
+    assert "Review" in listing, "a retired status must still be listed"
+    order = [ln for ln in listing.splitlines() if "--status-order" in ln][0]
+    assert "Review" not in order, order
+    assert "In Progress" in order
+
+
+def test_no_workflow_information_means_every_status_counts():
+    """The call needs no admin but can still fail, and an older database has no
+    such table. Either way the listing must behave as it did before."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    rows = urd.observed_statuses(con)
+    assert all(s["in_workflow"] for s in rows)
+    order = [ln for ln in urd.format_statuses(rows).splitlines() if "--status-order" in ln][0]
+    assert "Review" in order
+
+
 def test_status_order_uses_each_ticket_s_first_arrival_not_every_arrival():
     """A status re-entered late drags its median past one reached once early, so
     counting every arrival inverted the pair it most needed to get right: against
