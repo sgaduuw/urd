@@ -1085,7 +1085,9 @@ def small_multiples(groups, x, y):
     return svg(width, height, title + "".join(parts))
 
 
-FIGURE_KINDS = frozenset({"table", "matrix", "lines", "stacked", "scatter", "bars"})
+FIGURE_KINDS = frozenset(
+    {"table", "matrix", "lines", "stacked", "scatter", "bars", "small_multiples"}
+)
 
 
 def figure(chart, rows, subtitle, con):
@@ -1110,6 +1112,13 @@ def figure(chart, rows, subtitle, con):
         body = scatter(rows, o["x"], o["y"], guides)
     elif chart.kind == "bars":
         body = bars(rows, o["labels"], o["series"])
+    elif chart.kind == "small_multiples":
+        # The primitive takes facet title -> rows; a spec only names the column to
+        # facet on, so the grouping happens here rather than in every spec's SQL.
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(row.get(o["group"]), []).append(row)
+        body = small_multiples(grouped, o["x"], o["y"])
     else:
         raise ValueError(f"no renderer for chart kind {chart.kind!r}")
     return (

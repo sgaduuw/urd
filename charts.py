@@ -307,4 +307,103 @@ CHARTS = [
         """,
         threshold=POINTS_THRESHOLD,
     ),
+    Chart(
+        key="throughput_per_person",
+        section="People",
+        title="Tickets closed per week, per person",
+        kind="small_multiples",
+        caption="One small chart each, deliberately: the same data as a ranked "
+                "bar chart, without inviting a reading it does not support. "
+                "Attributed to the assignee at close.",
+        options={"group": "person", "x": "week", "y": "closed"},
+        # ::DATE for consistency with the other time-bucketed charts. Not for the
+        # midnight-label guard: small multiples emit facet titles and no tick
+        # labels, so that guard never reaches this chart.
+        sql="""
+            SELECT COALESCE(p.display_name, 'Unassigned') AS person,
+                   date_trunc('week', c.ts)::DATE AS week,
+                   count(*) AS closed
+            FROM closures c
+            JOIN issues i ON i.key = c.key
+            LEFT JOIN people p ON p.account_id = i.assignee_id
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+        """,
+    ),
+    Chart(
+        key="review_load",
+        section="People",
+        title="Review load",
+        kind="bars",
+        caption="Who moves work out of the review status, counting a rejection "
+                "back to in-progress as well as an approval. This is the "
+                "invisible contribution: no built-in report exposes it.",
+        options={"labels": "reviewer", "series": ["reviews"]},
+        sql="""
+            SELECT COALESCE(p.display_name, 'Automation') AS reviewer,
+                   count(*) AS reviews
+            FROM transitions t
+            LEFT JOIN people p ON p.account_id = t.author_id
+            WHERE t.from_status = (SELECT review_status FROM sync_state)
+            GROUP BY 1
+            ORDER BY reviews DESC
+        """,
+    ),
+    Chart(
+        key="handoffs",
+        section="People",
+        title="Handoffs",
+        kind="matrix",
+        caption="Who starts work that someone else finishes. Read down the rows "
+                "for what a person hands on, across for what they pick up.",
+        options={"headers": ["started_by", "finished_by", "tickets"], "shade": "tickets"},
+        sql="""
+            WITH started AS (   -- assignee display name at the first move into the start status
+                SELECT t.key,
+                       arg_min(COALESCE(a.to_str, r.display_name), t.ts) AS started_by
+                FROM transitions t
+                JOIN issues i ON i.key = t.key
+                LEFT JOIN people r ON r.account_id = i.reporter_id
+                LEFT JOIN changes a
+                       ON a.key = t.key AND a.field = 'assignee' AND a.ts <= t.ts
+                WHERE t.to_status = (SELECT start_status FROM sync_state)
+                GROUP BY t.key
+            ),
+            finished AS (
+                SELECT c.key, COALESCE(p.display_name, 'Unassigned') AS finished_by
+                FROM closures c
+                JOIN issues i ON i.key = c.key
+                LEFT JOIN people p ON p.account_id = i.assignee_id
+            )
+            SELECT s.started_by, f.finished_by, count(*) AS tickets
+            FROM started s JOIN finished f USING (key)
+            WHERE s.started_by IS DISTINCT FROM f.finished_by
+            GROUP BY 1, 2
+            ORDER BY tickets DESC
+        """,
+    ),
+    Chart(
+        key="points_per_person",
+        section="People",
+        title="Story points closed per person",
+        kind="bars",
+        caption="Only meaningful if the field is filled consistently, which the "
+                "coverage figure tells you.",
+        options={"labels": "person", "series": ["points"]},
+        sql="""
+            SELECT COALESCE(p.display_name, 'Unassigned') AS person,
+                   sum(i.story_points) AS points
+            FROM issues i
+            LEFT JOIN people p ON p.account_id = i.assignee_id
+            WHERE i.status_category = 'done' AND i.story_points IS NOT NULL
+            GROUP BY 1
+            ORDER BY points DESC
+        """,
+        coverage="""
+            SELECT (SELECT count(*) FROM issues
+                    WHERE story_points IS NOT NULL AND status_category = 'done'),
+                   (SELECT count(*) FROM issues WHERE status_category = 'done')
+        """,
+        threshold=POINTS_THRESHOLD,
+    ),
 ]

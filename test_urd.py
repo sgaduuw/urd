@@ -3315,6 +3315,62 @@ def test_points_charts_are_held_to_the_lower_threshold():
     assert chart.coverage is not None
 
 
+def test_all_sixteen_charts_are_defined():
+    assert len(chart_specs.CHARTS) == 16
+
+
+def test_people_charts_are_all_present():
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "People"}
+    assert keys == {"throughput_per_person", "review_load", "handoffs", "points_per_person"}
+
+
+def test_review_load_counts_every_move_out_of_review_including_rejections():
+    """Birch moves PROJ-1 out of Review twice: back to In Progress on 01-09, then
+    to Done on 01-20. Both are review decisions. Alder only ever moves work in."""
+    con = _derived("reopened")
+    _, rows = _flow_rows(con, "review_load")
+    counts = {r["reviewer"]: r["reviews"] for r in rows}
+    assert counts == {"Birch": 2}
+
+
+def test_handoffs_pair_the_starting_assignee_with_the_closing_one():
+    con = _derived("reopened")
+    _, rows = _flow_rows(con, "handoffs")
+    assert [(r["started_by"], r["finished_by"], r["tickets"]) for r in rows] == [
+        ("Alder", "Birch", 1)]
+
+
+def test_throughput_uses_small_multiples_rather_than_a_ranked_bar_chart():
+    """A leaderboard invites a reading the data does not support. Note this is a
+    claim about throughput only: points_per_person is deliberately a ranked bar
+    chart, because a ranking of points is a thing this report was asked for."""
+    chart, _ = _flow_rows(_derived("reopened"), "throughput_per_person")
+    assert chart.kind == "small_multiples"
+    assert "small_multiples" in render.FIGURE_KINDS
+
+
+def test_small_multiples_renders_one_panel_per_person():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "throughput_per_person")
+    people = {r[chart.options["group"]] for r in rows}
+    assert len(people) >= 2, "fixture has too few people to tell panels apart"
+    out = render.figure(chart, rows, "sub", con)
+    for person in people:
+        assert f">{person}</text>" in out, f"no panel titled {person}"
+    for chunk in re.findall(r"<svg\b.*?</svg>", out, re.S):
+        _assert_content_within_viewbox(chunk, "throughput")
+
+
+def test_the_whole_report_renders_end_to_end():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    out = os.path.join(tempfile.mkdtemp(), "report.html")
+    urd.report(con, out)
+    html = pathlib.Path(out).read_text()
+    for chart in chart_specs.CHARTS:
+        # A chart below its coverage threshold still names itself, in the strip.
+        assert chart.title in html, f"{chart.key} missing from the page"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
