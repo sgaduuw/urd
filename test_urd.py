@@ -3761,6 +3761,75 @@ def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
     assert payload["time"] is True, "a weekly axis should be a time axis"
 
 
+def test_a_stacked_island_carries_cumulative_sums_computed_in_python():
+    """uPlot stacks by drawing cumulative series and letting later ones paint over
+    earlier. Those sums are the numbers on screen, so they are computed here, not
+    in the browser: the spec rule is that script navigates data, never produces
+    it. Each series also carries its own value, so hovering reads the band rather
+    than the running total."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "cfd")
+    payload = render.plot_payload(chart, rows)
+    assert payload["kind"] == "stacked"
+    by_x = {}
+    for r in rows:
+        by_x.setdefault(r["day"], {})[r["status"]] = r["tickets"]
+    for index, x in enumerate(sorted(by_x)):
+        running = 0
+        # Series arrive in draw order, largest cumulative first, so the natural
+        # band order is the reverse of it.
+        for series in reversed(payload["series"]):
+            running += series["raw"][index] or 0
+            assert series["data"][index] == running, (series["label"], x)
+        assert running == sum(by_x[x].values())
+
+
+def test_a_stack_past_the_palette_folds_its_tail_into_other():
+    """_slot cycles past 8, so a 10-band stack drew two pairs of bands in the same
+    colour, which in a stack cannot be told apart at all. Its docstring already
+    said the caller must collapse the tail; nobody was. The largest bands keep
+    their identity and the remainder becomes one honest Other."""
+    rows = [{"day": f"2026-01-{d:02d}", "status": f"S{i}", "tickets": 100 - i}
+            for d in (1, 2) for i in range(12)]
+    folded = render.fold_bands(rows, x="day", band="status", value="tickets")
+    labels = list(dict.fromkeys(r["status"] for r in folded))
+    assert len(labels) == 8, labels
+    assert labels[-1] == "Other"
+    # Nothing is lost: the totals per x still match.
+    for day in ("2026-01-01", "2026-01-02"):
+        before = sum(r["tickets"] for r in rows if r["day"] == day)
+        after = sum(r["tickets"] for r in folded if r["day"] == day)
+        assert before == after, day
+    # And the smallest originals are the ones that went in.
+    assert "S11" not in labels and "S0" in labels
+
+
+def test_a_stack_within_the_palette_is_left_alone():
+    rows = [{"day": "d", "status": f"S{i}", "tickets": 1} for i in range(8)]
+    assert render.fold_bands(rows, x="day", band="status", value="tickets") == rows
+
+
+def test_no_two_bands_in_a_rendered_stack_share_a_colour():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    for key in ("cfd", "type_mix"):
+        chart, rows = _flow_rows(con, key)
+        payload = render.plot_payload(chart, rows)
+        slots = [s["slot"] for s in payload["series"]]
+        assert len(slots) == len(set(slots)), f"{key}: duplicate colours {slots}"
+
+
+def test_a_stacked_band_keeps_the_colour_its_svg_twin_used():
+    """Draw order is reversed for stacking, so a series' position in the payload
+    is no longer its palette slot. Carrying the slot explicitly is what stops an
+    upgraded chart recolouring every band the moment it loads."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "cfd")
+    payload = render.plot_payload(chart, rows)
+    bands = list(dict.fromkeys(r["status"] for r in rows))
+    for series in payload["series"]:
+        assert series["slot"] == bands.index(series["label"]) % 8 + 1, series["label"]
+
+
 def test_a_data_island_cannot_close_its_own_script_tag():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "created_vs_closed")
@@ -3773,10 +3842,11 @@ def test_only_dense_charts_opt_into_interactivity():
     """A bar chart with nine categories is finished when it is drawn. Interactivity
     is for charts too dense to read, not a badge every chart collects."""
     interactive = {c.key for c in chart_specs.CHARTS if c.options.get("interactive")}
-    assert interactive == {"created_vs_closed", "cycle_scatter", "points_vs_cycle"}, interactive
+    assert interactive == {"created_vs_closed", "cycle_scatter", "points_vs_cycle",
+                           "cfd", "type_mix"}, interactive
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
-            assert chart.kind in ("lines", "scatter"), f"{chart.key}: {chart.kind}"
+            assert chart.kind in ("lines", "scatter", "stacked"), f"{chart.key}: {chart.kind}"
 
 
 def test_the_embedded_javascript_parses():

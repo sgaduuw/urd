@@ -254,14 +254,24 @@ PLOT_SCRIPT = """
     var spec;
     try { spec = JSON.parse(island.textContent); } catch (e) { return; }
     var scatter = spec.kind === 'scatter';
+    var stacked = spec.kind === 'stacked';
     var series = [{ label: spec.xLabel }];
-    spec.series.forEach(function (s, i) {
-      var colour = token('--s' + ((i % 8) + 1), '#2a78d6');
+    spec.series.forEach(function (s) {
+      var colour = token('--s' + (s.slot || 1), '#2a78d6');
       series.push({
         label: s.label,
         stroke: colour,
-        width: scatter ? 0 : 2,
-        points: { show: true, size: scatter ? 5 : 4, stroke: colour, fill: colour }
+        width: stacked ? 1 : (scatter ? 0 : 2),
+        fill: stacked ? colour + '66' : null,
+        points: { show: !stacked, size: scatter ? 5 : 4, stroke: colour, fill: colour },
+        /* The drawn value is the running total; the band's own number is what a
+           reader wants. This reads it out of the payload rather than
+           subtracting, so nothing on screen was computed in the browser. */
+        value: function (u, v, si, di) {
+          if (!stacked || di == null) { return v == null ? '' : v; }
+          var own = spec.series[si - 1].raw[di];
+          return own == null ? '' : own;
+        }
       });
     });
     var data = [spec.x].concat(spec.series.map(function (s) { return s.data; }));
@@ -269,7 +279,7 @@ PLOT_SCRIPT = """
       width: box.clientWidth || 480,
       height: 240,
       cursor: { drag: { x: true, y: false } },
-      scales: { x: { time: !!spec.time } },
+      scales: { x: { time: !!spec.time }, y: stacked ? { range: [0, null] } : {} },
       axes: [
         { stroke: token('--text-secondary', '#52514e'),
           grid: { stroke: token('--grid', '#e1e0d9') } },
@@ -1269,14 +1279,80 @@ def plot_payload(chart, rows):
     axis = stamps if is_time else [_num(x) for x in xs]
     if any(v is None for v in axis):
         return None  # a categorical axis uPlot cannot place; keep the SVG
+    if chart.kind == "stacked":
+        return _stacked_payload(o, rows, x_key, axis, is_time)
     names = o["series"] if chart.kind == "lines" else [o["y"]]
     return {
         "kind": chart.kind,
         "time": is_time,
         "x": axis,
         "xLabel": x_key,
-        "series": [{"label": n, "data": [_num(r.get(n)) for r in rows]} for n in names],
+        "series": [{"label": n, "slot": i % len(PALETTE) + 1,
+                    "data": [_num(r.get(n)) for r in rows]} for i, n in enumerate(names)],
     }
+
+
+def fold_bands(rows, x, band, value, limit=None):
+    """Collapse a stack's smallest bands into one "Other" once it outgrows the
+    palette.
+
+    _slot cycles past eight, so a ten-band stack drew two pairs of bands in the
+    same colour. On a line chart that is merely unfortunate; in a stack, where
+    bands touch, it is unreadable. _slot's own docstring says the caller should
+    collapse the tail, and this is that caller.
+
+    The largest bands by total keep their identity, in first-seen order so the
+    colours match what the chart drew before. Nothing is dropped: the remainder
+    is summed per x, so every column still totals what it did.
+    """
+    limit = limit or len(PALETTE)
+    order = list(dict.fromkeys(r.get(band) for r in rows))
+    if len(order) <= limit:
+        return rows
+    totals = {}
+    for r in rows:
+        totals[r.get(band)] = totals.get(r.get(band), 0) + (_num(r.get(value)) or 0)
+    keep = set(sorted(order, key=lambda b: -totals.get(b, 0))[: limit - 1])
+    folded, other = [], {}
+    for r in rows:
+        if r.get(band) in keep:
+            folded.append(r)
+        else:
+            key = r.get(x)
+            other[key] = other.get(key, 0) + (_num(r.get(value)) or 0)
+    folded.extend({x: k, band: "Other", value: v} for k, v in other.items())
+    return folded
+
+
+def _stacked_payload(o, rows, x_key, axis, is_time):
+    """Long-format rows into the cumulative series uPlot stacks with.
+
+    uPlot has no stacking of its own: the recipe is to draw each band's running
+    total as a filled series and let later ones paint over earlier, which means
+    the largest cumulative has to be drawn FIRST. So `series` comes back in draw
+    order, the reverse of band order, and each entry carries the palette slot its
+    band holds in the SVG. Without that the reversal would recolour every band
+    the instant the chart upgraded.
+
+    `raw` is the band's own value, so hovering reads the band rather than the
+    running total it happens to sit on.
+    """
+    band_key, value_key = o["band"], o["value"]
+    bands = list(dict.fromkeys(r.get(band_key) for r in rows))
+    x_order = list(dict.fromkeys(r.get(x_key) for r in rows))
+    at = {(r.get(x_key), r.get(band_key)): _num(r.get(value_key)) for r in rows}
+    series, running = [], [0.0] * len(x_order)
+    for index, band in enumerate(bands):
+        raw = [at.get((x, band)) or 0 for x in x_order]
+        running = [total + v for total, v in zip(running, raw, strict=True)]
+        series.append({"label": "" if band is None else str(band),
+                       "slot": index % len(PALETTE) + 1,
+                       "data": list(running), "raw": raw})
+    # Deduplicated x, so the axis has to be rebuilt from it rather than reused.
+    stamps = [_epoch(x) for x in x_order]
+    axis = stamps if is_time else [_num(x) for x in x_order]
+    return {"kind": "stacked", "time": is_time, "x": axis, "xLabel": x_key,
+            "series": list(reversed(series))}
 
 
 def figure(chart, rows, subtitle, con, link_base=None):
@@ -1293,6 +1369,9 @@ def figure(chart, rows, subtitle, con, link_base=None):
     elif chart.kind == "lines":
         body = lines(rows, o["x"], o["series"])
     elif chart.kind == "stacked":
+        # Folded once, here, so the SVG and the interactive upgrade are drawn
+        # from exactly the same bands and cannot disagree about what "Other" is.
+        rows = fold_bands(rows, o["x"], o["band"], o["value"])
         body = stacked(rows, o["x"], o["band"], o["value"])
     elif chart.kind == "scatter":
         guides = ()

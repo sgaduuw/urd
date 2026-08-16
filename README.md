@@ -154,9 +154,16 @@ offline, unchanged, years later, and no third party learns who reads a report
 about internal work.
 
 Dense charts are upgraded in the browser: created versus closed (about 100 weekly
-points across three series) and both cycle-time scatters (300+ points each) gain
-hover readouts and drag-to-zoom. Charts that are readable as drawn are left
-alone; a bar chart with nine categories is finished when it is drawn.
+points across three series), both cycle-time scatters (300+ points each) and both
+stacked charts gain hover readouts and drag-to-zoom. On a stack, hovering reads
+the band's own value rather than the running total it sits on. Charts that are
+readable as drawn are left alone; a bar chart with nine categories is finished
+when it is drawn.
+
+A stack with more bands than the palette has colours folds its smallest into one
+`Other`, because two identically coloured bands touching each other cannot be
+told apart. The largest keep their identity, nothing is dropped, and every column
+still totals what it did.
 
 Tables with a `sortable` option sort by any column, click or Enter on the header,
 numerically when the column is numeric.

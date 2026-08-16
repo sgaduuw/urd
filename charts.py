@@ -127,7 +127,9 @@ CHARTS = [
         title="Cumulative flow",
         kind="stacked",
         caption="Tickets per status, sampled once a week. A widening band is a queue.",
-        options={"x": "day", "band": "status", "value": "tickets"},
+        # Interactive: 26 weekly snapshots across 9 bands, where reading one
+        # band off a stacked SVG means measuring the gap by eye.
+        options={"x": "day", "band": "status", "value": "tickets", "interactive": True},
         # One snapshot day per week, NOT date_trunc + count(*) over the week: that
         # sums seven days of counts and inflates every value about sevenfold while
         # leaving the shape intact, so the error is invisible in the picture. Daily
@@ -256,7 +258,7 @@ CHARTS = [
         kind="stacked",
         caption="How much of each month was planned work. A growing bug or "
                 "incident band is the interesting case.",
-        options={"x": "month", "band": "type", "value": "tickets"},
+        options={"x": "month", "band": "type", "value": "tickets", "interactive": True},
         # ::DATE for the same reason as created_vs_closed: date_trunc returns a
         # TIMESTAMP and the tick label is the value's own str().
         sql="""
