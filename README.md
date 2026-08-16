@@ -22,7 +22,8 @@ uv run --with duckdb python urd.py sync \
   --project PROJ --component TEAM --since 2026-01-01
 uv run --with duckdb python urd.py derive \
   --status-order "To Do,In Progress,Review,Done" \
-  --start-status "In Progress" --review-status "Review"
+  --start-status "In Progress" --review-status "Review" \
+  --abandoned-status "Won't do"
 uv run --with duckdb python urd.py report
 ```
 
@@ -67,7 +68,8 @@ everything already held is left alone.
 
 **Flow health**
 - Aging work in progress: open tickets by days in their current status, the chart that changes what you do today.
-- Created versus closed per week: where the two lines diverge, the backlog is growing.
+- Created versus closed per week: where created and delivered diverge, the
+  backlog is growing. Dropped work is a third line, counted separately.
 - Cumulative flow: tickets per status, sampled once a week. A widening band is a queue.
 - Cycle time: one point per closed ticket. The 85th percentile is the number you can promise, the median is the one you'll be asked for.
 - Median days in status, by issue type: where the weeks actually go, review queues show up here first.
@@ -88,6 +90,25 @@ everything already held is left alone.
 - Review load: who moves work out of the review status, counting a rejection back to in-progress the same as an approval. No built-in report exposes this.
 - Handoffs: who starts work that someone else finishes. Read down the rows for what a person hands on, across for what they pick up.
 - Story points closed per person: only meaningful if the field is filled consistently, which the coverage figure tells you.
+
+## Delivered, dropped, open
+
+A ticket closed as "won't do" is a real outcome and is not delivery. Name the
+done-category statuses that mean dropped, and they are counted apart from
+delivered work everywhere at once:
+
+```
+uv run --with duckdb python urd.py derive --abandoned-status "Won't do,Duplicate"
+```
+
+Unset, nothing is treated as dropped, which is the previous behaviour: no
+status name is universal, so urd will not guess one. A name that is not a
+done-category status is rejected, because silently removing work from the
+delivered line while leaving it open elsewhere is worse than a typo.
+
+The flag drives `closures.abandoned` (per closure event) and `issues.abandoned`
+(current state). Both exist because a ticket can close more than once, and a
+current-state field cannot say which of those events was which.
 
 ## Coverage figures
 

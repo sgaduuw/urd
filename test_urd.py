@@ -109,6 +109,62 @@ def test_closures_are_transitions_into_a_done_category_status():
     assert keys == ["PROJ-1", "PROJ-2"]
 
 
+def _abandoned(*fixtures, statuses="Done"):
+    """Derive with a done-category status declared as abandonment rather than
+    delivery. The fixtures close everything into Done, so naming Done here is
+    what makes the split observable without inventing a fourth fixture."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, *fixtures)
+    scope = urd.load_scope(con)
+    urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"],
+               abandoned_status=statuses)
+    return con
+
+
+def test_a_closure_into_an_abandoned_status_is_not_delivery():
+    """A ticket dropped is a data point, not something shipped. Both counts stay
+    available; only their meaning is separated."""
+    con = _abandoned("reopened", "skipped_progress", "two_sprints")
+    rows = con.execute("SELECT abandoned, count(*) FROM closures GROUP BY 1").fetchall()
+    assert dict(rows) == {True: 2}, rows
+    plain = _derived("reopened", "skipped_progress", "two_sprints")
+    assert dict(plain.execute(
+        "SELECT abandoned, count(*) FROM closures GROUP BY 1").fetchall()) == {False: 2}
+
+
+def test_an_abandoned_ticket_is_flagged_on_issues_too():
+    """closures is per event; issues is current state. Charts that ask
+    `status_category = 'done'` need the same distinction or they count a dropped
+    ticket as delivered."""
+    con = _abandoned("reopened", "skipped_progress", "two_sprints")
+    assert con.execute("SELECT count(*) FROM issues WHERE abandoned").fetchone()[0] == 2
+    plain = _derived("reopened", "skipped_progress", "two_sprints")
+    assert plain.execute("SELECT count(*) FROM issues WHERE abandoned").fetchone()[0] == 0
+
+
+def test_abandonment_defaults_to_nothing_rather_than_guessing():
+    """No status name is universal, so an unset config must not invent one: the
+    safe default is that everything closed counts as delivered, as before."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    assert con.execute("SELECT count(*) FROM closures WHERE abandoned").fetchone()[0] == 0
+    assert urd.load_scope(con)["abandoned_status"] is None
+
+
+def test_an_abandoned_status_outside_the_done_category_is_rejected():
+    """Naming an in-flight status would silently delete work from the delivered
+    line while leaving it open, which is a worse error than a typo."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    scope = urd.load_scope(con)
+    try:
+        urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"],
+                   abandoned_status="In Progress")
+    except SystemExit as exc:
+        assert "In Progress" in str(exc)
+    else:
+        raise AssertionError("an in-flight status was accepted as abandonment")
+
+
 def test_derive_is_idempotent():
     con = _derived("reopened", "two_sprints")
     issues_before = con.execute("SELECT count(*) FROM issues").fetchone()[0]
@@ -3414,18 +3470,40 @@ def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
     con = _derived("reopened", "two_sprints")
     con.execute("UPDATE issues SET fix_versions = ['R1', 'R2'] WHERE key = 'PROJ-1'")
     _, rows = _flow_rows(con, "per_fix_version")
-    counts = {r["fix_version"]: (r["done"], r["open"]) for r in rows}
-    # PROJ-1 is done and now in both; PROJ-3 is open and in R2 only.
-    assert counts == {"R1": (1, 0), "R2": (1, 1)}
+    counts = {r["fix_version"]: (r["delivered"], r["dropped"], r["open"]) for r in rows}
+    # PROJ-1 is delivered and now in both; PROJ-3 is open and in R2 only.
+    assert counts == {"R1": (1, 0, 0), "R2": (1, 0, 1)}
 
 
-def test_epic_chart_splits_done_from_open_rather_than_done_from_total():
-    """done and total side by side double-counts: the first bar is contained in
-    the second, and grouped bars read as disjoint quantities."""
+def test_epic_chart_series_are_disjoint_and_sum_to_the_total():
+    """done against total double-counts: the first bar is contained in the second,
+    and grouped bars read as disjoint quantities. delivered/dropped/open are
+    genuinely disjoint, which is the property worth asserting rather than the
+    particular names."""
     con = _derived("reopened", "two_sprints")
     chart, rows = _flow_rows(con, "per_epic")
-    assert chart.options["series"] == ["done", "open"]
-    assert [(r["epic"], r["done"], r["open"]) for r in rows] == [("PROJ-100", 1, 1)]
+    assert chart.options["series"] == ["delivered", "dropped", "open"]
+    assert [(r["epic"], r["delivered"], r["dropped"], r["open"]) for r in rows] == [
+        ("PROJ-100", 1, 0, 1)]
+    total = con.execute(
+        "SELECT count(*) FROM issues WHERE parent IS NOT NULL").fetchone()[0]
+    assert sum(r["delivered"] + r["dropped"] + r["open"] for r in rows) == total
+
+
+def test_dropped_work_never_counts_as_delivered_in_any_chart():
+    """The whole point of the split: a status declared abandoned must move out of
+    every delivery series at once, not just the one that prompted the change."""
+    con = _abandoned("reopened", "two_sprints")
+    _, epic = _flow_rows(con, "per_epic")
+    assert [(r["delivered"], r["dropped"]) for r in epic] == [(0, 1)]
+    _, version = _flow_rows(con, "per_fix_version")
+    assert all(r["delivered"] == 0 for r in version), version
+    assert sum(r["dropped"] for r in version) == 1
+    _, flow = _flow_rows(con, "created_vs_closed")
+    assert sum(r["delivered"] for r in flow) == 0
+    assert sum(r["dropped"] for r in flow) == 1
+    _, thr = _flow_rows(con, "throughput_per_person")
+    assert thr == [], "dropped work still counted as throughput"
 
 
 def test_bars_is_renderable_now_that_charts_ask_for_it():

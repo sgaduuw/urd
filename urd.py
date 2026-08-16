@@ -177,6 +177,7 @@ SCOPE_COLUMNS = (
     "last_sync_at",
     "fetched_fields",
     "thresholds",
+    "abandoned_status",
 )
 
 SCHEMA = """
@@ -190,7 +191,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     site VARCHAR, email VARCHAR, project VARCHAR, component VARCHAR,
     status_order VARCHAR, start_status VARCHAR, review_status VARCHAR,
     earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR,
-    thresholds VARCHAR
+    thresholds VARCHAR, abandoned_status VARCHAR
 );
 CREATE TABLE IF NOT EXISTS sync_errors (
     -- "at" is quoted: DuckDB classifies it as a type_function keyword, and an
@@ -583,7 +584,14 @@ def derive_changes(con):
 
 VIEWS_METRICS = """
 CREATE OR REPLACE VIEW closures AS
-SELECT t.key, t.ts, t.author_id
+-- `abandoned` separates a ticket that was dropped from one that shipped. Both
+-- are closures and both stay countable here; only their meaning differs, which
+-- is why this is a column rather than a filter. Keyed on the status the
+-- transition moved INTO, not on the issue's current resolution: 28 of 552
+-- closures in the first real project belong to tickets that closed more than
+-- once, and a current-state field cannot say which of those events was which.
+SELECT t.key, t.ts, t.author_id,
+       t.to_status IN (SELECT status FROM abandoned_status) AS abandoned
 FROM transitions t JOIN statuses s ON s.name = t.to_status
 WHERE s.category = 'done';
 -- Modelling decision: one row per transition into a done status; a ticket reopened and
@@ -616,7 +624,7 @@ WHERE st.pos < sf.pos;
 """
 
 
-def derive(con, status_order, start_status, review_status):
+def derive(con, status_order, start_status, review_status, abandoned_status=None):
     """Rebuild the derived tables and views from raw_issues.
 
     Offline and idempotent: this reads only what sync already fetched, so a
@@ -649,8 +657,27 @@ def derive(con, status_order, start_status, review_status):
     if len(statuses) != len(set(statuses)):
         raise SystemExit(f"--status-order contains duplicates: {status_order}")
 
+    # Validated against the statuses table, which sync populates: a name that is
+    # not a done-category status would quietly remove work from the delivered
+    # line while leaving it open elsewhere, which is worse than a plain typo.
+    abandoned = [a.strip() for a in (abandoned_status or "").split(",") if a.strip()]
+    if abandoned:
+        known = {r[0] for r in con.execute(
+            "SELECT name FROM statuses WHERE category = 'done'").fetchall()}
+        stray = [a for a in abandoned if a not in known]
+        if stray and known:
+            raise SystemExit(
+                f"--abandoned-status names {', '.join(stray)}, which is not a "
+                f"done-category status. Candidates: {', '.join(sorted(known))}"
+            )
+
     save_scope(con, status_order=status_order, start_status=start_status,
-               review_status=review_status)
+               review_status=review_status, abandoned_status=abandoned_status)
+    con.execute("CREATE OR REPLACE TABLE abandoned_status (status VARCHAR PRIMARY KEY)")
+    if abandoned:
+        # Guarded: DuckDB's executemany rejects an empty parameter list outright
+        # rather than doing nothing, and no abandoned status is the default case.
+        con.executemany("INSERT INTO abandoned_status VALUES (?)", [(a,) for a in abandoned])
 
     con.execute("CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
     con.executemany(
@@ -659,6 +686,13 @@ def derive(con, status_order, start_status, review_status):
     )
 
     issues = derive_issues(con)
+    # Current-state twin of closures.abandoned, for the charts that ask
+    # `status_category = 'done'` rather than counting closure events. Added here
+    # rather than in ISSUES_SCHEMA so the insert keeps its positional column
+    # list; CREATE OR REPLACE drops it again on every derive anyway.
+    con.execute("ALTER TABLE issues ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
+    con.execute(
+        "UPDATE issues SET abandoned = status IN (SELECT status FROM abandoned_status)")
     changes = derive_changes(con)
     sprints = derive_sprints(con)
     con.execute(VIEWS_METRICS)
@@ -776,6 +810,10 @@ def main(argv=None):
     p_derive.add_argument("--status-order", help="statuses in workflow order, comma separated")
     p_derive.add_argument("--start-status", help="the status at which cycle time starts")
     p_derive.add_argument("--review-status", help="the status reviewers move work out of")
+    p_derive.add_argument(
+        "--abandoned-status",
+        help="done-category statuses meaning dropped rather than delivered, "
+             "comma separated. Counted separately, never as delivery.")
 
     p_report = sub.add_parser("report", help="write report.html from the derived tables")
     p_report.add_argument(
@@ -815,6 +853,7 @@ def main(argv=None):
             args.status_order or scope["status_order"],
             args.start_status or scope["start_status"],
             args.review_status or scope["review_status"],
+            args.abandoned_status or scope["abandoned_status"],
         )
         return 0
 

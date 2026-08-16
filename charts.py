@@ -91,15 +91,19 @@ CHARTS = [
         section="Flow health",
         title="Created versus closed per week",
         kind="lines",
-        caption="Where the two lines diverge, the backlog is growing.",
-        options={"x": "week", "series": ["created", "closed"]},
+        caption="Where created and delivered diverge, the backlog is growing. "
+                "Dropped work is counted separately: it is a real outcome, and "
+                "it is not delivery.",
+        options={"x": "week", "series": ["created", "delivered", "dropped"]},
         sql="""
             WITH c AS (
                 SELECT date_trunc('week', created) AS week, count(*) AS created
                 FROM issues GROUP BY 1
             ),
             d AS (
-                SELECT date_trunc('week', ts) AS week, count(*) AS closed
+                SELECT date_trunc('week', ts) AS week,
+                       count(*) FILTER (WHERE NOT abandoned) AS delivered,
+                       count(*) FILTER (WHERE abandoned) AS dropped
                 FROM closures GROUP BY 1
             )
             -- ::DATE because date_trunc returns a TIMESTAMP, and the axis label is
@@ -107,7 +111,8 @@ CHARTS = [
             -- nineteen characters of which the last eight are always midnight.
             SELECT COALESCE(c.week, d.week)::DATE AS week,
                    COALESCE(c.created, 0) AS created,
-                   COALESCE(d.closed, 0) AS closed
+                   COALESCE(d.delivered, 0) AS delivered,
+                   COALESCE(d.dropped, 0) AS dropped
             FROM c FULL OUTER JOIN d ON c.week = d.week
             ORDER BY week
         """,
@@ -189,12 +194,14 @@ CHARTS = [
         title="Delivered versus open, per version",
         kind="bars",
         caption="The delivery view. One bar pair per version a ticket is tagged with.",
-        options={"labels": "fix_version", "series": ["done", "open"]},
+        options={"labels": "fix_version", "series": ["delivered", "dropped", "open"]},
         # UNNEST, so a ticket tagged with two versions counts in both rather than
         # being dropped or arbitrarily attributed to one.
         sql="""
             SELECT v AS fix_version,
-                   count(*) FILTER (WHERE status_category = 'done') AS done,
+                   count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)
+                       AS delivered,
+                   count(*) FILTER (WHERE abandoned) AS dropped,
                    count(*) FILTER (WHERE status_category <> 'done') AS open
             FROM issues, UNNEST(fix_versions) AS t(v)
             GROUP BY 1
@@ -211,15 +218,17 @@ CHARTS = [
         # done and open rather than done and total: the two are disjoint and sum to
         # the total, so the pair is an honest side-by-side read. done against total
         # puts a bar inside another bar and invites reading them as separate work.
-        options={"labels": "epic", "series": ["done", "open"]},
+        options={"labels": "epic", "series": ["delivered", "dropped", "open"]},
         sql="""
             SELECT parent AS epic,
-                   count(*) FILTER (WHERE status_category = 'done') AS done,
+                   count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)
+                       AS delivered,
+                   count(*) FILTER (WHERE abandoned) AS dropped,
                    count(*) FILTER (WHERE status_category <> 'done') AS open
             FROM issues
             WHERE parent IS NOT NULL
             GROUP BY 1
-            ORDER BY done + open DESC
+            ORDER BY count(*) DESC
         """,
     ),
     Chart(
@@ -375,6 +384,7 @@ CHARTS = [
             FROM closures c
             JOIN issues i ON i.key = c.key
             LEFT JOIN people p ON p.account_id = i.assignee_id
+            WHERE NOT c.abandoned
             GROUP BY 1, 2
             ORDER BY 1, 2
         """,
@@ -445,14 +455,15 @@ CHARTS = [
             FROM issues i
             LEFT JOIN people p ON p.account_id = i.assignee_id
             -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
-            WHERE i.status_category = 'done' AND i.story_points > 0
+            WHERE i.status_category = 'done' AND NOT i.abandoned AND i.story_points > 0
             GROUP BY 1
             ORDER BY points DESC
         """,
         coverage="""
             SELECT (SELECT count(*) FROM issues
-                    WHERE story_points > 0 AND status_category = 'done'),
-                   (SELECT count(*) FROM issues WHERE status_category = 'done')
+                    WHERE story_points > 0 AND status_category = 'done' AND NOT abandoned),
+                   (SELECT count(*) FROM issues
+                    WHERE status_category = 'done' AND NOT abandoned)
         """,
         tier="points",
     ),
