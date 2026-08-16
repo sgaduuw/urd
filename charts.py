@@ -190,20 +190,59 @@ CHARTS = [
         # leaving the shape intact, so the error is invisible in the picture. Daily
         # bars were the plan's version and produced 222 bars 1px wide in a 78KB SVG.
         sql=f"""
-            WITH days AS (
+            WITH horizon AS (
+                -- Spans close at the moment derive ran, so a series running to
+                -- current_date ends after the data does. The inner join then
+                -- drops that snapshot rather than showing it as zero, and the
+                -- chart stops early with nothing to say it has.
+                SELECT least(current_date, max(left_at)::DATE) AS d FROM status_durations
+            ),
+            days AS (
                 SELECT unnest(generate_series(
                     greatest((SELECT min(created)::DATE FROM issues),
-                             current_date - INTERVAL {WINDOW_WEEKS} WEEK),
-                    current_date, INTERVAL 1 DAY))::DATE AS day
+                             (SELECT d FROM horizon) - INTERVAL {WINDOW_WEEKS} WEEK),
+                    (SELECT d FROM horizon), INTERVAL 1 DAY))::DATE AS day
             ),
             snapshots AS (SELECT max(day) AS day FROM days
                           WHERE in_window(day) GROUP BY date_trunc('week', day))
             SELECT s.day, d.status, count(*) AS tickets
             FROM snapshots s
             JOIN status_durations d
-              ON s.day >= d.entered::DATE AND s.day < d.left_at::DATE
+              -- left_at, not left_at::DATE: truncating excludes the final day,
+              -- because midnight on that date is not less than the date itself.
+              ON s.day >= d.entered::DATE AND s.day < d.left_at
             GROUP BY 1, 2
             ORDER BY 1, 2
+        """,
+    ),
+    Chart(
+        key="net_open",
+        section="Flow health",
+        title="Open tickets over time",
+        kind="lines",
+        caption="What the gap between new and done adds up to. Counted from the "
+                "status history rather than created minus closed, because a "
+                "reopened ticket closes twice and that arithmetic double counts it.",
+        options={"x": "day", "series": ["open_tickets"], "interactive": True},
+        sql=f"""
+            WITH horizon AS (
+                SELECT least(current_date, max(left_at)::DATE) AS d FROM status_durations
+            ),
+            days AS (
+                SELECT unnest(generate_series(
+                    greatest((SELECT min(created)::DATE FROM issues),
+                             (SELECT d FROM horizon) - INTERVAL {WINDOW_WEEKS} WEEK),
+                    (SELECT d FROM horizon), INTERVAL 1 DAY))::DATE AS day
+            ),
+            snapshots AS (SELECT max(day) AS day FROM days
+                          WHERE in_window(day) GROUP BY date_trunc('week', day))
+            SELECT s.day,
+                   count(DISTINCT d.key) FILTER (WHERE st.category <> 'done') AS open_tickets
+            FROM snapshots s
+            JOIN status_durations d ON s.day >= d.entered::DATE AND s.day < d.left_at
+            JOIN statuses st ON st.name = d.status
+            GROUP BY 1
+            ORDER BY 1
         """,
     ),
     Chart(

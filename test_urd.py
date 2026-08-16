@@ -3426,6 +3426,35 @@ def test_every_chart_sql_returns_the_columns_its_options_name():
             assert numerator is not None and denominator is not None
 
 
+def test_the_backlog_chart_reconciles_with_the_open_ticket_count():
+    """The strongest check available: the newest snapshot must equal the number of
+    tickets actually open. It did not, twice over, and both were silent.
+
+    Spans close at the moment derive ran, so a series running to current_date has
+    a last snapshot after the data ends, which an inner join drops entirely rather
+    than showing as zero: the chart simply stopped a week early. And comparing
+    against left_at::DATE excludes the final day, because midnight on that date is
+    not less than the date itself."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "net_open")
+    assert rows, "no snapshots at all"
+    open_now = con.execute(
+        "SELECT count(*) FROM issues WHERE status_category <> 'done'").fetchone()[0]
+    assert rows[-1]["open_tickets"] == open_now, (rows[-1], open_now)
+
+
+def test_the_cumulative_flow_reaches_the_same_horizon():
+    """Same defect, same fix: its newest snapshot was dropped too, so the chart
+    ended before the data did with nothing to say it had."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, backlog = _flow_rows(con, "net_open")
+    _, flow = _flow_rows(con, "cfd")
+    assert max(r["day"] for r in flow) == max(r["day"] for r in backlog)
+    total = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    newest = max(r["day"] for r in flow)
+    assert sum(r["tickets"] for r in flow if r["day"] == newest) == total
+
+
 def test_the_trend_chart_smooths_both_series_over_four_weeks():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "flow_trend")
@@ -3458,8 +3487,8 @@ def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():
 
 def test_flow_health_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
-    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "cfd",
-                    "cycle_scatter", "time_in_status"}
+    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_open",
+                    "cfd", "cycle_scatter", "time_in_status"}
 
 
 def test_aging_lists_only_open_tickets_worst_first():

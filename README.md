@@ -72,6 +72,8 @@ everything already held is left alone.
   backlog is growing. Dropped work is a third line, counted separately.
 - New versus done, four week trend: the same counts smoothed, because week to
   week noise hides the direction.
+- Open tickets over time: what the gap between the two adds up to, counted from
+  the status history rather than created minus closed.
 - Cumulative flow: tickets per status, sampled once a week. A widening band is a queue.
 - Cycle time: one point per closed ticket. The 85th percentile is the number you can promise, the median is the one you'll be asked for.
 - Median days in status, by issue type: where the weeks actually go, review queues show up here first.
