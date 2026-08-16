@@ -82,7 +82,7 @@ CHARTS = [
             LEFT JOIN people p ON p.account_id = i.assignee_id
             JOIN (SELECT key, max(entered) AS entered FROM status_durations GROUP BY key) d
                  ON d.key = i.key
-            WHERE i.status_category <> 'done'
+            WHERE i.status_category <> 'done' AND in_window(i.created)
             ORDER BY days DESC
             LIMIT 40
         """,
@@ -102,13 +102,13 @@ CHARTS = [
         sql="""
             WITH c AS (
                 SELECT date_trunc('week', created) AS week, count(*) AS created
-                FROM issues GROUP BY 1
+                FROM issues WHERE in_window(created) GROUP BY 1
             ),
             d AS (
                 SELECT date_trunc('week', ts) AS week,
                        count(*) FILTER (WHERE NOT abandoned) AS delivered,
                        count(*) FILTER (WHERE abandoned) AS dropped
-                FROM closures GROUP BY 1
+                FROM closures WHERE in_window(ts) GROUP BY 1
             )
             -- ::DATE because date_trunc returns a TIMESTAMP, and the axis label is
             -- the value's own str(): a weekly chart was printing '2026-01-05 00:00:00',
@@ -141,7 +141,8 @@ CHARTS = [
                              current_date - INTERVAL {WINDOW_WEEKS} WEEK),
                     current_date, INTERVAL 1 DAY))::DATE AS day
             ),
-            snapshots AS (SELECT max(day) AS day FROM days GROUP BY date_trunc('week', day))
+            snapshots AS (SELECT max(day) AS day FROM days
+                          WHERE in_window(day) GROUP BY date_trunc('week', day))
             SELECT s.day, d.status, count(*) AS tickets
             FROM snapshots s
             JOIN status_durations d
@@ -163,10 +164,12 @@ CHARTS = [
             SELECT quantile_cont(cycle_days, 0.5), quantile_cont(cycle_days, 0.85)
             FROM cycle_times
         """},
-        sql="SELECT resolved, cycle_days FROM cycle_times ORDER BY resolved",
+        sql="SELECT resolved, cycle_days FROM cycle_times "
+            "WHERE in_window(resolved) ORDER BY resolved",
         coverage="""
-            SELECT (SELECT count(*) FROM cycle_times),
-                   (SELECT count(*) FROM issues WHERE resolved IS NOT NULL)
+            SELECT (SELECT count(*) FROM cycle_times WHERE in_window(resolved)),
+                   (SELECT count(*) FROM issues
+                    WHERE resolved IS NOT NULL AND in_window(resolved))
         """,
     ),
     Chart(
@@ -197,7 +200,7 @@ CHARTS = [
             FROM status_durations d
             JOIN issues i ON i.key = d.key
             JOIN statuses s ON s.name = d.status
-            WHERE s.category <> 'done'
+            WHERE s.category <> 'done' AND in_window(d.entered)
             GROUP BY 1, 2
             HAVING count(*) >= 1
             ORDER BY 1, 2
@@ -218,7 +221,8 @@ CHARTS = [
                        AS delivered,
                    count(*) FILTER (WHERE abandoned) AS dropped,
                    count(*) FILTER (WHERE status_category <> 'done') AS open
-            FROM issues, UNNEST(fix_versions) AS t(v)
+            FROM issues i, UNNEST(i.fix_versions) AS t(v)
+            WHERE (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             ORDER BY 1
         """,
@@ -246,8 +250,8 @@ CHARTS = [
                    count(*) FILTER (WHERE status_category <> 'done') AS open,
                    round(100.0 * count(*) FILTER (WHERE status_category = 'done'
                                                     AND NOT abandoned) / count(*)) AS percent_done
-            FROM issues
-            WHERE parent IS NOT NULL
+            FROM issues i
+            WHERE i.parent IS NOT NULL AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             ORDER BY count(*) DESC
         """,
@@ -265,7 +269,8 @@ CHARTS = [
         sql="""
             SELECT date_trunc('month', created)::DATE AS month, type,
                    count(*) AS tickets
-            FROM issues
+            FROM issues i
+            WHERE (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1, 2
             ORDER BY 1, 2
         """,
@@ -285,6 +290,7 @@ CHARTS = [
             FROM rework r
             JOIN issue_sprints s
               ON s.key = r.key AND r.ts >= s.start AND r.ts < s."end"
+            WHERE in_window(r.ts)
             GROUP BY 1
             ORDER BY min(s.start) DESC
         """,
@@ -295,8 +301,9 @@ CHARTS = [
         coverage="""
             SELECT (SELECT count(DISTINCT r.key) FROM rework r
                     JOIN issue_sprints s
-                      ON s.key = r.key AND r.ts >= s.start AND r.ts < s."end"),
-                   (SELECT count(DISTINCT key) FROM rework)
+                      ON s.key = r.key AND r.ts >= s.start AND r.ts < s."end"
+                    WHERE in_window(r.ts)),
+                   (SELECT count(DISTINCT key) FROM rework WHERE in_window(ts))
         """,
     ),
     Chart(
@@ -310,15 +317,16 @@ CHARTS = [
         sql="""
             SELECT sprint_name AS sprint, count(DISTINCT key) AS carried
             FROM issue_sprints
-            WHERE ordinal > 1
+            WHERE ordinal > 1 AND in_window(start)
             GROUP BY 1
             ORDER BY min(start) DESC
         """,
         # Same reason as rework_per_sprint: with no sprints anywhere this drew an
         # empty chart rather than saying the project does not use them.
         coverage="""
-            SELECT (SELECT count(DISTINCT key) FROM issue_sprints),
-                   (SELECT count(*) FROM issues)
+            SELECT (SELECT count(DISTINCT key) FROM issue_sprints WHERE in_window(start)),
+                   (SELECT count(*) FROM issues i WHERE in_window(i.created)
+                                                     OR in_window(i.resolved))
         """,
     ),
     Chart(
@@ -345,15 +353,17 @@ CHARTS = [
                    quantile_cont(c.cycle_days, 0.85) AS p85_days
             FROM cycle_times c
             JOIN last_sprint s ON s.key = c.key AND s.rn = 1
+            WHERE in_window(c.resolved)
             GROUP BY 1
             ORDER BY min(s.start) DESC
         """,
         # Counts what the chart plots (cycle times that have a sprint) over what it
         # would plot if every ticket had one, not sprint membership over all issues.
         coverage="""
-            SELECT (SELECT count(*) FROM cycle_times c WHERE EXISTS
+            SELECT (SELECT count(*) FROM cycle_times c
+                    WHERE in_window(c.resolved) AND EXISTS
                       (SELECT 1 FROM issue_sprints s WHERE s.key = c.key)),
-                   (SELECT count(*) FROM cycle_times)
+                   (SELECT count(*) FROM cycle_times WHERE in_window(resolved))
         """,
     ),
     Chart(
@@ -375,15 +385,15 @@ CHARTS = [
             -- ticket as 0, not NULL, so IS NOT NULL reported 100% coverage while
             -- 69% of tickets carried no estimate and 131 of 309 plotted points
             -- sat on the x axis at zero.
-            WHERE i.story_points > 0
+            WHERE i.story_points > 0 AND in_window(c.resolved)
             ORDER BY i.story_points
         """,
         # Rows actually plotted over rows that could be, not points-present over all
         # issues: a ticket with points but no cycle time never reaches this chart.
         coverage="""
             SELECT (SELECT count(*) FROM issues i JOIN cycle_times c ON c.key = i.key
-                    WHERE i.story_points > 0),
-                   (SELECT count(*) FROM cycle_times)
+                    WHERE i.story_points > 0 AND in_window(c.resolved)),
+                   (SELECT count(*) FROM cycle_times WHERE in_window(resolved))
         """,
         tier="points",
     ),
@@ -412,7 +422,7 @@ CHARTS = [
             FROM closures c
             JOIN issues i ON i.key = c.key
             LEFT JOIN people p ON p.account_id = i.assignee_id
-            WHERE NOT c.abandoned
+            WHERE NOT c.abandoned AND in_window(c.ts)
             GROUP BY 1, 2
             ORDER BY 1, 2
         """,
@@ -432,6 +442,7 @@ CHARTS = [
             FROM transitions t
             LEFT JOIN people p ON p.account_id = t.author_id
             WHERE t.from_status = (SELECT review_status FROM sync_state)
+              AND in_window(t.ts)
             GROUP BY 1
             ORDER BY reviews DESC
         """,
@@ -455,6 +466,7 @@ CHARTS = [
                 LEFT JOIN changes a
                        ON a.key = t.key AND a.field = 'assignee' AND a.ts <= t.ts
                 WHERE t.to_status = (SELECT start_status FROM sync_state)
+                  AND in_window(t.ts)
                 GROUP BY t.key
             ),
             finished AS (
@@ -484,15 +496,18 @@ CHARTS = [
             FROM issues i
             LEFT JOIN people p ON p.account_id = i.assignee_id
             -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
-            WHERE i.status_category = 'done' AND NOT i.abandoned AND i.story_points > 0
+            WHERE i.status_category = 'done' AND NOT i.abandoned
+              AND i.story_points > 0 AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             ORDER BY points DESC
         """,
         coverage="""
             SELECT (SELECT count(*) FROM issues
-                    WHERE story_points > 0 AND status_category = 'done' AND NOT abandoned),
+                    WHERE story_points > 0 AND status_category = 'done' AND NOT abandoned
+                      AND (in_window(created) OR in_window(resolved))),
                    (SELECT count(*) FROM issues
-                    WHERE status_category = 'done' AND NOT abandoned)
+                    WHERE status_category = 'done' AND NOT abandoned
+                      AND (in_window(created) OR in_window(resolved)))
         """,
         tier="points",
     ),

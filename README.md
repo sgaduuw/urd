@@ -207,6 +207,34 @@ no choice. The test that enforces this strips anchors and then applies every
 pattern to what remains, and a companion test checks that the strip has not
 blinded it.
 
+## Reporting on a period
+
+`sync --since` decides what is fetched. `report --since` decides what the charts
+measure, without refetching anything:
+
+```
+uv run --with duckdb python urd.py report --since 2026-03-01
+```
+
+Remembered between runs; pass `1900-01-01` to go back to everything. The header
+states the window, because a windowed report and a whole-history one look
+identical otherwise.
+
+Every chart obeys it. A ticket counts if it was created or resolved inside the
+window; an event counts if it happened inside it. That is one rule and it is
+applied everywhere, which means it changes what some charts mean rather than just
+how long they are:
+
+- **Aging work in progress** drops any ticket created before the window, which is
+  exactly the oldest ones the chart exists to surface. On a six-month window
+  against a two-year project it hid every ticket over 580 days old.
+- **Progress per epic** and **per version** become what moved in the window
+  rather than how far along the whole thing is.
+
+If that is the wrong trade for a chart, the fix is to drop `in_window` from its
+query; a test will then tell you which chart is no longer obeying the flag, which
+is the point of the test.
+
 ## Coverage figures
 
 Some charts carry a `coverage` query alongside their main one: a numerator

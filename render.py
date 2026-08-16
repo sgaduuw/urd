@@ -405,6 +405,11 @@ def page(header, sections):
     errors = header["errors"]
     warn = (f'<span class="warn-inline">{errors} sync error(s) outstanding</span>'
             if errors else "")
+    # Stated because every chart obeys it, including the ones where it changes
+    # what a chart means: aging work in progress drops any ticket created before
+    # the window, which is exactly the oldest ones it exists to surface.
+    window = (f"<strong>Every chart covers {esc(header['window'])} onward.</strong> "
+              if header.get("window") else "")
     body = "".join(
         f"<h2>{esc(title)}</h2>" + "".join(charts) for title, charts in sections
     )
@@ -414,7 +419,7 @@ def page(header, sections):
         f"<title>{esc(scope)} flow report</title>"
         f"<style>{UPLOT_CSS}\n{CSS}</style></head><body>"
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
-        f"{esc(header['since'])}. Synced {esc(header['synced'])}. {warn}</p></header>"
+        f"{esc(header['since'])}. Synced {esc(header['synced'])}. {window}{warn}</p></header>"
         + body
         + f"<script>{UPLOT_JS}</script>"
         + f"<script>{SORT_SCRIPT}{PLOT_SCRIPT}</script></body></html>\n"

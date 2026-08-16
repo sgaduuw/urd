@@ -187,6 +187,7 @@ SCOPE_COLUMNS = (
     "fetched_fields",
     "thresholds",
     "abandoned_status",
+    "report_since",
 )
 
 SCHEMA = """
@@ -200,7 +201,14 @@ CREATE TABLE IF NOT EXISTS sync_state (
     site VARCHAR, email VARCHAR, project VARCHAR, component VARCHAR,
     status_order VARCHAR, start_status VARCHAR, review_status VARCHAR,
     earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR,
-    thresholds VARCHAR, abandoned_status VARCHAR
+    thresholds VARCHAR, abandoned_status VARCHAR, report_since VARCHAR
+);
+CREATE TABLE IF NOT EXISTS report_window (
+    -- One row. The date every chart measures from, as a real DATE so a typo is a
+    -- parse error here rather than a chart quietly covering nothing. Unset is
+    -- stored as a date old enough to include everything, which keeps the charts
+    -- free of a COALESCE they would all have to remember.
+    since DATE
 );
 CREATE TABLE IF NOT EXISTS sync_errors (
     -- "at" is quoted: DuckDB classifies it as a type_function keyword, and an
@@ -233,9 +241,41 @@ def open_db(path=DB_DEFAULT):
     # database that predates it. Idempotent, and cheap enough to run every open.
     for column in SCOPE_COLUMNS:
         con.execute(f"ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS {column} VARCHAR")
+    if con.execute("SELECT count(*) FROM report_window").fetchone()[0] == 0:
+        con.execute("INSERT INTO report_window VALUES (?)", [UNBOUNDED])
+    con.execute(WINDOW_MACRO)
     if con.execute("SELECT count(*) FROM sync_state").fetchone()[0] == 0:
         con.execute(f"INSERT INTO sync_state VALUES ({','.join(['NULL'] * len(SCOPE_COLUMNS))})")
     return con
+
+
+# A ticket counts if it was created or resolved inside the window; an event counts
+# if it happened inside it. A macro rather than a repeated subquery, because it
+# appears in every chart and reads as what it means. It resolves report_window at
+# query time, so changing the window needs no re-derive.
+#
+# NULL never passes: an unresolved ticket is not "resolved in the window", so an
+# issue-level filter has to be in_window(created) OR in_window(resolved).
+WINDOW_MACRO = (
+    "CREATE OR REPLACE MACRO in_window(ts) AS "
+    "ts >= (SELECT since FROM report_window)"
+)
+
+UNBOUNDED = "1900-01-01"
+
+
+def set_report_window(con, since):
+    """Set the date every chart measures from. None means everything."""
+    if since is not None:
+        try:
+            datetime.strptime(since, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            raise SystemExit(f"--since wants YYYY-MM-DD, got {since!r}") from None
+    con.execute("DELETE FROM report_window")
+    con.execute("INSERT INTO report_window VALUES (?)", [since or UNBOUNDED])
+    con.execute(WINDOW_MACRO)
+    save_scope(con, report_since=since)
+    return since
 
 
 def save_scope(con, **kwargs):
@@ -867,6 +907,7 @@ def report(con, path="report.html", tiers=None):
         "component": scope["component"],
         "since": scope["earliest_since"] or "unknown",
         "synced": scope["last_sync_at"] or "never",
+        "window": scope["report_since"],
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
@@ -973,6 +1014,10 @@ def main(argv=None):
         "--threshold", action="append", metavar="TIER=SHARE",
         help="minimum coverage before a chart is replaced by a strip, e.g. "
              "points=0.4. Repeatable, remembered between runs.")
+    p_report.add_argument(
+        "--since", metavar="YYYY-MM-DD",
+        help="the date every chart measures from. Remembered between runs; "
+             "pass 1900-01-01 to go back to everything.")
 
     p_sql = sub.add_parser("sql", help="run a query against the database")
     p_sql.add_argument("query")
@@ -1011,6 +1056,8 @@ def main(argv=None):
         return 0
 
     if args.verb == "report":
+        scope = load_scope(con)
+        set_report_window(con, args.since or scope["report_since"])
         tiers = parse_thresholds(args.threshold, base=stored_thresholds(con))
         save_scope(con, thresholds=format_thresholds(tiers))
         return report(con, tiers=tiers)

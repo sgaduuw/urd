@@ -3666,7 +3666,7 @@ def test_figure_refuses_a_kind_no_renderer_handles():
 
 def _header(**over):
     base = {"project": "PROJ", "component": "TEAM", "since": "2026-01-01",
-            "synced": "2026-08-13T17:00:00", "errors": 0, "issues": 41}
+            "synced": "2026-08-13T17:00:00", "errors": 0, "issues": 41, "window": None}
     return {**base, **over}
 
 
@@ -4191,6 +4191,57 @@ def test_cycle_per_sprint_keeps_tickets_that_closed_after_their_sprint_ended():
     _, rows = _flow_rows(con, "cycle_per_sprint")
     assert [r["sprint"] for r in rows] == ["Sprint B"]
     assert rows[0]["median_days"] > 0
+
+
+def test_every_chart_respects_the_report_window():
+    """Stated as a rule over the specs rather than chart by chart, so a chart
+    added later has to decide. A chart that silently ignored the window would
+    report a different period from the one beside it, which is worse than a chart
+    that is simply wrong: the reader has no way to tell."""
+    for chart in chart_specs.CHARTS:
+        assert "in_window(" in chart.sql, f"{chart.key} ignores --since"
+        if chart.coverage:
+            assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores --since"
+
+
+def test_a_window_narrows_every_chart_that_has_data_outside_it():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    before = {c.key: len(con.execute(c.sql).fetchall()) for c in chart_specs.CHARTS}
+    urd.set_report_window(con, "2026-02-01")
+    after = {c.key: len(con.execute(c.sql).fetchall()) for c in chart_specs.CHARTS}
+    for key in before:
+        assert after[key] <= before[key], f"{key} grew: {before[key]} -> {after[key]}"
+    narrowed = [k for k in before if after[k] < before[k]]
+    assert len(narrowed) >= 5, f"a February window barely changed anything: {narrowed}"
+
+
+def test_an_unset_window_leaves_every_chart_whole():
+    """The default has to be every row, or a first report silently covers nothing."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    whole = {c.key: len(con.execute(c.sql).fetchall()) for c in chart_specs.CHARTS}
+    urd.set_report_window(con, None)
+    assert {c.key: len(con.execute(c.sql).fetchall()) for c in chart_specs.CHARTS} == whole
+
+
+def test_the_page_states_the_window_every_chart_obeys():
+    """A windowed report and a whole-history one look identical otherwise, and
+    they say different things. It matters most where the window changes a chart's
+    meaning rather than just its length."""
+    windowed = render.page(_header(window="2026-03-01"), [])
+    assert "2026-03-01 onward" in windowed
+    assert "onward" not in render.page(_header(), [])
+
+
+def test_a_report_window_is_remembered_and_validated():
+    con = _derived("reopened", "two_sprints")
+    urd.set_report_window(con, "2026-02-01")
+    assert urd.load_scope(con)["report_since"] == "2026-02-01"
+    for bad in ("yesterday", "2026-13-01", "01-02-2026"):
+        try:
+            urd.set_report_window(con, bad)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{bad!r} was accepted as a date")
 
 
 def test_a_coverage_query_counts_the_rows_its_chart_actually_plots():
