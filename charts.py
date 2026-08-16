@@ -229,6 +229,16 @@ CHARTS = [
             GROUP BY 1
             ORDER BY min(s.start)
         """,
+        # From the first live run: 64 tickets carried rework and the project used
+        # no sprints, so this drew a bare "no data" that reads as "no rework",
+        # the opposite of the truth. Counted in tickets rather than transitions
+        # because that is the unit coverage_strip's wording uses.
+        coverage="""
+            SELECT (SELECT count(DISTINCT r.key) FROM rework r
+                    JOIN issue_sprints s
+                      ON s.key = r.key AND r.ts >= s.start AND r.ts < s."end"),
+                   (SELECT count(DISTINCT key) FROM rework)
+        """,
     ),
     Chart(
         key="carry_over",
@@ -244,6 +254,12 @@ CHARTS = [
             WHERE ordinal > 1
             GROUP BY 1
             ORDER BY min(start)
+        """,
+        # Same reason as rework_per_sprint: with no sprints anywhere this drew an
+        # empty chart rather than saying the project does not use them.
+        coverage="""
+            SELECT (SELECT count(DISTINCT key) FROM issue_sprints),
+                   (SELECT count(*) FROM issues)
         """,
     ),
     Chart(

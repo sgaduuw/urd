@@ -3275,6 +3275,20 @@ def test_rework_is_attributed_to_the_sprint_it_happened_in():
     assert [(r["sprint"], r["backward_moves"]) for r in rows] == [("Sprint B", 1)]
 
 
+def test_a_sprint_chart_with_no_sprints_says_so_rather_than_drawing_nothing():
+    """From the first live run: 64 tickets carried rework and the project used no
+    sprints at all, so both sprint charts rendered a bare "no data". A reader
+    cannot distinguish that from "no rework", which is the opposite conclusion,
+    and it is exactly what the coverage mechanism exists to prevent."""
+    con = _derived("reopened", "two_sprints")
+    con.execute("DELETE FROM issue_sprints")
+    for key in ("rework_per_sprint", "carry_over"):
+        chart = next(c for c in chart_specs.CHARTS if c.key == key)
+        out = urd.run_chart(con, chart)
+        assert "not shown" in out, f"{key} drew an empty chart instead of explaining"
+        assert "no data" not in out, f"{key} still fell through to the empty-data note"
+
+
 def test_carry_over_counts_tickets_not_memberships():
     con = _derived("reopened", "two_sprints")
     _, rows = _flow_rows(con, "carry_over")
