@@ -14,9 +14,12 @@ and both a light and a dark theme defined explicitly (never inherited) since
 the report is a static file opened directly in a browser.
 """
 
+import datetime
 import decimal
 import html
+import json
 import math
+import pathlib
 import urllib.parse
 
 # Reference categorical palette (see the `dataviz` skill, references/palette.md).
@@ -226,6 +229,64 @@ document.querySelectorAll('table.sortable').forEach(function (table) {
 """
 
 
+_VENDOR = pathlib.Path(__file__).parent / "vendor"
+UPLOT_JS = (_VENDOR / "uplot.min.js").read_text()
+UPLOT_CSS = (_VENDOR / "uplot.min.css").read_text()
+
+# Upgrades a .plot box in place. The SVG it replaces stays in the DOM, hidden, so
+# printing and a script-less browser both still get the server-drawn chart.
+#
+# Colours are read from the CSS custom properties the SVG already uses, rather
+# than baked in, so an upgraded chart follows light and dark mode exactly as its
+# static twin does.
+PLOT_SCRIPT = """
+(function () {
+  if (typeof uPlot === 'undefined') { return; }
+  var root = getComputedStyle(document.documentElement);
+  function token(name, fallback) {
+    var v = root.getPropertyValue(name);
+    return v ? v.trim() : fallback;
+  }
+  document.querySelectorAll('.plot').forEach(function (box) {
+    var island = box.querySelector('script.plot-data');
+    var svg = box.querySelector('svg');
+    if (!island) { return; }
+    var spec;
+    try { spec = JSON.parse(island.textContent); } catch (e) { return; }
+    var scatter = spec.kind === 'scatter';
+    var series = [{ label: spec.xLabel }];
+    spec.series.forEach(function (s, i) {
+      var colour = token('--s' + ((i % 8) + 1), '#2a78d6');
+      series.push({
+        label: s.label,
+        stroke: colour,
+        width: scatter ? 0 : 2,
+        points: { show: true, size: scatter ? 5 : 4, stroke: colour, fill: colour }
+      });
+    });
+    var data = [spec.x].concat(spec.series.map(function (s) { return s.data; }));
+    var chart = new uPlot({
+      width: box.clientWidth || 480,
+      height: 240,
+      cursor: { drag: { x: true, y: false } },
+      scales: { x: { time: !!spec.time } },
+      axes: [
+        { stroke: token('--text-secondary', '#52514e'),
+          grid: { stroke: token('--grid', '#e1e0d9') } },
+        { stroke: token('--text-secondary', '#52514e'),
+          grid: { stroke: token('--grid', '#e1e0d9') } }
+      ],
+      series: series
+    }, data, box);
+    if (svg) { svg.style.display = 'none'; }
+    window.addEventListener('resize', function () {
+      chart.setSize({ width: box.clientWidth || 480, height: 240 });
+    });
+  });
+})();
+"""
+
+
 def esc(text):
     """Escape a value for interpolation into SVG/HTML markup and attributes.
 
@@ -276,11 +337,13 @@ def page(header, sections):
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{esc(scope)} flow report</title><style>{CSS}</style></head><body>"
+        f"<title>{esc(scope)} flow report</title>"
+        f"<style>{UPLOT_CSS}\n{CSS}</style></head><body>"
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
         f"{esc(header['since'])}. Synced {esc(header['synced'])}. {warn}</p></header>"
         + body
-        + f"<script>{SORT_SCRIPT}</script></body></html>\n"
+        + f"<script>{UPLOT_JS}</script>"
+        + f"<script>{SORT_SCRIPT}{PLOT_SCRIPT}</script></body></html>\n"
     )
 
 
@@ -1181,6 +1244,41 @@ FIGURE_KINDS = frozenset(
 )
 
 
+def _epoch(value):
+    """Seconds since the epoch for a date or datetime, else None."""
+    if isinstance(value, datetime.datetime):
+        return value.replace(tzinfo=datetime.UTC).timestamp()
+    if isinstance(value, datetime.date):
+        return datetime.datetime(
+            value.year, value.month, value.day, tzinfo=datetime.UTC).timestamp()
+    return None
+
+
+def plot_payload(chart, rows):
+    """The same numbers the SVG was drawn from, as JSON for the browser.
+
+    Every value here was computed in Python and already appears in the rendered
+    chart. Nothing is derived in the browser, so two reports of one database
+    still diff, and a reader hovering a point sees the figure the SVG drew.
+    """
+    o = chart.options
+    x_key = o["x"]
+    xs = [r.get(x_key) for r in rows]
+    stamps = [_epoch(x) for x in xs]
+    is_time = bool(stamps) and all(t is not None for t in stamps)
+    axis = stamps if is_time else [_num(x) for x in xs]
+    if any(v is None for v in axis):
+        return None  # a categorical axis uPlot cannot place; keep the SVG
+    names = o["series"] if chart.kind == "lines" else [o["y"]]
+    return {
+        "kind": chart.kind,
+        "time": is_time,
+        "x": axis,
+        "xLabel": x_key,
+        "series": [{"label": n, "data": [_num(r.get(n)) for r in rows]} for n in names],
+    }
+
+
 def figure(chart, rows, subtitle, con, link_base=None):
     """One chart's markup: heading, the primitive its kind names, and a caption.
 
@@ -1213,6 +1311,18 @@ def figure(chart, rows, subtitle, con, link_base=None):
         body = small_multiples(grouped, o["x"], o["y"])
     else:
         raise ValueError(f"no renderer for chart kind {chart.kind!r}")
+    if chart.options.get("interactive"):
+        payload = plot_payload(chart, rows)
+        if payload is not None:
+            # The SVG stays inside the box and is what prints, what a
+            # script-less browser shows, and what the upgrade replaces. The
+            # island is JSON in a script tag rather than a data- attribute so
+            # the numbers stay readable in View Source. "<" is escaped because
+            # a "</script>" inside JSON would close the tag early.
+            island = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
+            body = (f'<div class="plot" data-kind="{esc(chart.kind)}">{body}'
+                    f'<script type="application/json" class="plot-data">{island}</script>'
+                    f"</div>")
     return (
         f'<figure id="{esc(chart.key)}"><h3>{esc(chart.title)}</h3>{body}'
         f"<figcaption>{esc(subtitle)}</figcaption></figure>"

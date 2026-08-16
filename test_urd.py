@@ -3249,13 +3249,15 @@ def test_a_plain_table_gains_no_script_hooks():
     assert "tabindex" not in out
 
 
-def test_the_page_carries_its_script_inline_and_only_as_one_block():
+def test_every_script_the_page_carries_is_inline():
+    """The library is vendored, so the count is structural (library + wiring) plus
+    one JSON island per interactive chart. What must hold regardless of that count
+    is that not one of them is fetched."""
     html = render.page(_header(), [("S", [render.table(_epic_rows(2), headers=["epic"],
                                                        sortable=True)])])
-    assert html.count("<script") == 1
-    assert "</script>" in html
-    # Same guarantee as the stylesheet: nothing is fetched to make the page work.
+    assert html.count("<script") >= 2, "library and wiring should both be present"
     assert not re.search(r"<script[^>]*\bsrc\s*=", html)
+    assert "uPlot" in html, "the charting library is not embedded"
 
 
 def test_stacked_empty_data_renders_a_note():
@@ -3624,15 +3626,16 @@ def test_a_scope_with_no_component_says_so_without_a_stray_separator():
 
 
 def test_a_scope_containing_markup_is_escaped_not_injected():
-    """The page now ships one <script> of its own, so `"<script>" not in html` is
-    no longer the test: it would pass or fail for the wrong reason either way.
-    Assert on the injected payload itself, and that the page's own script is the
-    only one present."""
-    html = render.page(_header(project="P&D", component="<script>x</script>"), [])
-    assert "<script>x</script>" not in html, "the scope value was injected raw"
-    assert "&lt;script&gt;x&lt;/script&gt;" in html, "the scope value was not escaped"
-    assert html.count("<script") == 1, "a second script element appeared from data"
-    assert "P&amp;D" in html
+    """The page ships several <script> elements of its own, so counting them
+    against a fixed number tests the page's structure rather than its escaping.
+    The question is whether DATA can add one, so the same page is rendered with
+    and without a hostile value and the counts must match."""
+    hostile = render.page(_header(project="P&D", component="<script>x</script>"), [])
+    benign = render.page(_header(project="P&D", component="TEAM"), [])
+    assert "<script>x</script>" not in hostile, "the scope value was injected raw"
+    assert "&lt;script&gt;x&lt;/script&gt;" in hostile, "the scope value was not escaped"
+    assert hostile.count("<script") == benign.count("<script"), "data added a script element"
+    assert "P&amp;D" in hostile
 
 
 def test_outstanding_sync_errors_are_visible_in_the_header():
@@ -3670,43 +3673,145 @@ def test_every_class_the_page_emits_is_styled():
         assert selector.search(render.CSS), f"class {cls} is emitted but never styled"
 
 
+# Constructs a browser acts on by itself. Not URLs: a URL in a comment or in an
+# anchor fetches nothing, and the vendored library carries its attribution URL in
+# a banner comment. Checking for the construct is both stricter (it catches
+# fetch("/relative")) and honest about what the guarantee is.
+_FETCHING = (
+    r"\bsrc\s*=", r"@import", r"url\(", r"\bfetch\s*\(", r"XMLHttpRequest",
+    r"\bWebSocket\b", r"sendBeacon", r"EventSource", r"importScripts",
+    r"\bimport\s*\(",
+)
+
+
+def _assert_nothing_is_fetched(html, label=""):
+    """Nothing in this page causes a network request when it is opened.
+
+    Anchors are removed first: a link is followed only if a human clicks it,
+    unlike everything in _FETCHING, which the browser acts on with no choice.
+    `href` is then forbidden in what remains, which is what keeps a stylesheet
+    <link> out while leaving <a href> in.
+    """
+    without_anchors = re.sub(r"<a\b[^>]*>", "", html)
+    for pattern in _FETCHING + (r"\bhref\s*=",):
+        found = re.search(pattern, without_anchors)
+        assert not found, f"{label}{pattern} can reach the network: {found.group(0)!r}"
+
+
 def test_report_writes_a_standalone_file_with_no_external_references():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     out = os.path.join(tempfile.mkdtemp(), "report.html")
     assert urd.report(con, out) == 0
     html = pathlib.Path(out).read_text()
     assert html.startswith("<!doctype html>")
-    # The guarantee is that RENDERING the page needs no network, which is not the
-    # same as the page containing no URL. A <a href> a human may click is fetched
-    # only if someone clicks it; <img src>, <link href>, @import and url() are
-    # fetched by the browser on open, with no choice. So the anchors are removed
-    # first and every pattern is applied to what remains, which keeps the check
-    # strict about the thing it is actually protecting.
-    without_anchors = re.sub(r"<a\b[^>]*>", "", html)
-    for pattern in (r"https?:", r"""['"(]//\w""", r"@import", r"\bsrc\s*=",
-                    r"\bhref\s*=", r"url\("):
-        assert not re.search(pattern, without_anchors), (
-            f"{pattern} would fetch from the network")
+    _assert_nothing_is_fetched(html)
 
 
-def test_removing_anchors_does_not_blind_the_no_network_check():
-    """The anchor-stripping above is the kind of exemption that quietly widens.
-    Validated against known-positive data: each auto-fetching form must still be
-    caught after the strip, and an anchor must still be allowed."""
-    strip = lambda markup: re.sub(r"<a\b[^>]*>", "", markup)  # noqa: E731
-    caught = [
+def test_the_fetch_check_is_not_blinded_by_its_own_exemptions():
+    """Two exemptions live in that helper: anchors are stripped, and URLs are not
+    themselves an offence. Both are the kind that quietly widen until nothing is
+    caught, so each fetching form is fed in and must still be rejected."""
+    must_catch = [
         '<img src="https://x/y.png">',
-        '<link href="https://x/y.css" rel="stylesheet">',
-        "<style>@import 'https://x/y.css';</style>",
-        "<style>a{background:url(https://x/y.png)}</style>",
-        '<img src="//x/y.png">',
+        '<img src="/local/y.png">',
+        '<link href="x.css" rel="stylesheet">',
+        "<style>@import 'x.css';</style>",
+        "<style>a{background:url(x.png)}</style>",
+        '<script>fetch("/telemetry")</script>',
+        "<script>new XMLHttpRequest()</script>",
+        "<script>new WebSocket('wss://x')</script>",
+        "<script>navigator.sendBeacon('/x')</script>",
+        "<script>new EventSource('/x')</script>",
+        "<script>import('/x.js')</script>",
     ]
-    patterns = (r"https?:", r"""['"(]//\w""", r"@import", r"\bsrc\s*=",
-                r"\bhref\s*=", r"url\(")
-    for markup in caught:
-        assert any(re.search(p, strip(markup)) for p in patterns), markup
-    allowed = '<a href="https://example.atlassian.net/browse/PROJ-1">PROJ-1</a>'
-    assert not any(re.search(p, strip(allowed)) for p in patterns), allowed
+    for markup in must_catch:
+        try:
+            _assert_nothing_is_fetched(markup)
+        except AssertionError:
+            continue
+        raise AssertionError(f"not caught: {markup}")
+    # And the two things that must stay allowed.
+    _assert_nothing_is_fetched(
+        '<a href="https://example.atlassian.net/browse/PROJ-1">PROJ-1</a>')
+    _assert_nothing_is_fetched("<script>/*! https://github.com/leeoniya/uPlot */</script>")
+
+
+def test_an_interactive_chart_still_ships_its_server_drawn_svg():
+    """The whole basis of allowing a library: the page prints, and a browser with
+    script disabled shows exactly what it showed before. The upgrade replaces the
+    SVG at runtime; it never replaces it in the file."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "created_vs_closed")
+    out = render.figure(chart, rows, "sub", con)
+    assert "<svg" in out, "the static chart is missing"
+    assert 'class="plot"' in out and 'class="plot-data"' in out
+
+
+def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
+    """Script navigates data, it does not produce it. Every value a reader can
+    hover has to be one Python already computed, or two reports of one database
+    stop diffing."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "created_vs_closed")
+    payload = render.plot_payload(chart, rows)
+    assert [s["label"] for s in payload["series"]] == chart.options["series"]
+    assert len(payload["x"]) == len(rows)
+    for series in payload["series"]:
+        assert series["data"] == [r[series["label"]] for r in rows]
+    assert payload["time"] is True, "a weekly axis should be a time axis"
+
+
+def test_a_data_island_cannot_close_its_own_script_tag():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "created_vs_closed")
+    hostile = chart._replace(title="</script><script>x</script>")
+    out = render.figure(hostile, rows, "sub", con)
+    assert "</script><script>x" not in out
+
+
+def test_only_dense_charts_opt_into_interactivity():
+    """A bar chart with nine categories is finished when it is drawn. Interactivity
+    is for charts too dense to read, not a badge every chart collects."""
+    interactive = {c.key for c in chart_specs.CHARTS if c.options.get("interactive")}
+    assert interactive == {"created_vs_closed", "cycle_scatter", "points_vs_cycle"}, interactive
+    for chart in chart_specs.CHARTS:
+        if chart.options.get("interactive"):
+            assert chart.kind in ("lines", "scatter"), f"{chart.key}: {chart.kind}"
+
+
+def test_the_embedded_javascript_parses():
+    """JavaScript living in a Python string is the one part of this report that
+    nothing else checks: ruff does not read it, and a syntax error ships a page
+    whose charts silently never upgrade. node --check is the cheapest real check
+    available. Where node is absent it degrades to a structural one rather than
+    quietly passing."""
+    import shutil
+    import subprocess
+    for name, source in (("sort", render.SORT_SCRIPT), ("plot", render.PLOT_SCRIPT)):
+        path = os.path.join(tempfile.mkdtemp(), f"{name}.js")
+        pathlib.Path(path).write_text(source)
+        node = shutil.which("node")
+        if node:
+            done = subprocess.run([node, "--check", path], capture_output=True, text=True)
+            assert done.returncode == 0, f"{name}.js does not parse:\n{done.stderr}"
+        else:
+            assert source.count("{") == source.count("}"), f"{name}.js braces"
+            assert source.count("(") == source.count(")"), f"{name}.js parens"
+
+
+def test_the_vendored_library_is_present_and_makes_no_requests():
+    """It is committed rather than fetched so a saved report opens offline. An
+    upgrade that introduces a network call must fail here, not in a reader's
+    browser."""
+    root = pathlib.Path(__file__).parent
+    js = (root / "vendor" / "uplot.min.js").read_text()
+    css = (root / "vendor" / "uplot.min.css").read_text()
+    assert len(js) > 10_000, "vendored library looks truncated"
+    for pattern in _FETCHING:
+        assert not re.search(pattern, js), f"vendored js can reach the network: {pattern}"
+        assert not re.search(pattern, css), f"vendored css can reach the network: {pattern}"
+    assert "uPlot" in js
+    assert (root / "vendor" / "README.md").exists(), "provenance must be recorded"
 
 
 def test_a_ticket_key_links_to_the_configured_site():

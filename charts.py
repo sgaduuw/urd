@@ -95,7 +95,10 @@ CHARTS = [
         caption="Where created and delivered diverge, the backlog is growing. "
                 "Dropped work is counted separately: it is a real outcome, and "
                 "it is not delivery.",
-        options={"x": "week", "series": ["created", "delivered", "dropped"]},
+        # Interactive: ~100 weekly points across three series, where reading an
+        # exact value off a 480px axis is guesswork.
+        options={"x": "week", "series": ["created", "delivered", "dropped"],
+                 "interactive": True},
         sql="""
             WITH c AS (
                 SELECT date_trunc('week', created) AS week, count(*) AS created
@@ -152,7 +155,9 @@ CHARTS = [
         kind="scatter",
         caption="One point per closed ticket. The 85th percentile is the number "
                 "you can promise; the median is the one you will be asked for.",
-        options={"x": "resolved", "y": "cycle_days", "guides_sql": """
+        # 309 points on the real project. Zoom and per-point readout are the
+        # difference between a cloud and a chart you can interrogate.
+        options={"x": "resolved", "y": "cycle_days", "interactive": True, "guides_sql": """
             SELECT quantile_cont(cycle_days, 0.5), quantile_cont(cycle_days, 0.85)
             FROM cycle_times
         """},
@@ -355,7 +360,8 @@ CHARTS = [
         kind="scatter",
         caption="Whether the estimates carry information. If the cloud is flat, "
                 "the points are ritual.",
-        options={"x": "story_points", "y": "cycle_days", "guides_sql": """
+        options={"x": "story_points", "y": "cycle_days", "interactive": True,
+                 "guides_sql": """
             SELECT quantile_cont(cycle_days, 0.5), quantile_cont(cycle_days, 0.85)
             FROM cycle_times
         """},

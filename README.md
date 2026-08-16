@@ -146,17 +146,27 @@ The flag drives `closures.abandoned` (per closure event) and `issues.abandoned`
 (current state). Both exist because a ticket can close more than once, and a
 current-state field cannot say which of those events was which.
 
-## Sorting
+## Interactivity
 
-`report.html` carries one inline script, first-party and about 30 lines. It makes
-tables with a `sortable` option sort by any column, click or Enter on the header,
+`report.html` carries its JavaScript inline: uPlot 1.6.31 from `vendor/`, plus
+about 90 lines of first-party wiring. Nothing is fetched, so a saved report opens
+offline, unchanged, years later, and no third party learns who reads a report
+about internal work.
+
+Dense charts are upgraded in the browser: created versus closed (about 100 weekly
+points across three series) and both cycle-time scatters (300+ points each) gain
+hover readouts and drag-to-zoom. Charts that are readable as drawn are left
+alone; a bar chart with nine categories is finished when it is drawn.
+
+Tables with a `sortable` option sort by any column, click or Enter on the header,
 numerically when the column is numeric.
 
-It is additive only. Every table is complete and readable in the markup before
-the script runs, so a page opened with JavaScript disabled loses sorting and
-nothing else, and stays printable. Nothing is computed in the browser that Python
-could have computed, which is what keeps the numbers diffable between runs. The
-page still fetches nothing: no CDN, no library, no external reference of any kind.
+All of it is additive. Every chart is rendered as SVG by Python and is present in
+the file; the interactive version replaces that SVG at runtime, never in the
+markup. A page opened with JavaScript disabled, or printed, loses hovering,
+zooming and sorting, and nothing else. Nothing is computed in the browser that Python
+could have computed, which is what keeps two reports of one database diffable:
+every value a reader can hover is already in the markup.
 
 Progress per epic is the chart that prompted it. At 141 epics, grouped bars came
 to 423 marks in 480px, about one pixel each.
