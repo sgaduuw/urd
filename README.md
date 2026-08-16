@@ -153,12 +153,13 @@ about 90 lines of first-party wiring. Nothing is fetched, so a saved report open
 offline, unchanged, years later, and no third party learns who reads a report
 about internal work.
 
-Dense charts are upgraded in the browser: created versus closed (about 100 weekly
-points across three series), both cycle-time scatters (300+ points each) and both
-stacked charts gain hover readouts and drag-to-zoom. On a stack, hovering reads
-the band's own value rather than the running total it sits on. Charts that are
-readable as drawn are left alone; a bar chart with nine categories is finished
-when it is drawn.
+Every chart is upgraded in the browser: lines, scatters, stacks, bars and small
+multiples all gain hover readouts and drag-to-zoom. On a stack, hovering reads the
+band's own value rather than the running total it sits on. On bars the axis is
+categorical, so the names travel with the data and hover gives the whole name
+rather than the three characters the axis has room for. Small multiples stay small
+multiples, one panel per person on shared scales, because folding 25 people into
+one chart would be interactive and would be a different chart.
 
 A stack with more bands than the palette has colours folds its smallest into one
 `Other`, because two identically coloured bands touching each other cannot be

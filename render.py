@@ -158,6 +158,18 @@ td.shaded span { position: relative; }
 
 p.empty { color: var(--muted); font-style: italic; }
 
+.facets { display: flex; flex-wrap: wrap; gap: 8px; }
+.facet { border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
+.facet-name {
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: center;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 figure { margin: 0 0 28px; }
 figure h3 { font-size: 15px; margin: 0 0 6px; font-weight: 600; }
 figcaption {
@@ -253,9 +265,41 @@ PLOT_SCRIPT = """
     if (!island) { return; }
     var spec;
     try { spec = JSON.parse(island.textContent); } catch (e) { return; }
+    /* One panel per group, every panel on the scales Python computed, so a quiet
+       panel never rescales into looking as busy as a loud one. */
+    if (spec.kind === 'small_multiples') {
+      var grid = document.createElement('div');
+      grid.className = 'facets';
+      box.appendChild(grid);
+      spec.facets.forEach(function (facet) {
+        var cell = document.createElement('div');
+        cell.className = 'facet';
+        var caption = document.createElement('div');
+        caption.className = 'facet-name';
+        caption.textContent = facet.title;
+        cell.appendChild(caption);
+        grid.appendChild(cell);
+        var colour = token('--s1', '#2a78d6');
+        new uPlot({
+          width: 150, height: 90, legend: { show: false },
+          cursor: { drag: { x: true, y: false } },
+          scales: { x: { time: true }, y: { range: [0, spec.yMax || 1] } },
+          axes: [{ show: false }, { show: false }],
+          series: [
+            { label: spec.xLabel },
+            { label: facet.title, stroke: colour, width: 2,
+              points: { show: true, size: 4, stroke: colour, fill: colour } }
+          ]
+        }, [spec.x, facet.data], cell);
+      });
+      var svgEl = box.querySelector('svg');
+      if (svgEl) { svgEl.style.display = 'none'; }
+      return;
+    }
     var scatter = spec.kind === 'scatter';
     var stacked = spec.kind === 'stacked';
     var bars = spec.kind === 'bars';
+    var facets = spec.kind === 'small_multiples';
     var labels = spec.labels || [];
     function category(i) {
       return (i == null || labels[i] === undefined) ? '' : labels[i];
@@ -1289,6 +1333,8 @@ def plot_payload(chart, rows):
     o = chart.options
     if chart.kind == "bars":
         return _bars_payload(o, rows)
+    if chart.kind == "small_multiples":
+        return _facets_payload(o, rows)
     x_key = o["x"]
     xs = [r.get(x_key) for r in rows]
     stamps = [_epoch(x) for x in xs]
@@ -1339,6 +1385,39 @@ def fold_bands(rows, x, band, value, limit=None):
             other[key] = other.get(key, 0) + (_num(r.get(value)) or 0)
     folded.extend({x: k, band: "Other", value: v} for k, v in other.items())
     return folded
+
+
+def _facets_payload(o, rows):
+    """One panel per group, on axes shared across all of them.
+
+    Kept as facets rather than folded into one chart with many series: the point
+    of this chart is that it is not a leaderboard, and 25 overlaid lines would be
+    interactive and would be a different chart. Both scales are computed here and
+    handed to every panel, so a quiet person's panel does not rescale into looking
+    as busy as a loud one, which is the same guarantee the SVG makes.
+
+    A group with no value for a given x gets None, not zero: the line breaks
+    there instead of drawing a straight stretch implying steady output through a
+    week that never happened.
+    """
+    group_key, x_key, y_key = o["group"], o["x"], o["y"]
+    stamps = {r.get(x_key): _epoch(r.get(x_key)) for r in rows}
+    if any(v is None for v in stamps.values()):
+        return None
+    axis = sorted(stamps.values())
+    groups = list(dict.fromkeys(r.get(group_key) for r in rows))
+    at = {(r.get(group_key), stamps[r.get(x_key)]): _num(r.get(y_key)) for r in rows}
+    values = [v for v in at.values() if v is not None]
+    return {
+        "kind": "small_multiples",
+        "time": True,
+        "x": axis,
+        "xLabel": x_key,
+        "yLabel": y_key,
+        "yMax": max(values) if values else 0,
+        "facets": [{"title": "" if g is None else str(g),
+                    "data": [at.get((g, t)) for t in axis]} for g in groups],
+    }
 
 
 def _bars_payload(o, rows):

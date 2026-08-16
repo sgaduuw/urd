@@ -3761,6 +3761,34 @@ def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
     assert payload["time"] is True, "a weekly axis should be a time axis"
 
 
+def test_small_multiples_stay_small_multiples_when_upgraded():
+    """The point of this chart is one panel each, on shared axes, so it is not read
+    as a leaderboard. Turning 25 people into 25 overlaid lines would be
+    interactive and would be a different chart, so the payload keeps the facets
+    and every panel keeps the shared scales the SVG gave it."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "throughput_per_person")
+    payload = render.plot_payload(chart, rows)
+    assert payload["kind"] == "small_multiples"
+    people = list(dict.fromkeys(r["person"] for r in rows))
+    assert [f["title"] for f in payload["facets"]] == people
+    # Shared, not per-facet: a panel with a smaller maximum must not rescale.
+    assert payload["yMax"] == max(r["closed"] for r in rows)
+    assert payload["x"] == sorted({render._epoch(r["week"]) for r in rows})
+
+
+def test_a_facet_missing_a_week_leaves_a_gap_rather_than_joining_across():
+    """Same rule the SVG follows: a null breaks the line, so an absent week does
+    not draw a straight stretch implying steady output through it."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "throughput_per_person")
+    payload = render.plot_payload(chart, rows)
+    assert len(payload["facets"]) >= 2, "need two people to have a gap at all"
+    for facet in payload["facets"]:
+        assert len(facet["data"]) == len(payload["x"])
+    assert any(None in f["data"] for f in payload["facets"]), payload["facets"]
+
+
 def test_a_bar_island_carries_its_categories_as_labels():
     """A bar axis is categorical and uPlot places points numerically, so x is an
     index and the names travel alongside. Without them an upgraded chart would
@@ -3791,7 +3819,7 @@ def test_every_chart_that_can_be_interactive_is():
     by_kind = {}
     for chart in chart_specs.CHARTS:
         by_kind.setdefault(chart.kind, []).append(chart)
-    for kind in ("lines", "scatter", "stacked", "bars"):
+    for kind in ("lines", "scatter", "stacked", "bars", "small_multiples"):
         missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("interactive")]
         assert not missing, f"{kind} charts not upgraded: {missing}"
     for kind in ("table", "matrix"):
@@ -3883,8 +3911,8 @@ def test_interactivity_is_declared_on_plot_kinds_only():
     assert "review_load" in interactive and "cycle_per_sprint" in interactive
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
-            assert chart.kind in ("lines", "scatter", "stacked", "bars"), (
-                f"{chart.key}: {chart.kind}")
+            assert chart.kind in ("lines", "scatter", "stacked", "bars",
+                                  "small_multiples"), f"{chart.key}: {chart.kind}"
 
 
 def test_the_embedded_javascript_parses():

@@ -397,7 +397,7 @@ CHARTS = [
         caption="One small chart each, deliberately: the same data as a ranked "
                 "bar chart, without inviting a reading it does not support. "
                 "Attributed to the assignee at close.",
-        options={"group": "person", "x": "week", "y": "closed"},
+        options={"group": "person", "x": "week", "y": "closed", "interactive": True},
         # ::DATE for consistency with the other time-bucketed charts. Not for the
         # midnight-label guard: small multiples emit facet titles and no tick
         # labels, so that guard never reaches this chart.
