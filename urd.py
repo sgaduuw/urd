@@ -659,13 +659,20 @@ def observed_statuses(con):
             ),
             key=lambda m: (m[0] is None, m[0]),
         )
+        arrived = set()
         for index, (when, item) in enumerate(moves):
             name = item.get("toString")
             if name:
                 stat = seen.setdefault(name, {"entries": 0, "delays": [], "current": 0})
                 stat["entries"] += 1
-                if created and when:
+                # Only this ticket's FIRST arrival contributes to the median. A
+                # status re-entered after rework is reached late, and counting
+                # every arrival drags its median past a status reached once
+                # early: on the real project that inverted In Progress and
+                # Review & QA, which the transition counts separate 506 to 39.
+                if created and when and name not in arrived:
                     stat["delays"].append((when - created).total_seconds() / 86400.0)
+                    arrived.add(name)
             # A ticket's opening status is only ever a `fromString`: work leaves it
             # and never enters it, so collecting toString alone loses it entirely,
             # and it is the one status the operator most needs listed first.

@@ -189,6 +189,32 @@ def test_observed_statuses_are_ordered_by_when_work_reaches_them():
     assert names.index("To Do") < names.index("In Progress")
 
 
+def test_status_order_uses_each_ticket_s_first_arrival_not_every_arrival():
+    """A status re-entered late drags its median past one reached once early, so
+    counting every arrival inverted the pair it most needed to get right: against
+    the real project it put Review & QA ahead of In Progress, when In Progress
+    precedes it 506 times to 39."""
+    con = urd.open_db(_tmpdb())
+    issue = {
+        "key": "PROJ-9",
+        "fields": {"created": "2026-01-01T00:00:00.000+0000",
+                   "status": {"name": "Done", "statusCategory": {"key": "done"}}},
+        "changelog": {"histories": [
+            {"id": "1", "created": "2026-01-02T00:00:00.000+0000",
+             "items": [{"field": "status", "fromString": "To Do", "toString": "In Progress"}]},
+            {"id": "2", "created": "2026-01-03T00:00:00.000+0000",
+             "items": [{"field": "status", "fromString": "In Progress", "toString": "Review"}]},
+            # Sent back, so In Progress is entered a second time much later.
+            {"id": "3", "created": "2026-01-31T00:00:00.000+0000",
+             "items": [{"field": "status", "fromString": "Review", "toString": "In Progress"}]},
+        ]},
+    }
+    con.execute("INSERT INTO raw_issues VALUES (?, ?, ?, ?)",
+                ["PROJ-9", "u1", urd._now(), json.dumps(issue)])
+    names = [s["status"] for s in urd.observed_statuses(con)]
+    assert names.index("In Progress") < names.index("Review"), names
+
+
 def test_a_first_run_without_an_order_lists_the_statuses_it_found():
     """Otherwise the operator is told to supply an order for statuses they have
     no way to enumerate: derive is what would have told them, and it refuses to
