@@ -919,6 +919,75 @@ def test_lookups_and_sync_timestamp_are_written():
     assert urd.load_scope(con)["last_sync_at"] is not None
 
 
+class _FieldJira:
+    """Fake instance whose custom field list is controllable, recording the
+    `fields` string each issue fetch asked for."""
+
+    def __init__(self, custom=(), asked=None, calls=None):
+        self.custom = list(custom)
+        self.asked = asked if asked is not None else []
+        self.calls = calls if calls is not None else []
+
+    def search(self, jql):
+        yield "PROJ-1", "u1"
+
+    def issue(self, key, fields):
+        self.asked.append(fields)
+        self.calls.append(key)
+        return {"key": key, "fields": {"updated": "u1"}}
+
+    def fields(self):
+        return self.custom
+
+    def statuses(self):
+        return []
+
+
+def _scoped_db():
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+    return con
+
+
+def test_sync_fetches_the_custom_fields_derive_will_look_for():
+    """The first live run reported story points 100% empty and zero sprints, and
+    both were this one bug: FETCH_FIELDS held only built-in names, so the resolved
+    custom field ids were never requested, and derive then read them out of JSON
+    that could not have contained them. Five of the sixteen charts were dead by
+    construction rather than for want of data."""
+    con = _scoped_db()
+    jira = _FieldJira([{"id": "customfield_10030", "name": "Story Points"},
+                       {"id": "customfield_10020", "name": "Sprint"}])
+    urd.sync(con, jira)
+    assert jira.asked, "no issue was fetched at all"
+    assert "customfield_10030" in jira.asked[0], f"Story Points absent: {jira.asked[0]}"
+    assert "customfield_10020" in jira.asked[0], f"Sprint absent: {jira.asked[0]}"
+
+
+def test_the_field_set_is_resolved_before_the_first_fetch_not_after():
+    """_refresh_lookups used to run after the fetch loop, so on a first run the
+    fields table was empty exactly when the field list was being built."""
+    con = _scoped_db()
+    jira = _FieldJira([{"id": "customfield_10030", "name": "Story Points"}])
+    urd.sync(con, jira)
+    assert "customfield_10030" in jira.asked[0], "first run fetched without the custom field"
+
+
+def test_a_changed_field_set_refetches_everything():
+    """`updated` has not moved, so the usual rule fetches nothing and the cached
+    JSON would stay permanently missing the newly requested field."""
+    con = _scoped_db()
+    calls = []
+    urd.sync(con, _FieldJira([], calls=calls))
+    assert calls == ["PROJ-1"]
+    urd.sync(con, _FieldJira([], calls=calls))
+    assert calls == ["PROJ-1"], "an unchanged field set refetched anyway"
+    urd.sync(con, _FieldJira([{"id": "customfield_10030", "name": "Story Points"}],
+                             calls=calls))
+    assert calls == ["PROJ-1", "PROJ-1"], "a changed field set did not refetch"
+
+
 def test_sync_errors_are_pruned_for_keys_leaving_scope():
     """Keys that have left the scope are removed from sync_errors, but errors
     for keys still in scope survive the prune even if not refetched."""

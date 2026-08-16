@@ -175,6 +175,7 @@ SCOPE_COLUMNS = (
     "review_status",
     "earliest_since",
     "last_sync_at",
+    "fetched_fields",
 )
 
 SCHEMA = """
@@ -187,7 +188,7 @@ CREATE TABLE IF NOT EXISTS raw_issues (
 CREATE TABLE IF NOT EXISTS sync_state (
     site VARCHAR, email VARCHAR, project VARCHAR, component VARCHAR,
     status_order VARCHAR, start_status VARCHAR, review_status VARCHAR,
-    earliest_since VARCHAR, last_sync_at VARCHAR
+    earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR
 );
 CREATE TABLE IF NOT EXISTS sync_errors (
     -- "at" is quoted: DuckDB classifies it as a type_function keyword, and an
@@ -206,6 +207,11 @@ CREATE TABLE IF NOT EXISTS statuses (
 def open_db(path=DB_DEFAULT):
     con = duckdb.connect(path)
     con.execute(SCHEMA)
+    # CREATE TABLE IF NOT EXISTS leaves an older database on its original columns,
+    # so a column added later has to be alter'd in or every read of it fails on a
+    # database that predates it. Idempotent, and cheap enough to run every open.
+    for column in SCOPE_COLUMNS:
+        con.execute(f"ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS {column} VARCHAR")
     if con.execute("SELECT count(*) FROM sync_state").fetchone()[0] == 0:
         con.execute(f"INSERT INTO sync_state VALUES ({','.join(['NULL'] * len(SCOPE_COLUMNS))})")
     return con
@@ -231,14 +237,29 @@ def load_scope(con):
 # worklog rides along unused: it is free on a request already being made, and a
 # future logged-time chart then needs no refetch.
 # ponytail: fetch it, derive nothing. Upgrade path is a worklogs table in derive.
-FETCH_FIELDS = ",".join(
-    (
-        "summary", "issuetype", "status", "statuscategorychangedate", "priority",
-        "labels", "components", "assignee", "reporter", "created", "updated",
-        "resolutiondate", "resolution", "parent", "fixVersions", "timespent",
-        "timeoriginalestimate", "worklog",
-    )
+BASE_FIELDS = (
+    "summary", "issuetype", "status", "statuscategorychangedate", "priority",
+    "labels", "components", "assignee", "reporter", "created", "updated",
+    "resolutiondate", "resolution", "parent", "fixVersions", "timespent",
+    "timeoriginalestimate", "worklog",
 )
+
+# Custom fields are per instance, so they are resolved by name at sync time and
+# appended. They are NOT optional extras: derive reads story points and sprint
+# memberships out of the fetched JSON, so a field missing here is a field that
+# is permanently NULL downstream, with no error anywhere. That is not
+# hypothetical. The first live run reported "Story Points: 100% empty" and zero
+# sprint memberships against a project that had both, because this list held
+# only built-in names, and five of the sixteen charts were dead by construction.
+CUSTOM_FIELD_NAMES = ("Story Points", "Sprint")
+
+
+def fetch_fields(con):
+    """The field list for an issue GET: the built-ins plus whatever this instance
+    calls the custom fields derive needs. Sorted so the string is stable, since a
+    change in it is what triggers a refetch."""
+    resolved = [resolve_field(con, name) for name in CUSTOM_FIELD_NAMES]
+    return ",".join(list(BASE_FIELDS) + sorted(f for f in resolved if f))
 
 
 def keys_to_fetch(stored, remote):
@@ -270,6 +291,12 @@ def sync(con, jira):
     if not scope["project"] or not scope["earliest_since"]:
         raise SystemExit("first run needs --site, --email, --project and --since")
 
+    # Before anything is fetched, not after: the field list is built from the
+    # `fields` table, so resolving it afterwards left a first run asking for the
+    # built-ins only, forever.
+    _refresh_lookups(con, jira)
+    fields = fetch_fields(con)
+
     jql = build_jql(scope["project"], scope["component"], scope["earliest_since"])
     remote = list(jira.search(jql))
     # A key that has left the scope can never be retried, so its error would be
@@ -277,6 +304,17 @@ def sync(con, jira):
     con.execute("DELETE FROM sync_errors WHERE NOT list_contains(?::VARCHAR[], key)",
                 [[key for key, _ in remote]])
     stored = dict(con.execute("SELECT key, updated FROM raw_issues").fetchall())
+    if scope["fetched_fields"] != fields:
+        # `updated` has not moved, so the usual rule would fetch nothing and every
+        # cached issue would stay permanently missing the newly requested field.
+        # Asking for more data has to invalidate the cache, or the bug this
+        # replaces comes straight back the next time a field is added.
+        if stored:
+            # Also fires on a database predating this column, which is exactly when
+            # the explanation is most wanted: otherwise an upgrade silently reports
+            # "751 in scope, 751 to fetch" on a database that already holds all 751.
+            print("field set changed, refetching everything")
+        stored = {}
     wanted = keys_to_fetch(stored, remote)
     print(f"{len(remote)} in scope, {len(wanted)} to fetch")
 
@@ -285,7 +323,7 @@ def sync(con, jira):
         # a first backfill is a few hundred requests paid once. Upgrade path is
         # batching via the search endpoint's fields expansion.
         try:
-            issue = jira.issue(key, FETCH_FIELDS)
+            issue = jira.issue(key, fields)
             updated = issue["fields"]["updated"]
         except (SystemExit, KeyError, TypeError) as err:
             con.execute(
@@ -305,8 +343,7 @@ def sync(con, jira):
         if n % 50 == 0:
             print(f"  {n}/{len(wanted)}")
 
-    _refresh_lookups(con, jira)
-    save_scope(con, last_sync_at=_now().isoformat(timespec="seconds") + "Z")
+    save_scope(con, fetched_fields=fields, last_sync_at=_now().isoformat(timespec="seconds") + "Z")
     errors = con.execute("SELECT count(*) FROM sync_errors").fetchone()[0]
     print(f"synced. {errors} error(s) outstanding" if errors else "synced, no errors")
     return 0
