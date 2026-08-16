@@ -3343,6 +3343,21 @@ def test_the_cumulative_flow_is_a_weekly_snapshot_not_a_daily_sum():
     assert len({r["day"] for r in rows}) <= 27
 
 
+def test_time_in_status_shows_the_population_each_median_rests_on():
+    """Flows skip statuses, so the rows of this matrix are medians over different
+    and sometimes tiny populations: on the real project one status carried 1145
+    tickets and another carried 1. Shaded by days alone they look equally solid,
+    so the count has to be visible in the table."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "time_in_status")
+    assert "tickets" in chart.options["headers"], chart.options["headers"]
+    assert chart.options["shade"] == "days", "shading still belongs on the duration"
+    assert rows and all(r["tickets"] >= 1 for r in rows)
+    # PROJ-2 skips In Progress entirely, so that row must not claim every ticket.
+    total = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    assert any(r["tickets"] < total for r in rows), rows
+
+
 def test_time_in_status_ignores_time_spent_already_done():
     """status_durations closes an open span at now(), so a closed ticket's Done
     span measures time since resolution. It read 207 days in the fixtures."""

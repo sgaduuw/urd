@@ -170,7 +170,12 @@ CHARTS = [
         # A matrix, not grouped bars: the type names are data, so a bar chart
         # would need a pivot with dynamic columns. Shading a table costs nothing
         # and reuses a renderer that already exists.
-        options={"headers": ["type", "status", "days"], "shade": "days"},
+        # `tickets` is not decoration: flows skip statuses, so each row is a median
+        # over a different population. On the first real project one status held
+        # 1145 tickets and another held 1, and shaded by days alone the two rows
+        # looked equally authoritative. Shading stays on days; the count is there
+        # to say how much weight the number can carry.
+        options={"headers": ["type", "status", "days", "tickets"], "shade": "days"},
         # Done-category statuses are excluded because status_durations closes an
         # open span at now(): a closed ticket's Done span measures time since
         # resolution, which read 207 days in the fixtures and swamped the real
@@ -178,7 +183,8 @@ CHARTS = [
         # is exactly what this chart should measure.
         sql="""
             SELECT i.type, d.status,
-                   quantile_cont(date_diff('minute', d.entered, d.left_at) / 1440.0, 0.5) AS days
+                   quantile_cont(date_diff('minute', d.entered, d.left_at) / 1440.0, 0.5) AS days,
+                   count(DISTINCT d.key) AS tickets
             FROM status_durations d
             JOIN issues i ON i.key = d.key
             JOIN statuses s ON s.name = d.status
