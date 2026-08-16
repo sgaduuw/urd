@@ -2944,7 +2944,12 @@ def test_small_multiples_empty_data_renders_a_note():
 
 
 def _flow_rows(con, key):
-    chart = next(c for c in chart_specs.CHARTS if c.key == key)
+    # Named failure rather than a bare StopIteration from next(): a renamed or
+    # missing key otherwise surfaces as an exception that says nothing about
+    # which chart, in a helper that six tests and counting go through.
+    chart = next((c for c in chart_specs.CHARTS if c.key == key), None)
+    assert chart is not None, (
+        f"no chart keyed {key!r}; have {sorted(c.key for c in chart_specs.CHARTS)}")
     cursor = con.execute(chart.sql)
     columns = [d[0] for d in cursor.description]
     return chart, [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
@@ -3200,6 +3205,46 @@ def test_the_report_header_reflects_the_database_it_read():
     html = pathlib.Path(out).read_text()
     expected = con.execute("SELECT count(*) FROM issues").fetchone()[0]
     assert f"{expected} tickets" in html
+
+
+def test_outward_reporting_charts_are_all_present():
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "Reporting outward"}
+    assert keys == {"per_fix_version", "per_epic", "type_mix"}
+
+
+def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
+    """No fixture ticket carries two versions, so the unnest this chart exists for
+    is not exercised by the fixture data alone: one is given a second version here."""
+    con = _derived("reopened", "two_sprints")
+    con.execute("UPDATE issues SET fix_versions = ['R1', 'R2'] WHERE key = 'PROJ-1'")
+    _, rows = _flow_rows(con, "per_fix_version")
+    counts = {r["fix_version"]: (r["done"], r["open"]) for r in rows}
+    # PROJ-1 is done and now in both; PROJ-3 is open and in R2 only.
+    assert counts == {"R1": (1, 0), "R2": (1, 1)}
+
+
+def test_epic_chart_splits_done_from_open_rather_than_done_from_total():
+    """done and total side by side double-counts: the first bar is contained in
+    the second, and grouped bars read as disjoint quantities."""
+    con = _derived("reopened", "two_sprints")
+    chart, rows = _flow_rows(con, "per_epic")
+    assert chart.options["series"] == ["done", "open"]
+    assert [(r["epic"], r["done"], r["open"]) for r in rows] == [("PROJ-100", 1, 1)]
+
+
+def test_bars_is_renderable_now_that_charts_ask_for_it():
+    """Task 10 left `bars` out of FIGURE_KINDS on purpose, so the first spec that
+    needs it fails in the suite rather than as a blank space in the report."""
+    assert "bars" in render.FIGURE_KINDS
+    assert {c.kind for c in chart_specs.CHARTS} <= render.FIGURE_KINDS
+
+
+def test_sections_render_in_a_fixed_order_with_two_populated():
+    """Now that a second section holds charts, the real list is long enough for
+    its order to mean something."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    titles = [title for title, _ in urd.render_sections(con)]
+    assert titles == ["Flow health", "Reporting outward"]
 
 
 if __name__ == "__main__":

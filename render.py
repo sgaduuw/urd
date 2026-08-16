@@ -1085,7 +1085,7 @@ def small_multiples(groups, x, y):
     return svg(width, height, title + "".join(parts))
 
 
-FIGURE_KINDS = frozenset({"table", "matrix", "lines", "stacked", "scatter"})
+FIGURE_KINDS = frozenset({"table", "matrix", "lines", "stacked", "scatter", "bars"})
 
 
 def figure(chart, rows, subtitle, con):
@@ -1108,6 +1108,8 @@ def figure(chart, rows, subtitle, con):
             p50, p85 = con.execute(o["guides_sql"]).fetchone()
             guides = [(name, v) for name, v in (("p50", p50), ("p85", p85)) if v is not None]
         body = scatter(rows, o["x"], o["y"], guides)
+    elif chart.kind == "bars":
+        body = bars(rows, o["labels"], o["series"])
     else:
         raise ValueError(f"no renderer for chart kind {chart.kind!r}")
     return (

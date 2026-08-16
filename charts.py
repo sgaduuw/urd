@@ -154,4 +154,61 @@ CHARTS = [
             ORDER BY 1, 2
         """,
     ),
+    Chart(
+        key="per_fix_version",
+        section="Reporting outward",
+        title="Delivered versus open, per version",
+        kind="bars",
+        caption="The delivery view. One bar pair per version a ticket is tagged with.",
+        options={"labels": "fix_version", "series": ["done", "open"]},
+        # UNNEST, so a ticket tagged with two versions counts in both rather than
+        # being dropped or arbitrarily attributed to one.
+        sql="""
+            SELECT v AS fix_version,
+                   count(*) FILTER (WHERE status_category = 'done') AS done,
+                   count(*) FILTER (WHERE status_category <> 'done') AS open
+            FROM issues, UNNEST(fix_versions) AS t(v)
+            GROUP BY 1
+            ORDER BY 1
+        """,
+    ),
+    Chart(
+        key="per_epic",
+        section="Reporting outward",
+        title="Progress per epic",
+        kind="bars",
+        caption="Tickets done and still open, per parent. Parents outside the scope "
+                "of this report appear by key alone.",
+        # done and open rather than done and total: the two are disjoint and sum to
+        # the total, so the pair is an honest side-by-side read. done against total
+        # puts a bar inside another bar and invites reading them as separate work.
+        options={"labels": "epic", "series": ["done", "open"]},
+        sql="""
+            SELECT parent AS epic,
+                   count(*) FILTER (WHERE status_category = 'done') AS done,
+                   count(*) FILTER (WHERE status_category <> 'done') AS open
+            FROM issues
+            WHERE parent IS NOT NULL
+            GROUP BY 1
+            ORDER BY done + open DESC
+        """,
+    ),
+    Chart(
+        key="type_mix",
+        section="Reporting outward",
+        title="Ticket type mix per month",
+        kind="stacked",
+        caption="How much of each month was planned work. A growing bug or "
+                "incident band is the interesting case.",
+        options={"x": "month", "band": "type", "value": "tickets"},
+        # ::DATE for the same reason as created_vs_closed: date_trunc returns a
+        # TIMESTAMP and the tick label is the value's own str().
+        sql="""
+            SELECT date_trunc('month', created)::DATE AS month, type,
+                   count(*) AS tickets
+            FROM issues
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+        """,
+    ),
 ]
