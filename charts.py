@@ -130,6 +130,53 @@ CHARTS = [
         """,
     ),
     Chart(
+        key="flow_trend",
+        section="Flow health",
+        title="New versus done, four week trend",
+        kind="lines",
+        caption="The same counts as the chart above, smoothed over four weeks. "
+                "Week to week noise hides the direction; this is the direction. "
+                "While the new line sits above the done line, the backlog grows.",
+        options={"x": "week", "series": ["new_trend", "done_trend"], "interactive": True},
+        # The week series is generated rather than taken from the data, so a week
+        # in which nothing happened is a zero rather than a missing row. Without
+        # that a four-week mean averages four arbitrary weeks instead of four
+        # calendar ones, and reads a quiet period as steady output.
+        #
+        # The mean is computed over every week and the window is applied after,
+        # so the first weeks shown average the weeks genuinely before them. Filter
+        # first and the mean restarts at the window edge, drawing a ramp out of
+        # nothing.
+        sql="""
+            WITH weeks AS (
+                SELECT unnest(generate_series(
+                    (SELECT min(date_trunc('week', created)) FROM issues),
+                    (SELECT max(date_trunc('week', created)) FROM issues),
+                    INTERVAL 1 WEEK))::DATE AS week
+            ),
+            c AS (SELECT date_trunc('week', created)::DATE w, count(*) n
+                  FROM issues GROUP BY 1),
+            d AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
+                  FROM closures WHERE NOT abandoned GROUP BY 1),
+            trend AS (
+                SELECT weeks.week,
+                       round(avg(COALESCE(c.n, 0)) OVER (
+                           ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                       ), 1) AS new_trend,
+                       round(avg(COALESCE(d.n, 0)) OVER (
+                           ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                       ), 1) AS done_trend
+                FROM weeks
+                LEFT JOIN c ON c.w = weeks.week
+                LEFT JOIN d ON d.w = weeks.week
+            )
+            SELECT week, new_trend, done_trend
+            FROM trend
+            WHERE in_window(week)
+            ORDER BY week
+        """,
+    ),
+    Chart(
         key="cfd",
         section="Flow health",
         title="Cumulative flow",

@@ -3426,9 +3426,40 @@ def test_every_chart_sql_returns_the_columns_its_options_name():
             assert numerator is not None and denominator is not None
 
 
+def test_the_trend_chart_smooths_both_series_over_four_weeks():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "flow_trend")
+    assert chart.options["series"] == ["new_trend", "done_trend"]
+    assert rows, "no weeks at all"
+    weeks = [r["week"] for r in rows]
+    assert weeks == sorted(weeks)
+    # Gapless: a week where nothing happened is a zero, not a missing row, or a
+    # four-week mean would average four arbitrary weeks instead of four calendar
+    # ones and quietly overstate a quiet period.
+    assert len(set(weeks)) == len(weeks)
+    assert (weeks[-1] - weeks[0]).days // 7 + 1 == len(weeks), weeks
+
+
+def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():
+    """A rolling mean computed after filtering restarts at the window, so the
+    first weeks shown would average one, two, then three weeks and read as a
+    ramp that never happened. It is computed over everything and filtered after."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, whole = _flow_rows(con, "flow_trend")
+    edge = whole[len(whole) // 2]["week"]
+    urd.set_report_window(con, edge.isoformat())
+    _, windowed = _flow_rows(con, "flow_trend")
+    assert windowed, "the window emptied the chart"
+    first = windowed[0]
+    matching = next(r for r in whole if r["week"] == first["week"])
+    assert first["new_trend"] == matching["new_trend"], (first, matching)
+    urd.set_report_window(con, None)
+
+
 def test_flow_health_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
-    assert keys == {"aging_wip", "created_vs_closed", "cfd", "cycle_scatter", "time_in_status"}
+    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "cfd",
+                    "cycle_scatter", "time_in_status"}
 
 
 def test_aging_lists_only_open_tickets_worst_first():
@@ -4292,8 +4323,15 @@ def test_points_charts_are_held_to_the_lower_threshold():
     assert chart.coverage is not None
 
 
-def test_all_sixteen_charts_are_defined():
-    assert len(chart_specs.CHARTS) == 16
+def test_the_chart_list_matches_the_section_index():
+    """A count was the original check and went stale the first time a chart was
+    added. The property worth holding is that every chart lands in a declared
+    section and no two share a key, which stays true however many there are."""
+    keys = [c.key for c in chart_specs.CHARTS]
+    assert len(keys) == len(set(keys)), "duplicate chart key"
+    assert len(keys) >= 16
+    for chart in chart_specs.CHARTS:
+        assert chart.section in chart_specs.SECTIONS, f"{chart.key}: {chart.section}"
 
 
 def test_people_charts_are_all_present():
