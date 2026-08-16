@@ -14,8 +14,13 @@
 set -eu
 target="${1:-.}"
 
-# Case-insensitive terms.
-loose='i3d\|ubisoft\|i3dnet'
+# Case-insensitive terms. The home-path pattern is here because an agent report
+# committed by mistake carried "/Users/<name>/Projects/urd/urd.py" twice, and
+# every pattern above it passed: the file named no employer, no team and no
+# ticket, only the machine's account name. A tool-generated absolute path is the
+# most likely way this repository leaks an identity, and it is invisible to a
+# list of terms someone has to think to add.
+loose='i3d\|ubisoft\|i3dnet\|/Users/[A-Za-z0-9._-]\+\|/home/[A-Za-z0-9._-]\+'
 # Case-sensitive terms: bare "meta" appears in "metadata" and "metric".
 strict='\bMETA\b\|\bFM-[0-9]\|\bISM-[0-9]\|\bITSM\b\|Konstantelos\|Bohbot\|van Gerven\|Holtkamp\|Verhoef\|Nelms\|Haverkamp\|Jura\b'
 
