@@ -73,7 +73,7 @@ CHARTS = [
         caption="Open tickets by days in their current status. The chart that "
                 "changes what you do today.",
         options={"headers": ["key", "status", "assignee", "days"], "shade": "days",
-                 "sortable": True},
+                 "sortable": True, "links": ["key"]},
         sql="""
             SELECT i.key, i.status,
                    COALESCE(p.display_name, 'Unassigned') AS assignee,
@@ -229,7 +229,7 @@ CHARTS = [
         # actually wants here, so this is the one chart that opts into it.
         # delivered/dropped/open stay disjoint and sum to the total.
         options={"headers": ["epic", "delivered", "dropped", "open", "percent_done"],
-                 "shade": "percent_done", "sortable": True},
+                 "shade": "percent_done", "sortable": True, "links": ["epic"]},
         sql="""
             SELECT parent AS epic,
                    count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)

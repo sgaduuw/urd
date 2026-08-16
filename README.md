@@ -166,6 +166,20 @@ All four tables sort: aging work in progress (40 rows), median days in status
 scanning by eye. A table added later must opt in deliberately, which a test
 enforces: a genuinely short one may decline, but it cannot forget.
 
+## Ticket links
+
+Ticket keys in the aging and per-epic tables link to `https://<site>/browse/<KEY>`,
+built from the site recorded by `sync`, so a report against a different instance
+links to that instance. With no site recorded yet, keys render as plain text
+rather than as half a URL.
+
+This does not weaken the self-contained guarantee. The page still renders offline
+and identically; a link is fetched only when a human clicks it, unlike `src`,
+`@import`, `url()` or a stylesheet `href`, which the browser fetches on open with
+no choice. The test that enforces this strips anchors and then applies every
+pattern to what remains, and a companion test checks that the strip has not
+blinded it.
+
 ## Coverage figures
 
 Some charts carry a `coverage` query alongside their main one: a numerator

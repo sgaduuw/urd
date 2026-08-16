@@ -17,6 +17,7 @@ the report is a static file opened directly in a browser.
 import decimal
 import html
 import math
+import urllib.parse
 
 # Reference categorical palette (see the `dataviz` skill, references/palette.md).
 # Fixed hue order is the CVD-safety mechanism: within one chart, slot N always
@@ -985,7 +986,7 @@ def scatter(rows, x, y, guides=()):
     return svg(width, height, title + "".join(parts))
 
 
-def table(rows, headers, shade=None, sortable=False):
+def table(rows, headers, shade=None, sortable=False, link_base=None, links=()):
     """An HTML table. When `shade` names a numeric column, that column's
     cells get a background wash (an inline SVG rect, so its opacity is
     independent of the text sitting in front of it) whose opacity is
@@ -1018,6 +1019,14 @@ def table(rows, headers, shade=None, sortable=False):
         for h in headers:
             v = r.get(h)
             cell_text = esc("" if v is None else v)
+            # A link is not an external reference in the sense that matters: the
+            # page still renders offline and identically, and nothing is fetched
+            # unless a human clicks. quote() on top of esc() because the two
+            # protect different things, the URL grammar and the HTML.
+            if link_base and h in links and v is not None and str(v).strip():
+                cell_text = (
+                    f'<a href="{esc(link_base + urllib.parse.quote(str(v)))}" '
+                    f'target="_blank" rel="noopener noreferrer">{cell_text}</a>')
             shade_v = _num(v) if shade and h == shade else None
             # shade_max > 0, not just truthy: an all-negative shade column
             # gives a negative shade_max, which is still truthy, and
@@ -1172,7 +1181,7 @@ FIGURE_KINDS = frozenset(
 )
 
 
-def figure(chart, rows, subtitle, con):
+def figure(chart, rows, subtitle, con, link_base=None):
     """One chart's markup: heading, the primitive its kind names, and a caption.
 
     `matrix` is a shaded table rather than its own renderer: the row and column
@@ -1181,7 +1190,8 @@ def figure(chart, rows, subtitle, con):
     """
     o = chart.options
     if chart.kind in ("table", "matrix"):
-        body = table(rows, o["headers"], o.get("shade"), sortable=o.get("sortable", False))
+        body = table(rows, o["headers"], o.get("shade"), sortable=o.get("sortable", False),
+                     link_base=link_base, links=o.get("links", ()))
     elif chart.kind == "lines":
         body = lines(rows, o["x"], o["series"])
     elif chart.kind == "stacked":

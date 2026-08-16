@@ -929,7 +929,11 @@ def run_chart(con, chart, tiers=None):
     cursor = con.execute(chart.sql)
     columns = [d[0] for d in cursor.description]
     rows = [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
-    return render.figure(chart, rows, subtitle, con)
+    # Built from the synced site, never compiled in: the same report against a
+    # different instance has to link to that instance.
+    site = load_scope(con)["site"]
+    link_base = f"https://{site}/browse/" if site else None
+    return render.figure(chart, rows, subtitle, con, link_base)
 
 
 def render_sections(con, tiers=None):

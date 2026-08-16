@@ -3676,14 +3676,69 @@ def test_report_writes_a_standalone_file_with_no_external_references():
     assert urd.report(con, out) == 0
     html = pathlib.Path(out).read_text()
     assert html.startswith("<!doctype html>")
-    # Every way a saved file could still reach the network, not just one of them.
-    # The protocol-relative pattern requires a quote or paren in front of it. A
-    # bare //\w also matches a JavaScript line comment, and the page now carries
-    # inline script; the point of the check is a URL in an attribute or a url(),
-    # which is exactly what the delimiter pins down.
+    # The guarantee is that RENDERING the page needs no network, which is not the
+    # same as the page containing no URL. A <a href> a human may click is fetched
+    # only if someone clicks it; <img src>, <link href>, @import and url() are
+    # fetched by the browser on open, with no choice. So the anchors are removed
+    # first and every pattern is applied to what remains, which keeps the check
+    # strict about the thing it is actually protecting.
+    without_anchors = re.sub(r"<a\b[^>]*>", "", html)
     for pattern in (r"https?:", r"""['"(]//\w""", r"@import", r"\bsrc\s*=",
                     r"\bhref\s*=", r"url\("):
-        assert not re.search(pattern, html), f"{pattern} would fetch from the network"
+        assert not re.search(pattern, without_anchors), (
+            f"{pattern} would fetch from the network")
+
+
+def test_removing_anchors_does_not_blind_the_no_network_check():
+    """The anchor-stripping above is the kind of exemption that quietly widens.
+    Validated against known-positive data: each auto-fetching form must still be
+    caught after the strip, and an anchor must still be allowed."""
+    strip = lambda markup: re.sub(r"<a\b[^>]*>", "", markup)  # noqa: E731
+    caught = [
+        '<img src="https://x/y.png">',
+        '<link href="https://x/y.css" rel="stylesheet">',
+        "<style>@import 'https://x/y.css';</style>",
+        "<style>a{background:url(https://x/y.png)}</style>",
+        '<img src="//x/y.png">',
+    ]
+    patterns = (r"https?:", r"""['"(]//\w""", r"@import", r"\bsrc\s*=",
+                r"\bhref\s*=", r"url\(")
+    for markup in caught:
+        assert any(re.search(p, strip(markup)) for p in patterns), markup
+    allowed = '<a href="https://example.atlassian.net/browse/PROJ-1">PROJ-1</a>'
+    assert not any(re.search(p, strip(allowed)) for p in patterns), allowed
+
+
+def test_a_ticket_key_links_to_the_configured_site():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.save_scope(con, site="example.atlassian.net")
+    chart, rows = _flow_rows(con, "aging_wip")
+    out = urd.run_chart(con, chart)
+    assert 'href="https://example.atlassian.net/browse/PROJ-3"' in out, out[:400]
+    assert ">PROJ-3</a>" in out
+    # Only the linked column becomes a link; a status is not a ticket.
+    assert "browse/In Progress" not in out
+
+
+def test_no_site_means_no_links_rather_than_a_broken_one():
+    """A database that has never synced has no site, and half a URL is worse than
+    plain text."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.save_scope(con, site=None)
+    con.execute("UPDATE sync_state SET site = NULL")
+    chart, rows = _flow_rows(con, "aging_wip")
+    out = urd.run_chart(con, chart)
+    assert "href=" not in out
+    assert "PROJ-3" in out
+
+
+def test_a_linked_key_is_escaped_in_both_the_href_and_the_text():
+    out = render.table([{"key": 'A"><script>x</script>', "days": 1}],
+                       headers=["key", "days"],
+                       link_base="https://example.atlassian.net/browse/",
+                       links=["key"])
+    assert "<script>" not in out
+    assert '"><script' not in out
 
 
 def test_the_report_header_reflects_the_database_it_read():
