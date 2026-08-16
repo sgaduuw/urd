@@ -624,6 +624,88 @@ WHERE st.pos < sf.pos;
 """
 
 
+_CATEGORY_RANK = {"new": 0, "indeterminate": 1, "done": 2}
+
+
+def observed_statuses(con):
+    """Every status the fetched data actually mentions, in workflow-ish order.
+
+    Reads raw_issues directly rather than the transitions view, because the one
+    moment this is most needed is a first run: derive refuses to start without
+    --status-order, so it has built no views, and the operator has no other way
+    to enumerate the statuses they are being asked to order.
+
+    Ordered by status category first, then by how long work typically takes to
+    reach the status. The second is a heuristic and can be wrong: a parking
+    status such as Blocked sits in the `new` category here yet is entered
+    mid-flow, so it sorts earlier than it belongs. It is meant to produce a line
+    worth editing, not one worth trusting.
+    """
+    categories = dict(con.execute("SELECT name, category FROM statuses").fetchall())
+    seen = {}
+    for (raw,) in con.execute("SELECT json FROM raw_issues").fetchall():
+        issue = json.loads(raw)
+        created = _ts((issue.get("fields") or {}).get("created"))
+        current = ((issue.get("fields") or {}).get("status") or {}).get("name")
+        if current:
+            seen.setdefault(current, {"entries": 0, "delays": [], "current": 0})
+            seen[current]["current"] += 1
+        moves = sorted(
+            (
+                (_ts(history.get("created")), item)
+                for history in (issue.get("changelog") or {}).get("histories", [])
+                for item in history.get("items", [])
+                if item.get("field") == "status"
+            ),
+            key=lambda m: (m[0] is None, m[0]),
+        )
+        for index, (when, item) in enumerate(moves):
+            name = item.get("toString")
+            if name:
+                stat = seen.setdefault(name, {"entries": 0, "delays": [], "current": 0})
+                stat["entries"] += 1
+                if created and when:
+                    stat["delays"].append((when - created).total_seconds() / 86400.0)
+            # A ticket's opening status is only ever a `fromString`: work leaves it
+            # and never enters it, so collecting toString alone loses it entirely,
+            # and it is the one status the operator most needs listed first.
+            if index == 0 and item.get("fromString"):
+                opening = seen.setdefault(
+                    item["fromString"], {"entries": 0, "delays": [], "current": 0})
+                opening["delays"].append(0.0)
+    rows = []
+    for name, stat in seen.items():
+        delays = sorted(stat["delays"])
+        median = delays[len(delays) // 2] if delays else 0.0
+        rows.append({
+            "status": name,
+            "category": categories.get(name),
+            "current": stat["current"],
+            "entries": stat["entries"],
+            "median_days": median,
+        })
+    rows.sort(key=lambda r: (_CATEGORY_RANK.get(r["category"], 1), r["median_days"], r["status"]))
+    return rows
+
+
+def format_statuses(rows):
+    """The listing plus a --status-order line to paste and edit."""
+    if not rows:
+        return "no statuses found in the fetched data; run sync first"
+    out = ["statuses found in the fetched data:",
+           f"  {'category':<14} {'status':<28} {'now':>5} {'entered':>8} {'median day':>11}"]
+    for r in rows:
+        out.append(f"  {str(r['category'] or '?'):<14} {r['status']:<28} "
+                   f"{r['current']:>5} {r['entries']:>8} {r['median_days']:>11.1f}")
+    flow = [r["status"] for r in rows if r["category"] != "done"]
+    done = [r["status"] for r in rows if r["category"] == "done"]
+    out.append("")
+    out.append("ordered by category, then by how long work takes to reach each one.")
+    out.append("a parking status such as Blocked sorts earlier than it belongs; edit before use:")
+    out.append(f'  --status-order "{",".join(flow + done)}"')
+    return "\n".join(out)
+
+
 def derive(con, status_order, start_status, review_status, abandoned_status=None):
     """Rebuild the derived tables and views from raw_issues.
 
@@ -642,9 +724,9 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
     """
     if not status_order or not start_status:
         raise SystemExit(
-            "derive needs --status-order and --start-status on the first run, for example:\n"
-            '  urd derive --status-order "To Do,In Progress,Review,Done" '
-            '--start-status "In Progress" --review-status "Review"'
+            "derive needs --status-order and --start-status on the first run.\n\n"
+            + format_statuses(observed_statuses(con))
+            + '\n  --start-status "In Progress" --review-status "Review"'
         )
 
     # Validate status_order before persisting: no duplicates, no empties
@@ -705,6 +787,7 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
     if unknown:
         print("statuses not in --status-order, so their transitions are excluded from rework: "
               + ", ".join(u[0] for u in unknown if u[0]))
+    print(format_statuses(observed_statuses(con)))
     for field, rate in con.execute(
         "SELECT name, null_rate FROM fields WHERE null_rate IS NOT NULL"
     ).fetchall():

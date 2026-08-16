@@ -91,6 +91,29 @@ everything already held is left alone.
 - Handoffs: who starts work that someone else finishes. Read down the rows for what a person hands on, across for what they pick up.
 - Story points closed per person: only meaningful if the field is filled consistently, which the coverage figure tells you.
 
+## Finding the status names
+
+`derive` lists every status the fetched data mentions, with its category, how
+many tickets sit there now, how many times work entered it, and the median days
+from ticket creation to first arrival. It ends with a `--status-order` line to
+paste and edit:
+
+```
+statuses found in the fetched data:
+  category       status                         now  entered  median day
+  new            Backlog                        206       21         0.0
+  indeterminate  In Progress                     29      813        11.1
+  done           Done                           600      655        15.6
+```
+
+The same listing replaces the first-run error, because otherwise `derive` asks
+for an order over statuses it is the only thing able to enumerate.
+
+The suggested order is a heuristic worth editing, not trusting. A parking status
+such as Blocked sits in the `new` category yet is entered mid-flow, so it sorts
+earlier than it belongs. Statuses left out of `--status-order` are excluded from
+rework detection entirely, which is the right home for parking states.
+
 ## Delivered, dropped, open
 
 A ticket closed as "won't do" is a real outcome and is not delivery. Name the

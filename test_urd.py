@@ -165,6 +165,51 @@ def test_an_abandoned_status_outside_the_done_category_is_rejected():
         raise AssertionError("an in-flight status was accepted as abandonment")
 
 
+def test_observed_statuses_are_readable_before_any_view_exists():
+    """The listing has to work on a first run, when --status-order is missing and
+    derive has therefore built no transitions view to read. It parses raw_issues
+    directly for exactly that reason."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
+    seen = urd.observed_statuses(con)
+    assert seen, "no statuses found in the fetched data"
+    by_name = {s["status"]: s for s in seen}
+    assert {"To Do", "In Progress", "Review", "Done"} <= set(by_name)
+    assert by_name["Review"]["entries"] >= 1
+    assert by_name["Done"]["category"] == "done"
+
+
+def test_observed_statuses_are_ordered_by_when_work_reaches_them():
+    """The point of the listing is to make --status-order easy to write, so the
+    order it suggests has to resemble the workflow rather than the alphabet."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "skipped_progress", "two_sprints")
+    names = [s["status"] for s in urd.observed_statuses(con)]
+    assert names.index("In Progress") < names.index("Done")
+    assert names.index("To Do") < names.index("In Progress")
+
+
+def test_a_first_run_without_an_order_lists_the_statuses_it_found():
+    """Otherwise the operator is told to supply an order for statuses they have
+    no way to enumerate: derive is what would have told them, and it refuses to
+    run without the answer."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened")
+    try:
+        urd.derive(con, None, None, None)
+    except SystemExit as exc:
+        message = str(exc)
+        # NOT the status names: the hardcoded example in this message is
+        # "To Do,In Progress,Review,Done", which is exactly the fixture's set, so
+        # asserting on those passes with no listing present at all. That is how
+        # this test was first written and it was green before the feature existed.
+        # Assert on what only a real listing produces: the status categories.
+        assert "indeterminate" in message, message
+        assert "--status-order" in message
+    else:
+        raise AssertionError("derive ran without a status order")
+
+
 def test_derive_is_idempotent():
     con = _derived("reopened", "two_sprints")
     issues_before = con.execute("SELECT count(*) FROM issues").fetchone()[0]
