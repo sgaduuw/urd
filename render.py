@@ -255,15 +255,25 @@ PLOT_SCRIPT = """
     try { spec = JSON.parse(island.textContent); } catch (e) { return; }
     var scatter = spec.kind === 'scatter';
     var stacked = spec.kind === 'stacked';
-    var series = [{ label: spec.xLabel }];
+    var bars = spec.kind === 'bars';
+    var labels = spec.labels || [];
+    function category(i) {
+      return (i == null || labels[i] === undefined) ? '' : labels[i];
+    }
+    var series = [{
+      label: spec.xLabel,
+      value: bars ? function (u, v) { return category(v); } : null
+    }];
     spec.series.forEach(function (s) {
       var colour = token('--s' + (s.slot || 1), '#2a78d6');
       series.push({
         label: s.label,
         stroke: colour,
         width: stacked ? 1 : (scatter ? 0 : 2),
-        fill: stacked ? colour + '66' : null,
-        points: { show: !stacked, size: scatter ? 5 : 4, stroke: colour, fill: colour },
+        fill: stacked ? colour + '66' : (bars ? colour : null),
+        paths: bars ? uPlot.paths.bars({ size: [0.85, 40] }) : null,
+        points: { show: !stacked && !bars, size: scatter ? 5 : 4,
+                  stroke: colour, fill: colour },
         /* The drawn value is the running total; the band's own number is what a
            reader wants. This reads it out of the payload rather than
            subtracting, so nothing on screen was computed in the browser. */
@@ -279,10 +289,15 @@ PLOT_SCRIPT = """
       width: box.clientWidth || 480,
       height: 240,
       cursor: { drag: { x: true, y: false } },
-      scales: { x: { time: !!spec.time }, y: stacked ? { range: [0, null] } : {} },
+      scales: {
+        x: bars ? { time: false, range: [-0.5, spec.x.length - 0.5] } : { time: !!spec.time },
+        y: (stacked || bars) ? { range: [0, null] } : {}
+      },
       axes: [
         { stroke: token('--text-secondary', '#52514e'),
-          grid: { stroke: token('--grid', '#e1e0d9') } },
+          grid: { stroke: token('--grid', '#e1e0d9') },
+          /* The category name, not the index it is stored under. */
+          values: bars ? function (u, splits) { return splits.map(category); } : null },
         { stroke: token('--text-secondary', '#52514e'),
           grid: { stroke: token('--grid', '#e1e0d9') } }
       ],
@@ -1272,6 +1287,8 @@ def plot_payload(chart, rows):
     still diff, and a reader hovering a point sees the figure the SVG drew.
     """
     o = chart.options
+    if chart.kind == "bars":
+        return _bars_payload(o, rows)
     x_key = o["x"]
     xs = [r.get(x_key) for r in rows]
     stamps = [_epoch(x) for x in xs]
@@ -1322,6 +1339,27 @@ def fold_bands(rows, x, band, value, limit=None):
             other[key] = other.get(key, 0) + (_num(r.get(value)) or 0)
     folded.extend({x: k, band: "Other", value: v} for k, v in other.items())
     return folded
+
+
+def _bars_payload(o, rows):
+    """Categorical bars for a library that places everything numerically.
+
+    x is the row index and the category names ride alongside in `labels`, because
+    uPlot has no notion of a category: without them an upgraded chart labels its
+    axis 0, 1, 2, which is worse than the three-character truncations it replaces.
+    The lookup happens in the browser, which is a lookup and not a computation.
+    """
+    label_key = o["labels"]
+    return {
+        "kind": "bars",
+        "time": False,
+        "x": list(range(len(rows))),
+        "labels": ["" if r.get(label_key) is None else str(r.get(label_key)) for r in rows],
+        "xLabel": label_key,
+        "series": [{"label": n, "slot": i % len(PALETTE) + 1,
+                    "data": [_num(r.get(n)) for r in rows]}
+                   for i, n in enumerate(o["series"])],
+    }
 
 
 def _stacked_payload(o, rows, x_key, axis, is_time):

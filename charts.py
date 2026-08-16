@@ -209,7 +209,8 @@ CHARTS = [
         title="Delivered versus open, per version",
         kind="bars",
         caption="The delivery view. One bar pair per version a ticket is tagged with.",
-        options={"labels": "fix_version", "series": ["delivered", "dropped", "open"]},
+        options={"labels": "fix_version", "series": ["delivered", "dropped", "open"],
+                 "interactive": True},
         # UNNEST, so a ticket tagged with two versions counts in both rather than
         # being dropped or arbitrarily attributed to one.
         sql="""
@@ -227,16 +228,17 @@ CHARTS = [
         key="per_epic",
         section="Reporting outward",
         title="Progress per epic",
-        kind="table",
-        caption="Tickets per parent, sortable by any column. Parents outside the "
-                "scope of this report appear by key alone.",
-        # A table, not bars. The first real project has 141 epics, which as grouped
-        # bars is 423 marks in 480px at 1.03px each: not a crowded chart, no chart
-        # at all. A table reads at any row count, and sorting is what a reader
-        # actually wants here, so this is the one chart that opts into it.
+        kind="bars",
+        caption="Tickets per parent, largest first. Drag across the chart to zoom "
+                "into a range. Parents outside the scope of this report appear by "
+                "key alone.",
+        # Back to bars now that a plot can be zoomed. 141 epics is 423 marks in
+        # 480px, about a pixel each, which is why this was a table for a while:
+        # the static SVG below is still that dense and that is the honest cost of
+        # the fallback. Drag-to-zoom is what makes the upgraded version readable.
         # delivered/dropped/open stay disjoint and sum to the total.
-        options={"headers": ["epic", "delivered", "dropped", "open", "percent_done"],
-                 "shade": "percent_done", "sortable": True, "links": ["epic"]},
+        options={"labels": "epic", "series": ["delivered", "dropped", "open"],
+                 "interactive": True},
         sql="""
             SELECT parent AS epic,
                    count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)
@@ -276,7 +278,7 @@ CHARTS = [
         kind="bars",
         caption="Transitions that moved a ticket backwards through the workflow. "
                 "The single best retro chart, and one no built-in report draws.",
-        options={"labels": "sprint", "series": ["backward_moves"]},
+        options={"labels": "sprint", "series": ["backward_moves"], "interactive": True},
         # Attributed by when the transition happened, not by the ticket's latest
         # sprint: a backward move belongs to the sprint it occurred in.
         sql="""
@@ -305,7 +307,7 @@ CHARTS = [
         kind="bars",
         caption="Tickets that were already in an earlier sprint. Persistent "
                 "carry-over means the sprint is being planned optimistically.",
-        options={"labels": "sprint", "series": ["carried"]},
+        options={"labels": "sprint", "series": ["carried"], "interactive": True},
         sql="""
             SELECT sprint_name AS sprint, count(DISTINCT key) AS carried
             FROM issue_sprints
@@ -327,7 +329,8 @@ CHARTS = [
         kind="bars",
         caption="Median and 85th percentile days per sprint. Tightening is the "
                 "thing to look for, not the absolute value.",
-        options={"labels": "sprint", "series": ["median_days", "p85_days"]},
+        options={"labels": "sprint", "series": ["median_days", "p85_days"],
+                 "interactive": True},
         # Attributed to the ticket's LAST sprint rather than to whichever sprint
         # window contains its resolution. Work routinely closes after the sprint
         # that carried it (PROJ-1 resolves the day after its sprint ends), and
@@ -418,7 +421,7 @@ CHARTS = [
         caption="Who moves work out of the review status, counting a rejection "
                 "back to in-progress as well as an approval. This is the "
                 "invisible contribution: no built-in report exposes it.",
-        options={"labels": "reviewer", "series": ["reviews"]},
+        options={"labels": "reviewer", "series": ["reviews"], "interactive": True},
         sql="""
             SELECT COALESCE(p.display_name, 'Automation') AS reviewer,
                    count(*) AS reviews
@@ -470,7 +473,7 @@ CHARTS = [
         kind="bars",
         caption="Only meaningful if the field is filled consistently, which the "
                 "coverage figure tells you.",
-        options={"labels": "person", "series": ["points"]},
+        options={"labels": "person", "series": ["points"], "interactive": True},
         sql="""
             SELECT COALESCE(p.display_name, 'Unassigned') AS person,
                    sum(i.story_points) AS points

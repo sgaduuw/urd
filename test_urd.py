@@ -3394,7 +3394,7 @@ def test_every_table_chart_is_sortable():
     so a table added later has to make the same decision deliberately: a genuinely
     short one may opt out, but it cannot forget."""
     tables = [c for c in chart_specs.CHARTS if c.kind in ("table", "matrix")]
-    assert tables
+    assert len(tables) >= 3, tables
     missing = [c.key for c in tables if not c.options.get("sortable")]
     assert not missing, f"table charts without sorting: {missing}"
 
@@ -3761,6 +3761,44 @@ def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
     assert payload["time"] is True, "a weekly axis should be a time axis"
 
 
+def test_a_bar_island_carries_its_categories_as_labels():
+    """A bar axis is categorical and uPlot places points numerically, so x is an
+    index and the names travel alongside. Without them an upgraded chart would
+    label its axis 0, 1, 2, which is worse than the truncated names it replaced."""
+    con = _derived("reopened", "two_sprints")
+    chart, rows = _flow_rows(con, "per_fix_version")
+    payload = render.plot_payload(chart, rows)
+    assert payload["kind"] == "bars"
+    assert payload["x"] == list(range(len(rows)))
+    assert payload["labels"] == [r["fix_version"] for r in rows]
+    assert payload["time"] is False
+    for series in payload["series"]:
+        assert series["data"] == [r[series["label"]] for r in rows]
+
+
+def test_bar_series_keep_the_palette_slots_the_svg_gave_them():
+    con = _derived("reopened", "two_sprints")
+    chart, rows = _flow_rows(con, "per_fix_version")
+    payload = render.plot_payload(chart, rows)
+    assert [s["slot"] for s in payload["series"]] == [
+        i % 8 + 1 for i in range(len(chart.options["series"]))]
+
+
+def test_every_chart_that_can_be_interactive_is():
+    """Tables sort, and everything a plot can carry is upgraded. What is left has
+    to be left deliberately, so this names it rather than letting a chart drift
+    out of the set unnoticed."""
+    by_kind = {}
+    for chart in chart_specs.CHARTS:
+        by_kind.setdefault(chart.kind, []).append(chart)
+    for kind in ("lines", "scatter", "stacked", "bars"):
+        missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("interactive")]
+        assert not missing, f"{kind} charts not upgraded: {missing}"
+    for kind in ("table", "matrix"):
+        missing = [c.key for c in by_kind.get(kind, []) if not c.options.get("sortable")]
+        assert not missing, f"{kind} charts not sortable: {missing}"
+
+
 def test_a_stacked_island_carries_cumulative_sums_computed_in_python():
     """uPlot stacks by drawing cumulative series and letting later ones paint over
     earlier. Those sums are the numbers on screen, so they are computed here, not
@@ -3838,15 +3876,15 @@ def test_a_data_island_cannot_close_its_own_script_tag():
     assert "</script><script>x" not in out
 
 
-def test_only_dense_charts_opt_into_interactivity():
+def test_interactivity_is_declared_on_plot_kinds_only():
     """A bar chart with nine categories is finished when it is drawn. Interactivity
     is for charts too dense to read, not a badge every chart collects."""
     interactive = {c.key for c in chart_specs.CHARTS if c.options.get("interactive")}
-    assert interactive == {"created_vs_closed", "cycle_scatter", "points_vs_cycle",
-                           "cfd", "type_mix"}, interactive
+    assert "review_load" in interactive and "cycle_per_sprint" in interactive
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
-            assert chart.kind in ("lines", "scatter", "stacked"), f"{chart.key}: {chart.kind}"
+            assert chart.kind in ("lines", "scatter", "stacked", "bars"), (
+                f"{chart.key}: {chart.kind}")
 
 
 def test_the_embedded_javascript_parses():
@@ -3948,8 +3986,7 @@ def test_epic_chart_series_are_disjoint_and_sum_to_the_total():
     particular names."""
     con = _derived("reopened", "two_sprints")
     chart, rows = _flow_rows(con, "per_epic")
-    assert chart.options["headers"] == [
-        "epic", "delivered", "dropped", "open", "percent_done"]
+    assert chart.options["series"] == ["delivered", "dropped", "open"]
     assert [(r["epic"], r["delivered"], r["dropped"], r["open"]) for r in rows] == [
         ("PROJ-100", 1, 0, 1)]
     total = con.execute(
