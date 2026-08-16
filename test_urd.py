@@ -3458,7 +3458,7 @@ def test_the_cumulative_flow_reaches_the_same_horizon():
 def test_the_trend_chart_smooths_both_series_over_four_weeks():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "flow_trend")
-    assert chart.options["series"] == ["new_trend", "done_trend"]
+    assert chart.options["series"] == ["new_trend", "done_trend", "dropped_trend"]
     assert rows, "no weeks at all"
     weeks = [r["week"] for r in rows]
     assert weeks == sorted(weeks)
@@ -3467,6 +3467,20 @@ def test_the_trend_chart_smooths_both_series_over_four_weeks():
     # ones and quietly overstate a quiet period.
     assert len(set(weeks)) == len(weeks)
     assert (weeks[-1] - weeks[0]).days // 7 + 1 == len(weeks), weeks
+
+
+def test_the_trend_counts_dropped_work_as_leaving_the_backlog():
+    """Work leaves the backlog by being delivered OR dropped. Without the dropped
+    line the chart implies a backlog growing at more than twice the real rate: on
+    the live project, new minus delivered came to 271 over 26 weeks against an
+    observed 121."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "flow_trend")
+    assert "dropped_trend" in chart.options["series"]
+    dropped = con.execute(
+        "SELECT count(*) FROM closures WHERE abandoned").fetchone()[0]
+    total = sum(r["dropped_trend"] or 0 for r in rows)
+    assert (total > 0) == (dropped > 0), (total, dropped)
 
 
 def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():

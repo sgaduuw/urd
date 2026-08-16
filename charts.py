@@ -136,8 +136,10 @@ CHARTS = [
         kind="lines",
         caption="The same counts as the chart above, smoothed over four weeks. "
                 "Week to week noise hides the direction; this is the direction. "
-                "While the new line sits above the done line, the backlog grows.",
-        options={"x": "week", "series": ["new_trend", "done_trend"], "interactive": True},
+                "Work leaves the backlog by being delivered or dropped, so read "
+                "the new line against both of the others, not against done alone.",
+        options={"x": "week", "series": ["new_trend", "done_trend", "dropped_trend"],
+                 "interactive": True},
         # The week series is generated rather than taken from the data, so a week
         # in which nothing happened is a zero rather than a missing row. Without
         # that a four-week mean averages four arbitrary weeks instead of four
@@ -158,6 +160,11 @@ CHARTS = [
                   FROM issues GROUP BY 1),
             d AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
                   FROM closures WHERE NOT abandoned GROUP BY 1),
+            -- Dropped work leaves the backlog exactly as delivered work does.
+            -- Omitting it made the gap between the two lines read as backlog
+            -- growth of 271 over 26 weeks where the backlog chart showed 121.
+            x AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
+                  FROM closures WHERE abandoned GROUP BY 1),
             trend AS (
                 SELECT weeks.week,
                        round(avg(COALESCE(c.n, 0)) OVER (
@@ -165,12 +172,16 @@ CHARTS = [
                        ), 1) AS new_trend,
                        round(avg(COALESCE(d.n, 0)) OVER (
                            ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-                       ), 1) AS done_trend
+                       ), 1) AS done_trend,
+                       round(avg(COALESCE(x.n, 0)) OVER (
+                           ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                       ), 1) AS dropped_trend
                 FROM weeks
                 LEFT JOIN c ON c.w = weeks.week
                 LEFT JOIN d ON d.w = weeks.week
+                LEFT JOIN x ON x.w = weeks.week
             )
-            SELECT week, new_trend, done_trend
+            SELECT week, new_trend, done_trend, dropped_trend
             FROM trend
             WHERE in_window(week)
             ORDER BY week
