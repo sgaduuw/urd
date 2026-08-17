@@ -553,7 +553,9 @@ CHARTS = [
         title="Tickets closed per week, per person",
         kind="multiline",
         caption="One line each, on one set of axes. Click a name in the legend to "
-                "isolate it, and drag across the chart to zoom. A flat stretch is "
+                "isolate it, and drag across the chart to zoom. People with fewer "
+                "closures than --min-closed in the period are left out. A flat "
+                "stretch is "
                 "a real run of weeks at zero, not missing data. With more people "
                 "than the palette has colours, the legend rather than the colour "
                 "is what tells two lines apart. Attributed to the assignee at "
@@ -592,7 +594,13 @@ CHARTS = [
                     (SELECT min(week) FROM closed),
                     (SELECT max(week) FROM closed), INTERVAL 1 WEEK))::DATE AS week
             ),
-            people AS (SELECT DISTINCT person FROM closed),
+            -- The floor is counted over the window, not all history: someone busy
+            -- last year and silent all quarter is exactly who it exists to drop.
+            people AS (
+                SELECT person FROM closed GROUP BY 1
+                HAVING sum(n) >= CAST(COALESCE((SELECT min_closed FROM sync_state),
+                                               '3') AS INTEGER)
+            ),
             grid AS (SELECT people.person, weeks.week FROM people CROSS JOIN weeks)
             SELECT grid.person, grid.week, COALESCE(closed.n, 0) AS closed
             FROM grid

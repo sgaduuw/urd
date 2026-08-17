@@ -172,7 +172,10 @@ nothing left for zoom to reveal. Hovering still names the bar, through the SVG's
 own tooltip and no script at all. These charts grow taller as rows are added
 rather than thinning, on the principle that a page scrolls and a one-pixel bar
 means nothing. Tickets closed per person is one chart with one line each: click a name in the
-legend to isolate it, drag to zoom. With more people than the palette has
+legend to isolate it, drag to zoom. `--min-closed N` sets how many closures inside
+the window a person needs before they get a line, defaulting to three: fewer than
+that draws a flat line at zero with one blip and spends one of eight palette slots
+on it. With more people than the palette has
 colours, three share each, so the legend and the readout are what tell two lines
 apart rather than the colour.
 

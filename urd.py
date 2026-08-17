@@ -189,6 +189,7 @@ SCOPE_COLUMNS = (
     "abandoned_status",
     "report_since",
     "excluded_epics",
+    "min_closed",
 )
 
 SCHEMA = """
@@ -203,7 +204,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     status_order VARCHAR, start_status VARCHAR, review_status VARCHAR,
     earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR,
     thresholds VARCHAR, abandoned_status VARCHAR, report_since VARCHAR,
-    excluded_epics VARCHAR
+    excluded_epics VARCHAR, min_closed VARCHAR
 );
 CREATE TABLE IF NOT EXISTS excluded_epics (
     -- Epics whose whole subtree is left out of the report. Set at report time, so
@@ -269,6 +270,26 @@ WINDOW_MACRO = (
 )
 
 UNBOUNDED = "1900-01-01"
+
+
+# How many closures inside the window a person needs before they get a line of
+# their own. Three closures over a quarter draws a flat line at zero with one
+# blip and spends a palette slot on it, and there are only eight slots.
+MIN_CLOSED_DEFAULT = 3
+
+
+def set_min_closed(con, floor):
+    """The activity floor for the per-person chart. Read at query time, so it can
+    be set per run rather than compiled into the SQL."""
+    if isinstance(floor, bool) or not isinstance(floor, int) or floor < 1:
+        raise SystemExit(f"--min-closed wants a whole number of 1 or more, got {floor!r}")
+    con.execute("UPDATE sync_state SET min_closed = ?", [str(floor)])
+    return floor
+
+
+def stored_min_closed(con):
+    stored = load_scope(con)["min_closed"]
+    return int(stored) if stored else MIN_CLOSED_DEFAULT
 
 
 def set_excluded_epics(con, keys):
@@ -1174,6 +1195,11 @@ def main(argv=None):
         help="minimum coverage before a chart is replaced by a strip, e.g. "
              "points=0.4. Repeatable, remembered between runs.")
     p_report.add_argument(
+        "--min-closed", type=int, metavar="N",
+        help=f"a person needs this many closures inside the window to get a line "
+             f"on the per-person chart. Default {MIN_CLOSED_DEFAULT}, remembered "
+             f"between runs.")
+    p_report.add_argument(
         "--exclude-epic", action="append", metavar="KEY",
         help="leave this epic and every ticket under it out of every chart. "
              "Repeatable, remembered between runs; pass an empty value to clear.")
@@ -1223,6 +1249,10 @@ def main(argv=None):
         set_report_window(con, args.since or scope["report_since"])
         # An empty --exclude-epic clears the list, which is why this is not just
         # `args.exclude_epic or stored`: passing "" has to mean something.
+        # `is not None`, not `or`: 0 is falsy, so `or` sent --min-closed 0 straight
+        # to the stored default and the validation never saw it.
+        set_min_closed(con, args.min_closed if args.min_closed is not None
+                       else stored_min_closed(con))
         if args.exclude_epic is not None:
             set_excluded_epics(con, args.exclude_epic)
         else:

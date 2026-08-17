@@ -3930,12 +3930,68 @@ def test_multiline_joins_across_a_missing_value():
     assert all(path.count("M") == 1 for path in paths), paths
 
 
+def test_the_per_person_chart_drops_barely_active_people():
+    """Three closures in eleven weeks draws a flat line at zero with one blip, and
+    spends a palette slot on it. The floor is read at query time so it can be set
+    per run rather than compiled in."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.set_min_closed(con, 1)
+    everyone = {r["person"] for r in _flow_rows(con, "throughput_per_person")[1]}
+    assert everyone, "fixtures produce nobody at all"
+    urd.set_min_closed(con, 99)
+    assert _flow_rows(con, "throughput_per_person")[1] == [], "the floor did nothing"
+    urd.set_min_closed(con, 1)
+
+
+def test_the_floor_counts_closures_inside_the_window_only():
+    """Otherwise someone busy last year but silent all quarter keeps a line, which
+    is the opposite of what the floor is for."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.set_min_closed(con, 1)
+    _, whole = _flow_rows(con, "throughput_per_person")
+    assert whole
+    urd.set_report_window(con, "2030-01-01")
+    assert _flow_rows(con, "throughput_per_person")[1] == []
+    urd.set_report_window(con, None)
+
+
+def test_a_zero_floor_is_rejected_rather_than_ignored():
+    """0 is falsy, so `args.min_closed or stored` handed it straight back to the
+    stored default and the validation never ran. The operator saw a clean report
+    and no complaint about a value that means nothing."""
+    db = _tmpdb()
+    con = urd.open_db(db)
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+                   earliest_since="2026-01-01")
+    con.close()
+    try:
+        urd.main(["--db", db, "report", "--min-closed", "0"])
+    except SystemExit as exc:
+        assert "min-closed" in str(exc), exc
+    else:
+        raise AssertionError("--min-closed 0 was accepted")
+
+
+def test_the_min_closed_floor_is_remembered_and_validated():
+    con = _derived("reopened", "two_sprints")
+    urd.set_min_closed(con, 3)
+    assert urd.stored_min_closed(con) == 3
+    for bad in ("many", -1, 0.5):
+        try:
+            urd.set_min_closed(con, bad)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{bad!r} was accepted as a floor")
+    urd.set_min_closed(con, 1)
+
+
 def test_the_per_person_chart_has_a_value_for_every_week():
     """A week in which someone closed nothing is zero closures, not an unknown.
     Encoding it as null made the two renderings of this chart disagree: the SVG
     joined straight across, implying steady output, while uPlot broke the line and
     scattered each person into dozens of fragments that read as several people."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.set_min_closed(con, 1)
     chart, rows = _flow_rows(con, "throughput_per_person")
     people = {r["person"] for r in rows}
     weeks = {r["week"] for r in rows}
@@ -3984,6 +4040,7 @@ def test_the_per_person_chart_is_one_chart_with_one_line_each():
     rule that survived is the one that mattered: no ranking. This asserts the
     shape, so a silent slide back to a sorted bar chart of people fails here."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.set_min_closed(con, 1)
     chart, rows = _flow_rows(con, "throughput_per_person")
     assert chart.kind == "multiline"
     payload = render.plot_payload(chart, rows)
@@ -4630,6 +4687,9 @@ def test_the_per_person_chart_is_not_a_ranking():
 
 def test_the_per_person_chart_draws_a_line_for_everyone():
     con = _derived("reopened", "skipped_progress", "two_sprints")
+    # The fixtures close one ticket per person, so the default floor of three
+    # would empty this chart. The floor has its own tests; this one is about lines.
+    urd.set_min_closed(con, 1)
     chart, rows = _flow_rows(con, "throughput_per_person")
     people = {r[chart.options["band"]] for r in rows}
     assert len(people) >= 2, "fixture has too few people to tell lines apart"
