@@ -393,12 +393,12 @@ def esc(text):
     return html.escape(str(text), quote=True)
 
 
-def coverage_strip(title, numerator, denominator, threshold):
+def coverage_strip(title, numerator, denominator, threshold, unit="tickets"):
     """Say why a chart is absent, rather than drawing a misleading short one."""
     share = 0 if not denominator else numerator / denominator
     return (
         f'<div class="warn"><strong>{esc(title)}</strong> not shown: '
-        f"{numerator} of {denominator} tickets carry the data it needs "
+        f"{numerator} of {denominator} {esc(unit)} carry the data it needs "
         f"({share:.0%}), below the {threshold:.0%} this chart requires.</div>"
     )
 

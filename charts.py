@@ -188,6 +188,40 @@ CHARTS = [
         """,
     ),
     Chart(
+        key="flow_per_sprint",
+        section="Flow health",
+        title="New, delivered and dropped per sprint",
+        kind="hbars",
+        caption="Every ticket mutation attributed to the sprint that was running "
+                "when it happened, rather than to a calendar week. Sprints vary "
+                "from three to twenty days here, so read these as totals for a "
+                "sprint and not as rates.",
+        options={"labels": "sprint", "series": ["arrived", "delivered", "dropped"],
+                 # Coverage counts mutations here, not tickets: "of 22347 tickets"
+                 # would be a false sentence about a project with 1151 of them.
+                 "unit": "mutations"},
+        # Sprint totals, not per-day rates: the lengths genuinely differ, and
+        # dividing would invent a precision the sprint boundaries do not have.
+        sql="""
+            SELECT ms.sprint_name AS sprint,
+                   count(*) FILTER (WHERE ms.kind = 'created') AS arrived,
+                   count(*) FILTER (WHERE c.key IS NOT NULL AND NOT c.abandoned) AS delivered,
+                   count(*) FILTER (WHERE c.key IS NOT NULL AND c.abandoned) AS dropped
+            FROM mutation_sprint ms
+            LEFT JOIN closures c
+                   ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
+            WHERE in_window(ms.ts)
+            GROUP BY 1, ms.sprint_start
+            ORDER BY ms.sprint_start DESC
+        """,
+        # Two thirds attribute; the rest fall between sprints or inside two with
+        # the ticket in neither. Stated rather than implied.
+        coverage="""
+            SELECT (SELECT count(*) FROM mutation_sprint WHERE in_window(ts)),
+                   (SELECT count(*) FROM mutations WHERE in_window(ts))
+        """,
+    ),
+    Chart(
         key="cfd",
         section="Flow health",
         title="Cumulative flow",

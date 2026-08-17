@@ -671,6 +671,56 @@ def derive_changes(con):
     return len(rows)
 
 
+# Attribute a ticket mutation to the sprint that was RUNNING when it happened,
+# rather than to a calendar week or to the ticket's own sprint. Two steps, and
+# nothing is guessed:
+#
+#   1. If the ticket belongs to exactly one of the sprints running at that
+#      moment, that is the one. On the first real project this settles 56% of the
+#      ambiguous cases, which exist because two boards (a team's and a
+#      neighbouring one's) run parallel sprints over the same fortnight.
+#   2. Otherwise, if exactly one sprint was running, that is the one.
+#   3. Otherwise the mutation is unattributed. Two sprints running and the ticket
+#      in neither has no answer, and picking one would put work in a sprint it had
+#      nothing to do with.
+#
+# About two thirds of mutations attribute, so anything built on this carries a
+# coverage query rather than implying it covers everything.
+MUTATION_SPRINT_SQL = """
+WITH cand AS (
+    SELECT m.key, m.ts, m.kind, s.sprint_id, s.sprint_name, s.start,
+           (mem.key IS NOT NULL) AS member
+    FROM mutations m
+    JOIN sprint_windows s ON m.ts >= s.start AND m.ts < s."end"
+    LEFT JOIN (SELECT DISTINCT key, sprint_id FROM issue_sprints) mem
+           ON mem.key = m.key AND mem.sprint_id = s.sprint_id
+),
+ranked AS (
+    SELECT *, count(*) OVER w AS candidates,
+              count(*) FILTER (WHERE member) OVER w AS members
+    FROM cand WINDOW w AS (PARTITION BY key, ts, kind)
+)
+SELECT key, ts, kind, sprint_id, sprint_name, start AS sprint_start
+FROM ranked
+WHERE (members = 1 AND member) OR (members = 0 AND candidates = 1)
+"""
+
+VIEWS_SPRINT_ATTRIBUTION = f"""
+CREATE OR REPLACE VIEW sprint_windows AS
+-- DISTINCT because issue_sprints holds one row per membership, not per sprint.
+SELECT DISTINCT sprint_id, sprint_name, start, "end" FROM issue_sprints
+WHERE start IS NOT NULL AND "end" IS NOT NULL;
+
+CREATE OR REPLACE VIEW mutations AS
+-- Every change to a ticket, plus its creation, which is a mutation the changelog
+-- does not record.
+SELECT key, created AS ts, 'created' AS kind FROM issues
+UNION ALL
+SELECT key, ts, field AS kind FROM changes;
+
+CREATE OR REPLACE VIEW mutation_sprint AS {MUTATION_SPRINT_SQL};
+"""
+
 VIEWS_METRICS = """
 CREATE OR REPLACE VIEW closures AS
 -- `abandoned` separates a ticket that was dropped from one that shipped. Both
@@ -884,6 +934,7 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
     changes = derive_changes(con)
     sprints = derive_sprints(con)
     con.execute(VIEWS_METRICS)
+    con.execute(VIEWS_SPRINT_ATTRIBUTION)
 
     print(f"derived {issues} issues, {changes} changes, {sprints} sprint memberships")
     unknown = con.execute(
@@ -967,8 +1018,10 @@ def run_chart(con, chart, tiers=None):
         share = 0 if not denominator else numerator / denominator
         limit = tiers[chart.tier]
         if share < limit:
-            return render.coverage_strip(chart.title, numerator, denominator, limit)
-        subtitle += f" ({numerator} of {denominator} tickets)"
+            return render.coverage_strip(chart.title, numerator, denominator, limit,
+                                         unit=chart.options.get("unit", "tickets"))
+        subtitle += (f" ({numerator} of {denominator} "
+                     f"{chart.options.get('unit', 'tickets')})")
     cursor = con.execute(chart.sql)
     columns = [d[0] for d in cursor.description]
     rows = [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]

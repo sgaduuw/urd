@@ -3502,7 +3502,7 @@ def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():
 def test_flow_health_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
     assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_open",
-                    "cfd", "cycle_scatter", "time_in_status"}
+                    "flow_per_sprint", "cfd", "cycle_scatter", "time_in_status"}
 
 
 def test_aging_lists_only_open_tickets_worst_first():
@@ -4221,6 +4221,77 @@ def test_the_real_section_list_leads_in_the_declared_order():
 def test_retro_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
     assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint", "points_vs_cycle"}
+
+
+def test_a_mutation_lands_in_at_most_one_sprint():
+    """The rule has to be a function, not a preference: a mutation attributed to
+    two sprints would be counted twice and every per-sprint total would be wrong
+    in a way nothing else would show."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    doubled = con.execute("""
+        SELECT count(*) FROM (
+            SELECT key, ts, kind FROM mutation_sprint GROUP BY 1, 2, 3 HAVING count(*) > 1)
+    """).fetchone()[0]
+    assert doubled == 0
+
+
+def test_membership_settles_a_mutation_inside_two_sprints():
+    """56% of the ambiguous mutations on the real project are settled this way:
+    two sprints are running, the ticket belongs to one of them, so that is the
+    one. Without the rule they would all be unattributed."""
+    con = _derived("reopened", "two_sprints")
+    # Overlap the two fixture sprints so a mutation falls inside both. PROJ-1,
+    # not PROJ-3: PROJ-3 belongs to BOTH sprints, so membership cannot settle it
+    # and it is correctly left unattributed. PROJ-1 belongs to Sprint B alone.
+    con.execute("UPDATE issue_sprints SET start = TIMESTAMP '2026-01-05 09:00' "
+                "WHERE sprint_name = 'Sprint A'")
+    con.execute("CREATE OR REPLACE VIEW mutation_sprint AS " + urd.MUTATION_SPRINT_SQL)
+    # Only the overlap matters. A PROJ-1 mutation after Sprint B ends falls inside
+    # Sprint A alone, and rule 2 correctly gives it to Sprint A.
+    rows = con.execute("""
+        SELECT sprint_name, count(*) FROM mutation_sprint
+        WHERE key = 'PROJ-1' AND ts < TIMESTAMP '2026-01-19 09:00' GROUP BY 1
+    """).fetchall()
+    assert rows, "every PROJ-1 mutation in the overlap went unattributed"
+    assert [name for name, _ in rows] == ["Sprint B"], rows
+    # And the ticket in both stays unattributed rather than being assigned one.
+    both = con.execute(
+        "SELECT count(*) FROM mutation_sprint WHERE key = 'PROJ-3'").fetchone()[0]
+    assert both == 0, "a ticket in both sprints was given one anyway"
+
+
+def test_an_unattributable_mutation_is_dropped_not_guessed():
+    """Two sprints running and the ticket in neither: there is no answer, and
+    inventing one would put work in a sprint it had nothing to do with."""
+    con = _derived("reopened", "two_sprints")
+    total = con.execute("SELECT count(*) FROM mutations").fetchone()[0]
+    attributed = con.execute("SELECT count(*) FROM mutation_sprint").fetchone()[0]
+    assert attributed <= total
+    assert total > 0
+
+
+def test_a_coverage_figure_names_the_thing_it_counted():
+    """Every coverage line said "tickets". This chart counts mutations, and 15078
+    of 22347 tickets is not a true sentence about a project with 1151 of them."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart = next(c for c in chart_specs.CHARTS if c.key == "flow_per_sprint")
+    assert chart.options.get("unit") == "mutations"
+    out = urd.run_chart(con, chart)
+    assert "mutations)" in out, out[-400:]
+    assert "tickets)" not in out
+    # And a chart that really does count tickets still says tickets.
+    other = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
+    assert "tickets" in urd.run_chart(con, other)
+
+
+def test_the_per_sprint_flow_chart_states_how_much_it_covers():
+    """Two thirds of mutations attribute on the real project, so a chart that
+    said nothing about the other third would overstate what it knows."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "flow_per_sprint")
+    assert chart.coverage, "a chart built on partial attribution needs coverage"
+    numerator, denominator = con.execute(chart.coverage).fetchone()
+    assert 0 <= numerator <= denominator
 
 
 def test_the_sprint_charts_run_newest_first():

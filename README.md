@@ -74,6 +74,8 @@ everything already held is left alone.
   week noise hides the direction.
 - Open tickets over time: what the gap between the two adds up to, counted from
   the status history rather than created minus closed.
+- New, delivered and dropped per sprint: every mutation attributed to the sprint
+  that was running when it happened, rather than to a calendar week.
 - Cumulative flow: tickets per status, sampled once a week. A widening band is a queue.
 - Cycle time: one point per closed ticket. The 85th percentile is the number you can promise, the median is the one you'll be asked for.
 - Median days in status, by issue type: where the weeks actually go, review queues show up here first.
@@ -236,6 +238,26 @@ Exemptions live in `WINDOW_EXEMPT` in `charts.py` and the header reads them, so 
 report never claims a coverage it does not have. A test checks the two agree in
 both directions, so a chart cannot quietly stop obeying the flag, and an
 exemption cannot outlive the chart it names.
+
+## Attributing work to sprints
+
+Most charts bucket by calendar week. One buckets by sprint, attributing each
+ticket mutation to the sprint that was *running* when it happened rather than to
+the ticket's own sprint membership. Two steps, and nothing is guessed:
+
+1. If the ticket belongs to exactly one sprint running at that moment, that one.
+2. Otherwise, if exactly one sprint was running, that one.
+3. Otherwise unattributed.
+
+Step 1 exists because parallel boards run sprints over the same fortnight: on one
+real project it settles 56% of the otherwise ambiguous cases. Step 3 exists
+because two sprints running with the ticket in neither has no answer, and picking
+one would put work in a sprint it had nothing to do with.
+
+About two thirds attribute, so that chart carries a coverage figure counted in
+mutations rather than tickets. Sprint lengths vary from three to twenty days on
+real data, so its bars are sprint totals and not rates; dividing by length would
+invent a precision the boundaries do not have.
 
 ## Coverage figures
 
