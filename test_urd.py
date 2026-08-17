@@ -3457,35 +3457,88 @@ def test_the_cumulative_flow_reaches_the_same_horizon():
     assert sum(r["tickets"] for r in flow if r["day"] == newest) == total
 
 
-def test_the_net_flow_chart_puts_the_gap_on_one_side_of_zero():
-    """Three lines leave the reader to add two of them and eyeball a gap. This is
-    the same numbers as one series against a zero baseline: above the line, work is
-    arriving faster than it leaves."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    chart, rows = _flow_rows(con, "net_flow")
-    assert chart.kind == "bars", "a zero baseline is what makes the sign readable"
-    assert chart.options["series"] == ["net_trend"]
-    assert rows and all(r["net_trend"] is not None for r in rows)
+def _combo_rows(n=12):
+    return [{"week": f"2026-{1 + i % 12:02d}-{1 + i % 28:02d}",
+             "new_trend": 10 + i % 5, "done_trend": 4 + i % 3,
+             "dropped_trend": i % 2, "net_trend": (i % 9) - 3} for i in range(n)]
 
 
-def test_net_flow_agrees_with_the_trend_chart_it_summarises():
-    """It must be arriving minus everything that leaves, delivered and dropped
-    both. Subtracting delivered alone would overstate the gap, which is the error
-    the dropped line was added to the trend chart to fix."""
+def test_combo_draws_bars_and_lines_on_one_scale():
+    """The point of combining them: the bars are the difference between the lines,
+    so they only mean anything measured against the same axis."""
+    out = render.combo(_combo_rows(), x="week",
+                       series=["net_trend", "new_trend", "done_trend", "dropped_trend"],
+                       bars=["net_trend"])
+    assert out.count("<rect") >= 12, "no bars drawn"
+    assert out.count("<path") >= 3, "no lines drawn"
+    assert out.count("<svg") == 1, "one chart, one scale"
+    _assert_content_within_viewbox(out, "combo")
+
+
+def test_combo_keeps_a_zero_baseline_when_values_straddle_it():
+    """A signed series is only readable against zero, and a shared axis must not
+    float away from it just because the lines are all positive."""
+    out = render.combo(_combo_rows(), x="week", series=["net_trend", "new_trend"],
+                       bars=["net_trend"])
+    # zero_floor puts zero inside the domain; it does not promise a tick label
+    # exactly on it, and the baseline is what a reader reads a sign against. So
+    # this checks the domain spans zero and the bars pivot on the drawn baseline.
+    assert "axis-line" in out
+    ticks = [float(t) for t in re.findall(r'class="tick"[^>]*>(-?[\d.]+)</text>', out)]
+    assert min(ticks) <= 0 <= max(ticks), ticks
+    # y1 precedes class in the emitted markup, and there are two axis lines now:
+    # the one axes() puts at the plot bottom and the zero rule this chart adds.
+    baselines = [float(v) for v in re.findall(
+        r'<line[^>]*y1="([-\d.]+)"[^>]*class="axis-line"', out)]
+    assert len(baselines) == 2, baselines
+    baseline = min(baselines)
+    tops = [float(y) for y in re.findall(
+        r'<rect class="bar"[^>]*(?<![a-z])y="([-\d.]+)"', out)]
+    assert min(tops) <= baseline <= max(tops) + 0.01, (baseline, min(tops), max(tops))
+
+
+def test_combo_draws_its_bars_behind_its_lines():
+    """Otherwise the bars hide the lines they are derived from."""
+    out = render.combo(_combo_rows(), x="week", series=["net_trend", "new_trend"],
+                       bars=["net_trend"])
+    assert out.index("<rect") < out.index("<path"), "bars must come first in document order"
+
+
+def test_combo_stays_in_frame_across_counts():
+    for n in (1, 5, 32, 125):
+        _assert_content_within_viewbox(
+            render.combo(_combo_rows(n), x="week",
+                         series=["net_trend", "new_trend"], bars=["net_trend"]),
+            f"combo n={n}")
+
+
+def test_the_combined_chart_carries_a_type_per_series():
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    _, net = _flow_rows(con, "net_flow")
-    _, trend = _flow_rows(con, "flow_trend")
-    by_week = {r["week"]: r for r in trend}
-    checked = 0
-    for row in net:
-        other = by_week.get(row["week"])
-        if other is None:
-            continue
-        expected = (other["new_trend"] or 0) - (other["done_trend"] or 0) \
-            - (other["dropped_trend"] or 0)
-        assert abs(row["net_trend"] - expected) < 0.15, (row, other, expected)
-        checked += 1
-    assert checked, "the two charts share no weeks, so this compared nothing"
+    chart, rows = _flow_rows(con, "flow_trend")
+    assert chart.kind == "combo"
+    assert chart.options["bars"] == ["net_trend"]
+    payload = render.plot_payload(chart, rows)
+    kinds = {s["label"]: s["type"] for s in payload["series"]}
+    assert kinds["net_trend"] == "bars"
+    assert kinds["new_trend"] == "line"
+
+
+def test_the_separate_net_chart_is_gone():
+    """Combined, not duplicated: the same numbers on two charts is how they drift."""
+    assert "net_flow" not in {c.key for c in chart_specs.CHARTS}
+
+
+def test_the_net_bars_reconcile_with_the_lines_beside_them():
+    """The bars sit on the same axis as the lines and claim to be their difference,
+    so they have to actually be it, row by row. Subtracting delivered alone would
+    overstate the gap, which is the error the dropped line was added to fix."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "flow_trend")
+    assert rows
+    for row in rows:
+        expected = (row["new_trend"] or 0) - (row["done_trend"] or 0) \
+            - (row["dropped_trend"] or 0)
+        assert abs(row["net_trend"] - expected) < 0.05, row
 
 
 def test_a_bar_chart_draws_negative_values_below_the_baseline():
@@ -3502,7 +3555,8 @@ def test_a_bar_chart_draws_negative_values_below_the_baseline():
 def test_the_trend_chart_smooths_both_series_over_four_weeks():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "flow_trend")
-    assert chart.options["series"] == ["new_trend", "done_trend", "dropped_trend"]
+    assert chart.options["series"] == [
+        "net_trend", "new_trend", "done_trend", "dropped_trend"]
     assert rows, "no weeks at all"
     weeks = [r["week"] for r in rows]
     assert weeks == sorted(weeks)
@@ -3545,9 +3599,8 @@ def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():
 
 def test_flow_health_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
-    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_flow",
-                    "net_open", "flow_per_sprint", "cfd", "cycle_scatter",
-                    "time_in_status"}
+    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_open",
+                    "flow_per_sprint", "cfd", "cycle_scatter", "time_in_status"}
 
 
 def test_aging_lists_only_open_tickets_worst_first():
@@ -4243,7 +4296,7 @@ def test_interactivity_is_declared_on_plot_kinds_only():
     Interactivity is a fix for density, not a badge every chart collects."""
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
-            assert chart.kind in ("lines", "scatter", "stacked", "bars",
+            assert chart.kind in ("lines", "scatter", "stacked", "bars", "combo",
                                   "multiline", "small_multiples"), f"{chart.key}: {chart.kind}"
 
 

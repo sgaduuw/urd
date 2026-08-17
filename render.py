@@ -303,6 +303,10 @@ PLOT_SCRIPT = """
     }
     var scatter = spec.kind === 'scatter';
     var stacked = spec.kind === 'stacked';
+    /* combo carries a type per series, so bar-ness is decided per series rather
+       than per chart. uPlot reads series.paths individually, which is exactly what
+       lets one series be a bar column and its neighbour a line. */
+    var combo = spec.kind === 'combo';
     var bars = spec.kind === 'bars';
     var facets = spec.kind === 'small_multiples';
     var labels = spec.labels || [];
@@ -315,6 +319,7 @@ PLOT_SCRIPT = """
     }];
     spec.series.forEach(function (s) {
       var colour = token('--s' + (s.slot || 1), '#2a78d6');
+      var asBar = bars || (combo && s.type === 'bars');
       series.push({
         label: s.label,
         stroke: colour,
@@ -322,9 +327,12 @@ PLOT_SCRIPT = """
         /* Opaque, like the SVG. A stack paints smaller bands over larger ones,
            so any alpha lets every band underneath show through and each one
            renders as a blend of itself and all its predecessors. */
-        fill: (stacked || bars) ? colour : null,
-        paths: bars ? uPlot.paths.bars({ size: [0.85, 40] }) : null,
-        points: { show: !stacked && !bars, size: scatter ? 5 : 4,
+        fill: (stacked || asBar) ? colour : null,
+        /* Translucent only where bars sit behind lines, so the lines stay legible
+           through them. A bars-only chart keeps its solid fill. */
+        fillAlpha: (combo && asBar) ? 0.55 : 1,
+        paths: asBar ? uPlot.paths.bars({ size: [0.7, 40] }) : null,
+        points: { show: !stacked && !asBar, size: scatter ? 5 : 4,
                   stroke: colour, fill: colour },
         /* The drawn value is the running total; the band's own number is what a
            reader wants. This reads it out of the payload rather than
@@ -1035,6 +1043,95 @@ def multiline(rows, x, band, value):
     return lines(wide, x, [b for b in bands if b is not None])
 
 
+def combo(rows, x, series, bars=()):
+    """Bars and lines on one chart and one y-scale.
+
+    Exists because a signed series and the series it is derived from only mean
+    anything measured against each other: net weekly change IS arriving minus
+    everything leaving, so putting it on its own chart asks the reader to hold two
+    axes in their head. Same units, so one axis is honest.
+
+    `bars` names which of `series` draw as bars; the rest are lines. Bars are
+    emitted first so the lines they are derived from sit on top of them.
+
+    zero_floor is on, because a bar means nothing except as a distance from zero
+    and a signed series is unreadable if the axis floats above it.
+    """
+    if not rows:
+        return '<p class="empty">no data</p>'
+
+    width, height = 480, 260
+    bar_names = [n for n in series if n in set(bars)]
+    line_names = [n for n in series if n not in set(bars)]
+    slot_of = {name: _slot(i) for i, name in enumerate(series)}
+
+    markup, sx, sy = axes(rows, x, series, width, height, zero_floor=True)
+    legend, legend_h = _legend(series, height + 4, width)
+
+    # Derived from the scale, not guessed from the width: the y-axis gutter is
+    # sized from the tick labels, so (width - 60) was wrong by however wide those
+    # turned out to be, and the outermost bars hung past the frame.
+    positions = [px for px in (sx(r.get(x)) for r in rows) if px is not None]
+    if not positions:
+        return '<p class="empty">no data</p>'
+    left, right = min(positions), max(positions)
+    spacing = (right - left) / (len(positions) - 1) if len(positions) > 1 else width / 3
+    bar_w = max(min(spacing * 0.7, 40), 1)
+    parts = [markup]
+
+    zero = sy(0)
+    # axes() draws its baseline at the plot bottom, which is not where zero is once
+    # a series goes negative. A signed bar chart without a visible zero has nothing
+    # to read the sign against, so draw one.
+    lows = [v for row in rows for name in bar_names
+            for v in (_num(row.get(name)),) if v is not None and v < 0]
+    if lows:
+        parts.append(
+            f'<line x1="{left:.1f}" y1="{zero:.1f}" x2="{right:.1f}" y2="{zero:.1f}" '
+            f'class="axis-line" />'
+        )
+    for name in bar_names:
+        for row in rows:
+            v = _num(row.get(name))
+            if v is None:
+                continue
+            top = sy(v)
+            # Signed: a negative bar hangs below the baseline rather than being a
+            # short positive one, which is the whole reason this is bars.
+            y0, h = (top, zero - top) if v >= 0 else (zero, top - zero)
+            cx = sx(row.get(x))
+            if cx is None:
+                continue
+            # A bar centred on the first or last category is centred on the plot's
+            # own edge, so half of it leaves the frame. Same fix as the tick labels.
+            bx = min(max(cx - bar_w / 2, left), max(right - bar_w, left))
+            parts.append(
+                f'<rect class="bar" x="{bx:.1f}" y="{y0:.1f}" '
+                f'width="{bar_w:.1f}" height="{max(h, 0):.1f}" rx="2" '
+                f'fill="{slot_of[name]}" fill-opacity="0.55">'
+                f"<title>{esc(name)}: {esc(_fmt_num(v))}</title></rect>"
+            )
+
+    for name in line_names:
+        points = []
+        for row in rows:
+            v = _num(row.get(name))
+            cx = sx(row.get(x))
+            if v is None or cx is None:
+                continue
+            points.append(f"{cx:.1f},{sy(v):.1f}")
+        if not points:
+            continue
+        parts.append(
+            f'<path d="M{" L".join(points)}" fill="none" stroke="{slot_of[name]}" '
+            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            f"<title>{esc(name)}</title></path>"
+        )
+
+    title = f'<title>{esc(", ".join(series))} over {esc(x)}</title>'
+    return svg(width, height + legend_h, title + "".join(parts) + legend)
+
+
 def stacked(rows, x, band, value):
     """Stacked bar chart from long-format rows: one bar per distinct `x`,
     split into segments named by `band`, each segment's height proportional
@@ -1472,7 +1569,7 @@ def small_multiples(groups, x, y, share_y=True, heading=None):
 
 FIGURE_KINDS = frozenset(
     {"table", "matrix", "lines", "stacked", "scatter", "bars", "hbars",
-     "multiline", "small_multiples"}
+     "combo", "multiline", "small_multiples"}
 )
 
 
@@ -1496,6 +1593,15 @@ def plot_payload(chart, rows):
     o = chart.options
     if chart.kind == "bars":
         return _bars_payload(o, rows)
+    if chart.kind == "combo":
+        payload = _lines_payload(o, rows, x_key=o["x"])
+        if payload is None:
+            return None
+        as_bars = set(o.get("bars", ()))
+        for entry in payload["series"]:
+            entry["type"] = "bars" if entry["label"] in as_bars else "line"
+        payload["kind"] = "combo"
+        return payload
     if chart.kind == "small_multiples":
         return _facets_payload(o, rows)
     if chart.kind == "multiline":
@@ -1523,6 +1629,25 @@ def plot_payload(chart, rows):
         "xLabel": x_key,
         "series": [{"label": n, "slot": i % len(PALETTE) + 1,
                     "data": [_num(r.get(n)) for r in rows]} for i, n in enumerate(names)],
+    }
+
+
+def _lines_payload(o, rows, x_key):
+    """The lines-shaped payload, reused by combo so the two cannot drift."""
+    xs = [r.get(x_key) for r in rows]
+    stamps = [_epoch(v) for v in xs]
+    is_time = bool(stamps) and all(t is not None for t in stamps)
+    axis = stamps if is_time else [_num(v) for v in xs]
+    if any(v is None for v in axis):
+        return None
+    return {
+        "kind": "lines",
+        "time": is_time,
+        "x": axis,
+        "xLabel": x_key,
+        "series": [{"label": n, "slot": i % len(PALETTE) + 1,
+                    "data": [_num(r.get(n)) for r in rows]}
+                   for i, n in enumerate(o["series"])],
     }
 
 
@@ -1675,6 +1800,8 @@ def figure(chart, rows, subtitle, con, link_base=None):
         body = hbars(rows, o["labels"], o["series"])
     elif chart.kind == "multiline":
         body = multiline(rows, o["x"], o["band"], o["value"])
+    elif chart.kind == "combo":
+        body = combo(rows, o["x"], o["series"], bars=o.get("bars", ()))
     elif chart.kind == "small_multiples":
         # The primitive takes facet title -> rows; a spec only names the column to
         # facet on, so the grouping happens here rather than in every spec's SQL.

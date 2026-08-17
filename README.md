@@ -70,10 +70,9 @@ everything already held is left alone.
 - Aging work in progress: open tickets by days in their current status, the chart that changes what you do today, with each ticket's title beside its key.
 - Created versus closed per week: where created and delivered diverge, the
   backlog is growing. Dropped work is a third line, counted separately.
-- New versus done, four week trend: the same counts smoothed, because week to
-  week noise hides the direction.
-- Net weekly change, four week average: arriving minus everything that leaves,
-  as bars around zero. Above the line the backlog grew that week.
+- New versus done, four week trend: the same counts smoothed, with net weekly
+  change as bars on the same axis. Above zero the backlog grew that week.
+
 - Open tickets over time: what the gap between the two adds up to, counted from
   the status history rather than created minus closed.
 - New, delivered and dropped per sprint: every mutation attributed to the sprint
