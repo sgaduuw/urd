@@ -213,6 +213,30 @@ no choice. The test that enforces this strips anchors and then applies every
 pattern to what remains, and a companion test checks that the strip has not
 blinded it.
 
+## Leaving epics out
+
+A trash-bin epic with a hundred abandoned children skews every total it appears
+in, and nothing in the data distinguishes it from a real one:
+
+```
+uv run --with duckdb python urd.py report --exclude-epic PROJ-1 --exclude-epic PROJ-2
+```
+
+Repeatable, remembered between runs, and `--exclude-epic ""` clears the list. The
+epic and every ticket parented to it disappear from every chart, and the header
+names what was left out, because a report with an epic removed and one without
+look identical and say different things about every total.
+
+The filter lives in the `issues`, `changes` and `issue_sprints` views rather than
+in each query, so a chart added later inherits it and no chart can forget it. The
+base tables keep an `_all` suffix and nothing outside `derive` touches them.
+Filtering `issues` alone would be worse than not filtering: closures and durations
+come from `changes`, so an excluded ticket would vanish from every ticket-based
+chart while still driving every event-based one.
+
+A database built before this existed has those three as tables, and `derive`
+converts them on the next run.
+
 ## Reporting on a period
 
 `sync --since` decides what is fetched. `report --since` decides what the charts

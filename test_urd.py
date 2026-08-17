@@ -422,9 +422,11 @@ def test_main_derive_uses_stored_config_when_no_arguments():
         ]
     )
 
-    # Between calls, drop the changes table to prove the second call rebuilds it
+    # Between calls, drop the base table to prove the second call rebuilds it.
+    # changes_all, not changes: the latter is the scope-filtered view over it.
     con = urd.open_db(db)
-    con.execute("DROP TABLE changes")
+    con.execute("DROP VIEW IF EXISTS changes")
+    con.execute("DROP TABLE changes_all")
     con.close()
 
     # Second call with no flags should reuse stored config and rebuild changes table
@@ -3741,7 +3743,7 @@ def test_figure_refuses_a_kind_no_renderer_handles():
 def _header(**over):
     base = {"project": "PROJ", "component": "TEAM", "since": "2026-01-01",
             "synced": "2026-08-13T17:00:00", "errors": 0, "issues": 41,
-            "window": None, "exempt": []}
+            "window": None, "exempt": [], "excluded": []}
     return {**base, **over}
 
 
@@ -4157,7 +4159,8 @@ def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
     """No fixture ticket carries two versions, so the unnest this chart exists for
     is not exercised by the fixture data alone: one is given a second version here."""
     con = _derived("reopened", "two_sprints")
-    con.execute("UPDATE issues SET fix_versions = ['R1', 'R2'] WHERE key = 'PROJ-1'")
+    # issues is a view now; the base table is what a test can write to.
+    con.execute("UPDATE issues_all SET fix_versions = ['R1', 'R2'] WHERE key = 'PROJ-1'")
     _, rows = _flow_rows(con, "per_fix_version")
     counts = {r["fix_version"]: (r["delivered"], r["dropped"], r["open"]) for r in rows}
     # PROJ-1 is delivered and now in both; PROJ-3 is open and in R2 only.
@@ -4243,7 +4246,7 @@ def test_membership_settles_a_mutation_inside_two_sprints():
     # Overlap the two fixture sprints so a mutation falls inside both. PROJ-1,
     # not PROJ-3: PROJ-3 belongs to BOTH sprints, so membership cannot settle it
     # and it is correctly left unattributed. PROJ-1 belongs to Sprint B alone.
-    con.execute("UPDATE issue_sprints SET start = TIMESTAMP '2026-01-05 09:00' "
+    con.execute("UPDATE issue_sprints_all SET start = TIMESTAMP '2026-01-05 09:00' "
                 "WHERE sprint_name = 'Sprint A'")
     con.execute("CREATE OR REPLACE VIEW mutation_sprint AS " + urd.MUTATION_SPRINT_SQL)
     # Only the overlap matters. A PROJ-1 mutation after Sprint B ends falls inside
@@ -4316,7 +4319,7 @@ def test_rework_is_attributed_to_the_sprint_it_happened_in():
     apart. PROJ-1 gets a later second sprint here so the two models disagree."""
     con = _derived("reopened", "two_sprints")
     con.execute(
-        "INSERT INTO issue_sprints VALUES ('PROJ-1', 3, 'Sprint A', 'closed', "
+        "INSERT INTO issue_sprints_all VALUES ('PROJ-1', 3, 'Sprint A', 'closed', "
         "TIMESTAMP '2026-01-19 09:00', TIMESTAMP '2026-02-02 09:00', 2)")
     _, rows = _flow_rows(con, "rework_per_sprint")
     # The backward move is at 2026-01-09, inside Sprint B's window. Attributing to
@@ -4330,7 +4333,8 @@ def test_a_sprint_chart_with_no_sprints_says_so_rather_than_drawing_nothing():
     cannot distinguish that from "no rework", which is the opposite conclusion,
     and it is exactly what the coverage mechanism exists to prevent."""
     con = _derived("reopened", "two_sprints")
-    con.execute("DELETE FROM issue_sprints")
+    # issue_sprints is a filtered view now; the base table is what a test can empty.
+    con.execute("DELETE FROM issue_sprints_all")
     for key in ("rework_per_sprint", "carry_over"):
         chart = next(c for c in chart_specs.CHARTS if c.key == key)
         out = urd.run_chart(con, chart)
@@ -4355,6 +4359,69 @@ def test_cycle_per_sprint_keeps_tickets_that_closed_after_their_sprint_ended():
     _, rows = _flow_rows(con, "cycle_per_sprint")
     assert [r["sprint"] for r in rows] == ["Sprint B"]
     assert rows[0]["median_days"] > 0
+
+
+def test_derive_migrates_a_database_whose_issues_is_still_a_table():
+    """Every database built before the scope views has issues, changes and
+    issue_sprints as base tables, and CREATE OR REPLACE VIEW refuses to replace a
+    table. Without this, derive fails outright on any existing database, which is
+    every database anyone actually has."""
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, "reopened", "two_sprints")
+    scope = urd.load_scope(con)
+    urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"])
+    # Put it back the way an older version left it, then derive again.
+    con.execute("DROP VIEW issues")
+    con.execute("CREATE TABLE issues AS SELECT * FROM issues_all")
+    urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"])
+    kind = con.execute("SELECT table_type FROM information_schema.tables "
+                       "WHERE table_name = 'issues'").fetchone()[0]
+    assert kind == "VIEW", kind
+    assert con.execute("SELECT count(*) FROM issues").fetchone()[0] > 0
+
+
+def test_excluding_an_epic_removes_it_and_its_children():
+    """Filtered at the base tables rather than in each chart, so a chart added
+    later inherits it. PROJ-1 and PROJ-3 both hang off PROJ-100 in the fixtures."""
+    con = _derived("reopened", "two_sprints")
+    before = con.execute("SELECT count(*) FROM issues").fetchone()[0]
+    assert before >= 2
+    urd.set_excluded_epics(con, ["PROJ-100"])
+    assert con.execute("SELECT count(*) FROM issues").fetchone()[0] == 0
+    urd.set_excluded_epics(con, [])
+    assert con.execute("SELECT count(*) FROM issues").fetchone()[0] == before
+
+
+def test_excluding_an_epic_also_removes_its_history():
+    """Filtering issues alone is not enough: closures come from changes, so a
+    dropped ticket would keep contributing to every event-based chart while being
+    absent from every ticket-based one."""
+    con = _derived("reopened", "two_sprints")
+    assert con.execute("SELECT count(*) FROM changes").fetchone()[0] > 0
+    urd.set_excluded_epics(con, ["PROJ-100"])
+    for view in ("changes", "transitions", "closures", "status_durations",
+                 "cycle_times", "rework", "issue_sprints", "mutation_sprint"):
+        left = con.execute(f"SELECT count(*) FROM {view}").fetchone()[0]
+        assert left == 0, f"{view} still holds {left} rows for an excluded epic"
+    urd.set_excluded_epics(con, [])
+
+
+def test_an_excluded_epic_is_remembered_and_reported():
+    con = _derived("reopened", "two_sprints")
+    urd.set_excluded_epics(con, ["PROJ-100", "PROJ-200"])
+    assert urd.load_scope(con)["excluded_epics"] == "PROJ-100,PROJ-200"
+    assert urd.stored_excluded_epics(con) == ["PROJ-100", "PROJ-200"]
+    urd.set_excluded_epics(con, [])
+    assert urd.stored_excluded_epics(con) == []
+
+
+def test_the_page_names_the_epics_it_left_out():
+    """A report with a trash epic removed and one without look identical, and they
+    say different things about every total."""
+    html = render.page(_header(excluded=["PROJ-100"]), [])
+    assert "PROJ-100" in html
+    assert "excluded" in html.lower()
+    assert "excluded" not in render.page(_header(), []).lower()
 
 
 def test_every_chart_respects_the_report_window():

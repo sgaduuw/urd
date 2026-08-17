@@ -415,6 +415,11 @@ def page(header, sections):
     # later would otherwise leave this sentence quietly false, and a header that
     # overclaims is worse than one that says nothing, because a reader quotes the
     # exempt chart as if it covered the window too.
+    # Named, not merely counted: a report with a trash epic removed and one
+    # without look identical and say different things about every total.
+    left_out = header.get("excluded") or []
+    dropped = (f"<strong>Excluded: {esc(', '.join(left_out))}</strong>, with "
+               "everything under them. " if left_out else "")
     exempt = header.get("exempt") or []
     if not header.get("window"):
         window = ""
@@ -432,7 +437,8 @@ def page(header, sections):
         f"<title>{esc(scope)} flow report</title>"
         f"<style>{UPLOT_CSS}\n{CSS}</style></head><body>"
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
-        f"{esc(header['since'])}. Synced {esc(header['synced'])}. {window}{warn}</p></header>"
+        f"{esc(header['since'])}. Synced {esc(header['synced'])}. "
+        f"{dropped}{window}{warn}</p></header>"
         + body
         + f"<script>{UPLOT_JS}</script>"
         + f"<script>{SORT_SCRIPT}{PLOT_SCRIPT}</script></body></html>\n"

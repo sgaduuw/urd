@@ -188,6 +188,7 @@ SCOPE_COLUMNS = (
     "thresholds",
     "abandoned_status",
     "report_since",
+    "excluded_epics",
 )
 
 SCHEMA = """
@@ -201,7 +202,13 @@ CREATE TABLE IF NOT EXISTS sync_state (
     site VARCHAR, email VARCHAR, project VARCHAR, component VARCHAR,
     status_order VARCHAR, start_status VARCHAR, review_status VARCHAR,
     earliest_since VARCHAR, last_sync_at VARCHAR, fetched_fields VARCHAR,
-    thresholds VARCHAR, abandoned_status VARCHAR, report_since VARCHAR
+    thresholds VARCHAR, abandoned_status VARCHAR, report_since VARCHAR,
+    excluded_epics VARCHAR
+);
+CREATE TABLE IF NOT EXISTS excluded_epics (
+    -- Epics whose whole subtree is left out of the report. Set at report time, so
+    -- flipping it costs a report run rather than a re-derive.
+    key VARCHAR PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS report_window (
     -- One row. The date every chart measures from, as a real DATE so a typo is a
@@ -264,6 +271,30 @@ WINDOW_MACRO = (
 UNBOUNDED = "1900-01-01"
 
 
+def set_excluded_epics(con, keys):
+    """Leave an epic and everything under it out of every chart.
+
+    A trash-bin epic with a hundred abandoned children skews any total it appears
+    in, and there is no way to tell it from a real one in the data.
+    """
+    cleaned = [k.strip() for k in keys if k and k.strip()]
+    con.execute("DELETE FROM excluded_epics")
+    if cleaned:
+        con.executemany("INSERT INTO excluded_epics VALUES (?) ON CONFLICT DO NOTHING",
+                        [(k,) for k in cleaned])
+    # A direct UPDATE, not save_scope: that function skips None by design, so it
+    # can set a value and never clear one. Without this, removing the last
+    # exclusion would leave the stored list behind and the header would keep
+    # naming an epic that is back in the report.
+    con.execute("UPDATE sync_state SET excluded_epics = ?", [",".join(cleaned) or None])
+    return cleaned
+
+
+def stored_excluded_epics(con):
+    stored = load_scope(con)["excluded_epics"]
+    return [k for k in (stored or "").split(",") if k]
+
+
 def set_report_window(con, since):
     """Set the date every chart measures from. None means everything."""
     if since is not None:
@@ -274,7 +305,9 @@ def set_report_window(con, since):
     con.execute("DELETE FROM report_window")
     con.execute("INSERT INTO report_window VALUES (?)", [since or UNBOUNDED])
     con.execute(WINDOW_MACRO)
-    save_scope(con, report_since=since)
+    # Same reason as the exclusion list: clearing the window has to clear what the
+    # header reads, or a whole-history report keeps claiming a window.
+    con.execute("UPDATE sync_state SET report_since = ?", [since])
     return since
 
 
@@ -457,7 +490,7 @@ def _refresh_workflow_statuses(con, jira, project):
 
 
 ISSUES_SCHEMA = """
-CREATE OR REPLACE TABLE issues (
+CREATE OR REPLACE TABLE issues_all (
     key VARCHAR PRIMARY KEY, project VARCHAR, type VARCHAR, status VARCHAR,
     status_category VARCHAR, assignee_id VARCHAR, reporter_id VARCHAR,
     created TIMESTAMP, updated TIMESTAMP, resolved TIMESTAMP,
@@ -468,7 +501,7 @@ CREATE TABLE IF NOT EXISTS people (account_id VARCHAR PRIMARY KEY, display_name 
 """
 
 CHANGES_SCHEMA = """
-CREATE OR REPLACE TABLE changes (
+CREATE OR REPLACE TABLE changes_all (
     key VARCHAR, ts TIMESTAMP, field VARCHAR,
     from_id VARCHAR, from_str VARCHAR, to_id VARCHAR, to_str VARCHAR,
     author_id VARCHAR, history_id BIGINT
@@ -476,7 +509,7 @@ CREATE OR REPLACE TABLE changes (
 """
 
 SPRINTS_SCHEMA = """
-CREATE OR REPLACE TABLE issue_sprints (
+CREATE OR REPLACE TABLE issue_sprints_all (
     key VARCHAR, sprint_id BIGINT, sprint_name VARCHAR, state VARCHAR,
     start TIMESTAMP, "end" TIMESTAMP, ordinal INTEGER
 );
@@ -591,7 +624,7 @@ def derive_issues(con):
         )
 
     if rows:
-        con.executemany(f"INSERT INTO issues VALUES ({','.join(['?'] * 16)})", rows)
+        con.executemany(f"INSERT INTO issues_all VALUES ({','.join(['?'] * 16)})", rows)
     if people:
         # ponytail: last-writer wins on rename. For anyone who is both assignee and
         # changelog author, the author name wins because derive_changes runs after
@@ -605,6 +638,10 @@ def derive_issues(con):
     if points_field and rows:
         con.execute("UPDATE fields SET null_rate = ? WHERE id = ?",
                     [missing_points / len(rows), points_field])
+    # Created here so derive_issues is usable on its own, and again in derive()
+    # after the abandoned column is added: a SELECT * view does not pick up a
+    # column that appeared after it was defined.
+    con.execute(VIEWS_SCOPE_ISSUES)
     return len(rows)
 
 
@@ -633,7 +670,8 @@ def derive_sprints(con):
                 ]
             )
     if rows:
-        con.executemany(f"INSERT INTO issue_sprints VALUES ({','.join(['?'] * 7)})", rows)
+        con.executemany(f"INSERT INTO issue_sprints_all VALUES ({','.join(['?'] * 7)})", rows)
+    con.execute(VIEWS_SCOPE_SPRINTS)
     return len(rows)
 
 
@@ -661,12 +699,16 @@ def derive_changes(con):
                     ]
                 )
     if rows:
-        con.executemany(f"INSERT INTO changes VALUES ({','.join(['?'] * 9)})", rows)
+        con.executemany(f"INSERT INTO changes_all VALUES ({','.join(['?'] * 9)})", rows)
     if people:
         con.executemany(
             "INSERT INTO people VALUES (?, ?) "
             "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",
             list(people.items()))
+
+    # The scope view first: transitions reads `changes`, which is a view over
+    # changes_all and does not exist until this runs.
+    con.execute(VIEWS_SCOPE_CHANGES)
     con.execute(VIEWS_CHANGES)
     return len(rows)
 
@@ -703,6 +745,40 @@ ranked AS (
 SELECT key, ts, kind, sprint_id, sprint_name, start AS sprint_start
 FROM ranked
 WHERE (members = 1 AND member) OR (members = 0 AND candidates = 1)
+"""
+
+# Every chart reads issues, changes and issue_sprints. Filtering there rather
+# than in nineteen queries means a chart added later inherits the exclusion, and
+# there is no chart that can forget it. The base tables keep an _all suffix and
+# nothing outside derive touches them.
+#
+# Filtering `issues` alone would be worse than not filtering: closures and
+# durations come from `changes`, so an excluded ticket would vanish from every
+# ticket-based chart while still driving every event-based one.
+# Split so each derive_* function can create the views over its own table and
+# stay self-sufficient. Doing it all at the end of derive() looked tidier and
+# broke thirteen tests that call derive_changes on its own and then read
+# status_durations, which is the contract those functions have always had.
+VIEWS_SCOPE_ISSUES = """
+CREATE OR REPLACE VIEW excluded_tickets AS
+-- The epics themselves and everything parented to them. Reads issues_all, since
+-- `issues` is the view this feeds.
+SELECT key FROM excluded_epics
+UNION
+SELECT i.key FROM issues_all i JOIN excluded_epics e ON i.parent = e.key;
+
+CREATE OR REPLACE VIEW issues AS
+SELECT * FROM issues_all WHERE key NOT IN (SELECT key FROM excluded_tickets);
+"""
+
+VIEWS_SCOPE_CHANGES = """
+CREATE OR REPLACE VIEW changes AS
+SELECT * FROM changes_all WHERE key NOT IN (SELECT key FROM excluded_tickets);
+"""
+
+VIEWS_SCOPE_SPRINTS = """
+CREATE OR REPLACE VIEW issue_sprints AS
+SELECT * FROM issue_sprints_all WHERE key NOT IN (SELECT key FROM excluded_tickets);
 """
 
 VIEWS_SPRINT_ATTRIBUTION = f"""
@@ -862,6 +938,24 @@ def format_statuses(rows):
     return "\n".join(out)
 
 
+# issues, changes and issue_sprints were base tables before they became
+# scope-filtered views over an _all table. CREATE OR REPLACE VIEW will not replace
+# a table, so without this derive fails outright on any database built by an
+# earlier version, which is every database anyone actually has. Dropping is safe:
+# derive rebuilds all three from raw_issues on the same run.
+_SCOPE_VIEWS = ("issues", "changes", "issue_sprints")
+
+
+def _migrate_scope_views(con):
+    legacy = [r[0] for r in con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_type = 'BASE TABLE' AND table_name IN "
+        f"({', '.join(repr(v) for v in _SCOPE_VIEWS)})").fetchall()]
+    for name in legacy:
+        con.execute(f"DROP TABLE {name}")
+    return legacy
+
+
 def derive(con, status_order, start_status, review_status, abandoned_status=None):
     """Rebuild the derived tables and views from raw_issues.
 
@@ -923,14 +1017,16 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
         [(s, i) for i, s in enumerate(statuses)],
     )
 
+    _migrate_scope_views(con)
     issues = derive_issues(con)
     # Current-state twin of closures.abandoned, for the charts that ask
     # `status_category = 'done'` rather than counting closure events. Added here
     # rather than in ISSUES_SCHEMA so the insert keeps its positional column
     # list; CREATE OR REPLACE drops it again on every derive anyway.
-    con.execute("ALTER TABLE issues ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
+    con.execute("ALTER TABLE issues_all ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
     con.execute(
-        "UPDATE issues SET abandoned = status IN (SELECT status FROM abandoned_status)")
+        "UPDATE issues_all SET abandoned = status IN (SELECT status FROM abandoned_status)")
+    con.execute(VIEWS_SCOPE_ISSUES)
     changes = derive_changes(con)
     sprints = derive_sprints(con)
     con.execute(VIEWS_METRICS)
@@ -959,6 +1055,7 @@ def report(con, path="report.html", tiers=None):
         "since": scope["earliest_since"] or "unknown",
         "synced": scope["last_sync_at"] or "never",
         "window": scope["report_since"],
+        "excluded": stored_excluded_epics(con),
         "exempt": [c.title for c in chart_specs.CHARTS
                    if c.key in chart_specs.WINDOW_EXEMPT],
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
@@ -1070,6 +1167,10 @@ def main(argv=None):
         help="minimum coverage before a chart is replaced by a strip, e.g. "
              "points=0.4. Repeatable, remembered between runs.")
     p_report.add_argument(
+        "--exclude-epic", action="append", metavar="KEY",
+        help="leave this epic and every ticket under it out of every chart. "
+             "Repeatable, remembered between runs; pass an empty value to clear.")
+    p_report.add_argument(
         "--since", metavar="YYYY-MM-DD",
         help="the date every chart measures from. Remembered between runs; "
              "pass 1900-01-01 to go back to everything.")
@@ -1113,6 +1214,12 @@ def main(argv=None):
     if args.verb == "report":
         scope = load_scope(con)
         set_report_window(con, args.since or scope["report_since"])
+        # An empty --exclude-epic clears the list, which is why this is not just
+        # `args.exclude_epic or stored`: passing "" has to mean something.
+        if args.exclude_epic is not None:
+            set_excluded_epics(con, args.exclude_epic)
+        else:
+            set_excluded_epics(con, stored_excluded_epics(con))
         tiers = parse_thresholds(args.threshold, base=stored_thresholds(con))
         save_scope(con, thresholds=format_thresholds(tiers))
         return report(con, tiers=tiers)
