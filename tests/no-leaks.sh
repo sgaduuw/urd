@@ -22,6 +22,13 @@ target="${1:-.}"
 # list of terms someone has to think to add.
 loose='i3d\|ubisoft\|i3dnet\|/Users/[A-Za-z0-9._-]\+\|/home/[A-Za-z0-9._-]\+'
 # Case-sensitive terms: bare "meta" appears in "metadata" and "metric".
+#
+# Workflow status names are deliberately NOT here. They were added once and
+# removed: they are this instance's vocabulary rather than its identity, they sit
+# outside this file's stated remit above, and four commit messages already carry
+# them as the honest subject of a real measurement. A guard that cannot pass
+# without rewriting the history is a guard that gets commented out. The working
+# tree was generalised anyway, which is a tidy rather than a rule.
 strict='\bMETA\b\|\bFM-[0-9]\|\bISM-[0-9]\|\bITSM\b\|Konstantelos\|Bohbot\|van Gerven\|Holtkamp\|Verhoef\|Nelms\|Haverkamp\|Jura\b'
 
 hits=0

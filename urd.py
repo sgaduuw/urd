@@ -914,7 +914,7 @@ def observed_statuses(con):
                 # status re-entered after rework is reached late, and counting
                 # every arrival drags its median past a status reached once
                 # early: on the real project that inverted In Progress and
-                # Review & QA, which the transition counts separate 506 to 39.
+                # the review status, which the transition counts separate 506 to 39.
                 if created and when and name not in arrived:
                     stat["delays"].append((when - created).total_seconds() / 86400.0)
                     arrived.add(name)

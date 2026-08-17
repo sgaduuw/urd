@@ -267,7 +267,8 @@ def test_no_workflow_information_means_every_status_counts():
 def test_status_order_uses_each_ticket_s_first_arrival_not_every_arrival():
     """A status re-entered late drags its median past one reached once early, so
     counting every arrival inverted the pair it most needed to get right: against
-    the real project it put Review & QA ahead of In Progress, when In Progress
+    the real project it put the review status ahead of the in-progress status
+    that feeds it, when that one precedes it
     precedes it 506 times to 39."""
     con = urd.open_db(_tmpdb())
     issue = {
