@@ -383,18 +383,21 @@ CHARTS = [
         key="per_epic",
         section="Reporting outward",
         title="Progress per epic",
-        kind="bars",
-        caption="Tickets per parent, largest first. Drag across the chart to zoom, "
-                "and hover a bar for the epic title and the numbers. Parents "
+        kind="hbars",
+        caption="The 40 largest by ticket count, biggest first. Horizontal because "
+                "the label is a key and a title, which a vertical axis gives three "
+                "characters: all 138 epics laid out this way would be 9108px tall, "
+                "so the tail is not shown. Hover a bar for the full title. Parents "
                 "outside the scope of this report appear by key alone, which is "
                 "about a third of them.",
-        # Back to bars now that a plot can be zoomed. 141 epics is 423 marks in
-        # 480px, about a pixel each, which is why this was a table for a while:
-        # the static SVG below is still that dense and that is the honest cost of
-        # the fallback. Drag-to-zoom is what makes the upgraded version readable.
+        # Horizontal, and capped at 40. Vertical bars gave each label three
+        # characters; zoom made the bars readable but never the names. Horizontal
+        # gives every label a line, at the cost of 66px per epic, so all 138 would
+        # be 9108px. 40 covers 68% of tickets and 29 of the 138 hold one ticket
+        # each. Not upgraded by uPlot: every value is printed at its bar end and
+        # every name is written out, so there is nothing for zoom to reveal.
         # delivered/dropped/open stay disjoint and sum to the total.
-        options={"labels": "epic", "series": ["delivered", "dropped", "open"],
-                 "interactive": True},
+        options={"labels": "epic", "series": ["delivered", "dropped", "open"]},
         sql="""
             SELECT CASE WHEN e.summary IS NULL THEN i.parent
                         ELSE i.parent || '  ' || e.summary END AS epic,
@@ -410,7 +413,9 @@ CHARTS = [
             LEFT JOIN issues e ON e.key = i.parent
             WHERE i.parent IS NOT NULL AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
+            -- Ordered before limiting, so the cap keeps the epics worth keeping.
             ORDER BY count(*) DESC
+            LIMIT 40
         """,
     ),
     Chart(

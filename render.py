@@ -117,6 +117,13 @@ body {
   padding: 24px;
 }
 
+svg.chart.chart-wide {
+  /* Horizontal bars carry their labels inside the frame, so they need the room
+     the page already has. Still capped, so a very wide window does not stretch a
+     bar into a meaningless streak. */
+  max-width: 720px;
+}
+
 svg.chart {
   width: 100%;
   max-width: 480px;
@@ -453,7 +460,7 @@ def page(header, sections):
     )
 
 
-def svg(width, height, body):
+def svg(width, height, body, extra_class=""):
     """Wrap body in a viewBox'd <svg>.
 
     No fixed width/height attribute: sizing comes from the viewBox plus the
@@ -465,7 +472,7 @@ def svg(width, height, body):
     """
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet" '
-        f'role="img" class="chart">{body}</svg>'
+        f'role="img" class="chart{extra_class}">{body}</svg>'
     )
 
 
@@ -885,11 +892,15 @@ def hbars(rows, labels, series):
     if not rows:
         return '<p class="empty">no data</p>'
 
-    width = 480
+    # Wider than the other charts, and it has to be: the label gutter and the bars
+    # compete for the same width, and the epic chart's labels alone wanted 612px of
+    # a 480px frame. The page body is 1100px, so only the SVG cap was in the way.
+    width = 720
     row_h, bar_h = 22, 14
     per_row = max(len(series), 1)
     widest = max((len(str(r.get(labels) or "")) for r in rows), default=1)
-    pad_l = min(int(widest * 7) + 10, 220)
+    # Half the wider frame: past that the bars stop being able to say anything.
+    pad_l = min(int(widest * 7) + 10, 360)
     pad_r, pad_t, pad_b = 46, 8, 20
     plot_w = max(width - pad_l - pad_r, 40)
     band_h = row_h * per_row
@@ -931,7 +942,8 @@ def hbars(rows, labels, series):
                 f'class="value-label">{esc(_fmt_num(v))}</text>'
             )
     title = f'<title>{esc(", ".join(series))} by {esc(labels)}</title>'
-    return svg(width, height + legend_h, title + "".join(parts) + legend)
+    return svg(width, height + legend_h, title + "".join(parts) + legend,
+               extra_class=" chart-wide")
 
 
 def lines(rows, x, series):

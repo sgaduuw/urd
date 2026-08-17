@@ -3306,6 +3306,20 @@ def test_hbars_stays_inside_its_frame_at_any_row_count():
             render.hbars(_people_bars(n), labels="person", series=["points"]), f"hbars n={n}")
 
 
+def test_hbars_is_wider_than_the_other_charts():
+    """The label gutter and the bars compete for the same width, and on the epic
+    chart the labels wanted 612px of a 480px chart. Widening the chart is the way
+    out of that: the page body is 1100px and only the SVG was capped at 480."""
+    out = render.hbars(_people_bars(6), labels="person", series=["points"])
+    width = float(re.search(r'viewBox="0 0 ([\d.]+)', out).group(1))
+    assert width >= 640, width
+    assert 'class="chart chart-wide"' in out, out[:200]
+    assert ".chart-wide" in render.CSS, "the wider class must actually be styled"
+    # A vertical chart is unchanged: it has no gutter to pay for.
+    assert 'class="chart"' in render.bars(_people_bars(6), labels="person",
+                                         series=["points"])
+
+
 def test_hbars_leaves_room_for_the_longest_name():
     """The gutter grows to fit the longest label, up to a cap. Past the cap the
     label is cut rather than allowed off the edge, and the full text stays in the
@@ -4449,6 +4463,27 @@ def test_the_aging_table_shows_what_each_ticket_is():
     chart, rows = _flow_rows(con, "aging_wip")
     assert "summary" in chart.options["headers"]
     assert rows and all(r["summary"] for r in rows), rows
+
+
+def test_the_epic_chart_is_horizontal_and_capped():
+    """Its labels are a key plus a title, which a vertical axis gives three
+    characters. Horizontal gives them a line each, at the cost of height: all 138
+    epics would be 9108px, so it is capped and the caption says so."""
+    chart = next(c for c in chart_specs.CHARTS if c.key == "per_epic")
+    assert chart.kind == "hbars"
+    assert "LIMIT" in chart.sql.upper()
+    assert "not shown" in chart.caption or "largest" in chart.caption
+    # hbars is deliberately not upgraded, so the chart must not claim to be.
+    assert not chart.options.get("interactive")
+
+
+def test_the_epic_chart_shows_the_biggest_epics_not_the_first_ones():
+    """A cap is only honest if it keeps the rows worth keeping. Ordering by size
+    before limiting is what makes 40 rows a summary rather than an accident."""
+    con = _derived("reopened", "two_sprints")
+    chart, rows = _flow_rows(con, "per_epic")
+    totals = [r["delivered"] + r["dropped"] + r["open"] for r in rows]
+    assert totals == sorted(totals, reverse=True), totals
 
 
 def test_epic_chart_series_are_disjoint_and_sum_to_the_total():

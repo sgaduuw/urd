@@ -167,7 +167,9 @@ categorical, so the names travel with the data and hover gives the whole name
 rather than the three characters the axis has room for.
 
 Charts whose categories are names use horizontal bars instead, and are not
-upgraded. A name gets a whole line there rather than the width of a bar, so every
+upgraded. They are also drawn wider than the rest, 720px against 480: the label
+gutter and the bars compete for the same width, and on the epic chart the labels
+alone wanted 612px of a 480px frame. A name gets a whole line there rather than the width of a bar, so every
 one is written in full and every value is printed at the end of its bar: there is
 nothing left for zoom to reveal. Hovering still names the bar, through the SVG's
 own tooltip and no script at all. These charts grow taller as rows are added
