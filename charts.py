@@ -143,7 +143,8 @@ CHARTS = [
         caption="The same counts as the chart above, smoothed over four weeks. "
                 "Week to week noise hides the direction; this is the direction. "
                 "Work leaves the backlog by being delivered or dropped, so read "
-                "the new line against both of the others, not against done alone.",
+                "the new line against both of the others, not against done alone. "
+                "The next chart does that subtraction for you.",
         options={"x": "week", "series": ["new_trend", "done_trend", "dropped_trend"],
                  "interactive": True},
         # The week series is generated rather than taken from the data, so a week
@@ -264,6 +265,47 @@ CHARTS = [
               ON s.day >= d.entered::DATE AND s.day < d.left_at
             GROUP BY 1, 2
             ORDER BY 1, 2
+        """,
+    ),
+    Chart(
+        key="net_flow",
+        section="Flow health",
+        title="Net weekly change, four week average",
+        kind="bars",
+        caption="Arriving minus everything that leaves, delivered and dropped both. "
+                "Above the line the backlog is growing that week; below it, "
+                "shrinking. The chart above has the same numbers as three lines, "
+                "which leaves the reader adding two of them and judging a gap by "
+                "eye; this puts the answer on one side of zero.",
+        # bars, not lines: a zero baseline is what makes the sign readable at a
+        # glance, and bars grow from zero by construction while a line's axis is
+        # free to start wherever the data does.
+        options={"labels": "week", "series": ["net_trend"], "interactive": True},
+        # Smoothed over the same four weeks as the trend chart, and computed over
+        # every week before the window is applied, for the same reason: filtering
+        # first restarts the average at the window edge and draws a ramp that
+        # never happened.
+        sql="""
+            WITH weeks AS (
+                SELECT unnest(generate_series(
+                    (SELECT min(date_trunc('week', created)) FROM issues),
+                    (SELECT max(date_trunc('week', created)) FROM issues),
+                    INTERVAL 1 WEEK))::DATE AS week
+            ),
+            arrived AS (SELECT date_trunc('week', created)::DATE w, count(*) n
+                        FROM issues GROUP BY 1),
+            left_backlog AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
+                             FROM closures GROUP BY 1),
+            net AS (
+                SELECT weeks.week,
+                       round(avg(COALESCE(a.n, 0) - COALESCE(l.n, 0)) OVER (
+                           ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                       ), 1) AS net_trend
+                FROM weeks
+                LEFT JOIN arrived a ON a.w = weeks.week
+                LEFT JOIN left_backlog l ON l.w = weeks.week
+            )
+            SELECT week, net_trend FROM net WHERE in_window(week) ORDER BY week
         """,
     ),
     Chart(

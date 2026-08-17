@@ -72,6 +72,8 @@ everything already held is left alone.
   backlog is growing. Dropped work is a third line, counted separately.
 - New versus done, four week trend: the same counts smoothed, because week to
   week noise hides the direction.
+- Net weekly change, four week average: arriving minus everything that leaves,
+  as bars around zero. Above the line the backlog grew that week.
 - Open tickets over time: what the gap between the two adds up to, counted from
   the status history rather than created minus closed.
 - New, delivered and dropped per sprint: every mutation attributed to the sprint

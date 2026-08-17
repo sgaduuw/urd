@@ -3457,6 +3457,48 @@ def test_the_cumulative_flow_reaches_the_same_horizon():
     assert sum(r["tickets"] for r in flow if r["day"] == newest) == total
 
 
+def test_the_net_flow_chart_puts_the_gap_on_one_side_of_zero():
+    """Three lines leave the reader to add two of them and eyeball a gap. This is
+    the same numbers as one series against a zero baseline: above the line, work is
+    arriving faster than it leaves."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "net_flow")
+    assert chart.kind == "bars", "a zero baseline is what makes the sign readable"
+    assert chart.options["series"] == ["net_trend"]
+    assert rows and all(r["net_trend"] is not None for r in rows)
+
+
+def test_net_flow_agrees_with_the_trend_chart_it_summarises():
+    """It must be arriving minus everything that leaves, delivered and dropped
+    both. Subtracting delivered alone would overstate the gap, which is the error
+    the dropped line was added to the trend chart to fix."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, net = _flow_rows(con, "net_flow")
+    _, trend = _flow_rows(con, "flow_trend")
+    by_week = {r["week"]: r for r in trend}
+    checked = 0
+    for row in net:
+        other = by_week.get(row["week"])
+        if other is None:
+            continue
+        expected = (other["new_trend"] or 0) - (other["done_trend"] or 0) \
+            - (other["dropped_trend"] or 0)
+        assert abs(row["net_trend"] - expected) < 0.15, (row, other, expected)
+        checked += 1
+    assert checked, "the two charts share no weeks, so this compared nothing"
+
+
+def test_a_bar_chart_draws_negative_values_below_the_baseline():
+    """The whole point of using bars here: catching up has to look different from
+    falling behind, not just smaller."""
+    out = render.bars([{"k": "a", "v": 5}, {"k": "b", "v": -5}], labels="k", series=["v"])
+    rects = re.findall(r'<rect[^>]*(?<![a-z])y="([-\d.]+)"[^>]*height="([\d.]+)"', out)
+    assert len(rects) == 2, rects
+    tops = [float(y) for y, _ in rects]
+    assert tops[0] < tops[1], f"the negative bar should start lower: {rects}"
+    _assert_content_within_viewbox(out, "signed bars")
+
+
 def test_the_trend_chart_smooths_both_series_over_four_weeks():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "flow_trend")
@@ -3503,8 +3545,9 @@ def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():
 
 def test_flow_health_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
-    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_open",
-                    "flow_per_sprint", "cfd", "cycle_scatter", "time_in_status"}
+    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_flow",
+                    "net_open", "flow_per_sprint", "cfd", "cycle_scatter",
+                    "time_in_status"}
 
 
 def test_aging_lists_only_open_tickets_worst_first():
