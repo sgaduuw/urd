@@ -3913,15 +3913,38 @@ def test_multiline_pivots_long_rows_into_one_series_per_group():
     _assert_content_within_viewbox(out, "multiline")
 
 
-def test_multiline_leaves_a_gap_where_a_person_closed_nothing():
-    """Same rule as the facets: a missing week breaks the line rather than drawing
-    a straight stretch implying steady output through it."""
+def test_multiline_joins_across_a_missing_value():
+    """What this renderer actually does, replacing a test whose name claimed a gap
+    it never checked. `lines` skips a null and joins the neighbours, so the pivot
+    must not hand it nulls for facts that are really zero: that is the caller's
+    job, and the per-person chart does it in SQL."""
     rows = [{"w": 1, "who": "Alder", "n": 3}, {"w": 3, "who": "Alder", "n": 4},
             {"w": 1, "who": "Birch", "n": 1}, {"w": 2, "who": "Birch", "n": 2},
             {"w": 3, "who": "Birch", "n": 1}]
     out = render.multiline(rows, x="w", band="who", value="n")
     _assert_content_within_viewbox(out, "multiline gap")
-    assert "Alder" in out
+    paths = re.findall(r'<path d="([^"]+)"', out)
+    assert len(paths) == 2, paths
+    # Alder has no week 2 and still gets one unbroken subpath, which is why a null
+    # here would silently draw output that did not happen.
+    assert all(path.count("M") == 1 for path in paths), paths
+
+
+def test_the_per_person_chart_has_a_value_for_every_week():
+    """A week in which someone closed nothing is zero closures, not an unknown.
+    Encoding it as null made the two renderings of this chart disagree: the SVG
+    joined straight across, implying steady output, while uPlot broke the line and
+    scattered each person into dozens of fragments that read as several people."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "throughput_per_person")
+    people = {r["person"] for r in rows}
+    weeks = {r["week"] for r in rows}
+    assert len(rows) == len(people) * len(weeks), (len(rows), len(people), len(weeks))
+    assert all(r["closed"] is not None for r in rows)
+    assert any(r["closed"] == 0 for r in rows), "no zero weeks at all: nothing to fill"
+    payload = render.plot_payload(chart, rows)
+    for series in payload["series"]:
+        assert None not in series["data"], series["label"]
 
 
 def test_multiline_stays_in_frame_with_more_people_than_the_palette():
