@@ -4167,6 +4167,46 @@ def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
     assert counts == {"R1": (1, 0, 0), "R2": (1, 0, 1)}
 
 
+def test_issues_carry_their_summary():
+    """Fetched since the first sync and never stored, exactly like resolution was.
+    No refetch needed: it is already sitting in raw_issues."""
+    con = _derived("reopened", "two_sprints")
+    rows = con.execute("SELECT key, summary FROM issues ORDER BY key").fetchall()
+    assert rows and all(summary for _, summary in rows), rows
+
+
+def test_the_epic_chart_labels_carry_the_title_as_well_as_the_key():
+    """A key alone tells you nothing about which epic you are looking at, and the
+    tooltip is where the label has room to say it."""
+    con = _derived("reopened", "two_sprints")
+    # PROJ-100 is the parent in the fixtures and is not itself a fetched issue,
+    # so give it one to stand for an epic inside the report's scope.
+    con.execute("INSERT INTO issues_all (key, project, type, status, status_category, "
+                "created, summary) VALUES ('PROJ-100', 'PROJ', 'Epic', 'To Do', 'new', "
+                "TIMESTAMP '2026-01-01 09:00', 'Rebuild the widget pipeline')")
+    _, rows = _flow_rows(con, "per_epic")
+    labels = [r["epic"] for r in rows]
+    assert any("PROJ-100" in x and "Rebuild the widget pipeline" in x for x in labels), labels
+
+
+def test_an_epic_outside_the_report_falls_back_to_its_key():
+    """Parents are routinely outside the fetched scope, and half a label is worse
+    than a bare key."""
+    con = _derived("reopened", "two_sprints")
+    _, rows = _flow_rows(con, "per_epic")
+    labels = [r["epic"] for r in rows]
+    assert labels == ["PROJ-100"], labels
+
+
+def test_the_aging_table_shows_what_each_ticket_is():
+    """The chart that changes what you do today, and it listed forty keys with no
+    hint of what any of them were."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "aging_wip")
+    assert "summary" in chart.options["headers"]
+    assert rows and all(r["summary"] for r in rows), rows
+
+
 def test_epic_chart_series_are_disjoint_and_sum_to_the_total():
     """done against total double-counts: the first bar is contained in the second,
     and grouped bars read as disjoint quantities. delivered/dropped/open are

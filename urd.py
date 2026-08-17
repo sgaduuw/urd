@@ -491,7 +491,13 @@ def _refresh_workflow_statuses(con, jira, project):
 
 ISSUES_SCHEMA = """
 CREATE OR REPLACE TABLE issues_all (
-    key VARCHAR PRIMARY KEY, project VARCHAR, type VARCHAR, status VARCHAR,
+    key VARCHAR PRIMARY KEY, project VARCHAR, type VARCHAR,
+    -- Fetched since the first sync and stored only now. A key alone does not say
+    -- which ticket it is, and the title is already sitting in raw_issues, so this
+    -- costs a derive rather than a refetch. Positioned to match the row order in
+    -- derive_issues, which builds it straight after issuetype.
+    summary VARCHAR,
+    status VARCHAR,
     status_category VARCHAR, assignee_id VARCHAR, reporter_id VARCHAR,
     created TIMESTAMP, updated TIMESTAMP, resolved TIMESTAMP,
     story_points DOUBLE, timespent_s BIGINT, parent VARCHAR,
@@ -612,6 +618,7 @@ def derive_issues(con):
         rows.append(
             [
                 key, key.split("-")[0], (f.get("issuetype") or {}).get("name"),
+                f.get("summary"),
                 (f.get("status") or {}).get("name"),
                 ((f.get("status") or {}).get("statusCategory") or {}).get("key"),
                 (f.get("assignee") or {}).get("accountId"),
@@ -624,7 +631,7 @@ def derive_issues(con):
         )
 
     if rows:
-        con.executemany(f"INSERT INTO issues_all VALUES ({','.join(['?'] * 16)})", rows)
+        con.executemany(f"INSERT INTO issues_all VALUES ({','.join(['?'] * 17)})", rows)
     if people:
         # ponytail: last-writer wins on rename. For anyone who is both assignee and
         # changelog author, the author name wins because derive_changes runs after

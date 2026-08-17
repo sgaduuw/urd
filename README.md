@@ -67,7 +67,7 @@ everything already held is left alone.
 ## The charts
 
 **Flow health**
-- Aging work in progress: open tickets by days in their current status, the chart that changes what you do today.
+- Aging work in progress: open tickets by days in their current status, the chart that changes what you do today, with each ticket's title beside its key.
 - Created versus closed per week: where created and delivered diverge, the
   backlog is growing. Dropped work is a third line, counted separately.
 - New versus done, four week trend: the same counts smoothed, because week to

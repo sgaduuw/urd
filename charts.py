@@ -80,10 +80,16 @@ CHARTS = [
         caption="Open tickets by days in their current status. The chart that "
                 "changes what you do today. Ignores --since: a window drops any "
                 "ticket created before it, which is exactly the oldest work here.",
-        options={"headers": ["key", "status", "assignee", "days"], "shade": "days",
-                 "sortable": True, "links": ["key"]},
+        options={"headers": ["key", "summary", "status", "assignee", "days"],
+                 "shade": "days", "sortable": True, "links": ["key"]},
         sql="""
-            SELECT i.key, i.status,
+            SELECT i.key,
+                   -- Truncated in SQL rather than styled in CSS: the table
+                   -- renderer has no per-cell tooltip to hold the rest, and the
+                   -- key beside it is a link to the whole ticket.
+                   CASE WHEN length(i.summary) > 60
+                        THEN left(i.summary, 59) || '…' ELSE i.summary END AS summary,
+                   i.status,
                    COALESCE(p.display_name, 'Unassigned') AS assignee,
                    date_diff('day', d.entered, now()) AS days
             FROM issues i
@@ -371,9 +377,10 @@ CHARTS = [
         section="Reporting outward",
         title="Progress per epic",
         kind="bars",
-        caption="Tickets per parent, largest first. Drag across the chart to zoom "
-                "into a range. Parents outside the scope of this report appear by "
-                "key alone.",
+        caption="Tickets per parent, largest first. Drag across the chart to zoom, "
+                "and hover a bar for the epic title and the numbers. Parents "
+                "outside the scope of this report appear by key alone, which is "
+                "about a third of them.",
         # Back to bars now that a plot can be zoomed. 141 epics is 423 marks in
         # 480px, about a pixel each, which is why this was a table for a while:
         # the static SVG below is still that dense and that is the honest cost of
@@ -382,14 +389,18 @@ CHARTS = [
         options={"labels": "epic", "series": ["delivered", "dropped", "open"],
                  "interactive": True},
         sql="""
-            SELECT parent AS epic,
-                   count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)
+            SELECT CASE WHEN e.summary IS NULL THEN i.parent
+                        ELSE i.parent || '  ' || e.summary END AS epic,
+                   count(*) FILTER (WHERE i.status_category = 'done' AND NOT i.abandoned)
                        AS delivered,
-                   count(*) FILTER (WHERE abandoned) AS dropped,
-                   count(*) FILTER (WHERE status_category <> 'done') AS open,
-                   round(100.0 * count(*) FILTER (WHERE status_category = 'done'
-                                                    AND NOT abandoned) / count(*)) AS percent_done
+                   count(*) FILTER (WHERE i.abandoned) AS dropped,
+                   count(*) FILTER (WHERE i.status_category <> 'done') AS open,
+                   round(100.0 * count(*) FILTER (WHERE i.status_category = 'done'
+                                                    AND NOT i.abandoned) / count(*)) AS percent_done
             FROM issues i
+            -- The parent is routinely outside the fetched scope, so this is a LEFT
+            -- JOIN and the label falls back to the bare key rather than half a one.
+            LEFT JOIN issues e ON e.key = i.parent
             WHERE i.parent IS NOT NULL AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             ORDER BY count(*) DESC
