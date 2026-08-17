@@ -610,6 +610,64 @@ CHARTS = [
         """,
     ),
     Chart(
+        key="throughput_trend_per_person",
+        section="People",
+        # No apostrophe: esc() turns one into &#x27;, and the end-to-end test looks
+        # for the raw title in the page.
+        title="Per person trend, four week average",
+        kind="small_multiples",
+        caption="One panel each, four week rolling average, and every panel scaled "
+                "to its own data so a quiet person's shape is visible rather than "
+                "flattened against a busy one's. That is the trade: two panels here "
+                "cannot be compared by eye, and the chart above is where the "
+                "comparison lives. Each heading carries the person's own total.",
+        options={"group": "person", "x": "week", "y": "closed_trend",
+                 "share_y": False, "heading": "closed_total"},
+        # Same zero-filled grid and same floor as the merged chart, so the two
+        # always show the same set of people. Smoothed per person: weekly
+        # per-person counts are mostly 0, 1 or 2, and the shape only appears once
+        # the noise is averaged out.
+        sql="""
+            WITH closed AS (
+                SELECT COALESCE(p.display_name, 'Unassigned') AS person,
+                       date_trunc('week', c.ts)::DATE AS week,
+                       count(*) AS n
+                FROM closures c
+                JOIN issues i ON i.key = c.key
+                LEFT JOIN people p ON p.account_id = i.assignee_id
+                WHERE NOT c.abandoned AND in_window(c.ts)
+                GROUP BY 1, 2
+            ),
+            weeks AS (
+                SELECT unnest(generate_series(
+                    (SELECT min(week) FROM closed),
+                    (SELECT max(week) FROM closed), INTERVAL 1 WEEK))::DATE AS week
+            ),
+            people AS (
+                SELECT person FROM closed GROUP BY 1
+                HAVING sum(n) >= CAST(COALESCE((SELECT min_closed FROM sync_state),
+                                               '3') AS INTEGER)
+            ),
+            grid AS (SELECT people.person, weeks.week FROM people CROSS JOIN weeks),
+            filled AS (
+                SELECT grid.person, grid.week, COALESCE(closed.n, 0) AS n
+                FROM grid
+                LEFT JOIN closed
+                       ON closed.person = grid.person AND closed.week = grid.week
+            )
+            SELECT person, week,
+                   round(avg(n) OVER (
+                       PARTITION BY person ORDER BY week
+                       ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                   ), 2) AS closed_trend,
+                   -- The real count, for the heading: summing the rolling mean
+                   -- would print a sum of averages as a number of tickets.
+                   sum(n) OVER (PARTITION BY person) AS closed_total
+            FROM filled
+            ORDER BY 1, 2
+        """,
+    ),
+    Chart(
         key="review_load",
         section="People",
         title="Review load",

@@ -4013,6 +4013,74 @@ def test_multiline_stays_in_frame_with_more_people_than_the_palette():
     _assert_content_within_viewbox(out, "multiline 25")
 
 
+def test_a_facet_heading_can_name_the_column_it_reports():
+    """The heading summed y, which is right for a count and wrong for an average:
+    on the trend chart it printed a sum of rolling means as though it were a
+    number of tickets, fractions and all."""
+    # Two panels, not one: a single-panel version of this test passed while the
+    # display string was shadowing the `heading` parameter, so every panel after
+    # the first looked up a column named "Alder · 4".
+    groups = {"Alder": [{"w": 1, "avg": 1.5, "total": 9}, {"w": 2, "avg": 2.5, "total": 9}],
+              "Birch": [{"w": 1, "avg": 0.5, "total": 4}, {"w": 2, "avg": 1.5, "total": 4}]}
+    summed = render.small_multiples(groups, x="w", y="avg")
+    named = render.small_multiples(groups, x="w", y="avg", heading="total")
+    assert "Alder \u00b7 4" in summed and "Birch \u00b7 2" in summed, summed[:500]
+    assert "Alder \u00b7 9" in named and "Birch \u00b7 4" in named, named[:500]
+
+
+def test_facets_can_scale_each_panel_to_its_own_data():
+    """Shared scale answers "who does more"; per-panel scale answers "how is this
+    person trending", and no single chart does both. The merged line chart already
+    answers the first, so the facets are the place to answer the second."""
+    groups = {"Loud": [{"w": i, "n": 100 + i} for i in range(4)],
+              "Quiet": [{"w": i, "n": i % 3} for i in range(4)]}
+    shared = render.small_multiples(groups, x="w", y="n")
+    own = render.small_multiples(groups, x="w", y="n", share_y=False)
+    # On a shared scale the quiet panel is pinned to the baseline; on its own it
+    # uses the full height, which is the whole point.
+    def spread(svg, name):
+        """Vertical extent of the drawn line inside one panel.
+
+        Read from the path's own coordinates: circles are only drawn for isolated
+        points and the endpoint, so a four-point panel has exactly one and every
+        spread came out zero.
+        """
+        body = next(g for g in re.findall(r'<g transform[^>]*>(.*?)</g>', svg, re.S)
+                    if name in g)
+        path = re.search(r'<path d="([^"]+)"', body)
+        assert path, body
+        ys = [float(pair.split(",")[1]) for pair in re.findall(r"[\d.]+,[\d.]+", path.group(1))]
+        return max(ys) - min(ys)
+    assert spread(own, "Quiet") > spread(shared, "Quiet") * 2, (
+        spread(own, "Quiet"), spread(shared, "Quiet"))
+    _assert_content_within_viewbox(own, "facets own scale")
+
+
+def test_facet_panels_are_large_enough_to_read():
+    """150x90 was too small to see a trend in, which is why these were dropped for
+    a single merged chart in the first place."""
+    groups = {f"Person {i}": [{"w": w, "n": w} for w in range(10)] for i in range(4)}
+    out = render.small_multiples(groups, x="w", y="n")
+    width, height = (float(v) for v in re.search(
+        r'viewBox="0 0 ([\d.]+) ([\d.]+)"', out).groups())
+    per_panel = width / 2
+    assert per_panel >= 220, f"panels are {per_panel}px wide"
+    assert height / 2 >= 130, f"panels are {height / 2}px tall"
+    _assert_content_within_viewbox(out, "big facets")
+
+
+def test_the_per_person_trend_chart_smooths_each_person_separately():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    urd.set_min_closed(con, 1)
+    chart, rows = _flow_rows(con, "throughput_trend_per_person")
+    assert chart.kind == "small_multiples"
+    assert chart.options.get("share_y") is False
+    people = {r["person"] for r in rows}
+    weeks = {r["week"] for r in rows}
+    assert len(rows) == len(people) * len(weeks), "the grid is not filled"
+    assert all(r["closed_trend"] is not None for r in rows)
+
+
 def test_each_small_multiple_states_its_own_total():
     """Twenty-five sparklines with no numbers on them are a shape, not a chart:
     a reader can see who is busier without learning how busy anyone is."""
@@ -4655,7 +4723,8 @@ def test_the_chart_list_matches_the_section_index():
 
 def test_people_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "People"}
-    assert keys == {"throughput_per_person", "review_load", "handoffs", "points_per_person"}
+    assert keys == {"throughput_per_person", "throughput_trend_per_person",
+                    "review_load", "handoffs", "points_per_person"}
 
 
 def test_review_load_counts_every_move_out_of_review_including_rejections():

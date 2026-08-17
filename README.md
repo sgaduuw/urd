@@ -179,6 +179,13 @@ on it. With more people than the palette has
 colours, three share each, so the legend and the readout are what tell two lines
 apart rather than the colour.
 
+There is a second per-person chart for individual trends: one panel each, four
+week rolling average, and every panel scaled to its own data so a quiet person's
+shape is visible instead of flattened against a busy one's. Two panels there
+cannot be compared by eye, which is the trade, and the merged chart above is where
+the comparison lives. Each heading carries the person's real closure count rather
+than a sum of the averages being plotted.
+
 A stack with more bands than the palette has colours folds its smallest into one
 `Other`, because two identically coloured bands touching each other cannot be
 told apart. The largest keep their identity, nothing is dropped, and every column

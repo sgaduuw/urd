@@ -1304,7 +1304,7 @@ def table(rows, headers, shade=None, sortable=False, link_base=None, links=()):
     )
 
 
-def small_multiples(groups, x, y):
+def small_multiples(groups, x, y, share_y=True, heading=None):
     """Facet `y` over `x` into one small line chart per group, all sharing a
     single y-scale AND a single x-category list, so both position and
     magnitude compare honestly across facets. `groups` is a mapping, or a
@@ -1342,16 +1342,30 @@ def small_multiples(groups, x, y):
     if shared_max <= 0:
         shared_max = 1
 
+    # share_y answers a different question either way, and no chart answers both.
+    # Shared: "who does more", where a quiet panel sits pinned to its baseline.
+    # Per-panel: "how is this person trending", where every panel uses its full
+    # height and two panels are no longer comparable by eye. The peak printed in
+    # each heading is what keeps the magnitude readable when they are not.
+    def facet_max(facet_rows):
+        if share_y:
+            return shared_max
+        own = [n for r in facet_rows for n in (_num(r.get(y)),) if n is not None]
+        return max([m for m in own if m > 0] or [1])
+
     cats = {r.get(x) for _, facet_rows in items for r in facet_rows}
     shared_cats = sorted(cats, key=_cat_sort_key)
     n_cats = len(shared_cats)
     cat_index = {c: i for i, c in enumerate(shared_cats)}
 
-    cols = 3
-    fw, fh = 150, 90
-    pad = 10
+    # 150x90 was too small to see a trend in, which is why these panels were
+    # abandoned for one merged chart. Two columns at 240x140 is large enough to
+    # read a shape and still fits a page beside its own legend-free heading.
+    cols = 2
+    fw, fh = 240, 140
+    pad = 12
     plot_l, plot_r = pad, fw - pad
-    plot_t, plot_b = 18, fh - pad
+    plot_t, plot_b = 22, fh - pad
     rows_of_facets = math.ceil(len(items) / cols)
     width, height = cols * fw, rows_of_facets * fh
 
@@ -1363,23 +1377,35 @@ def small_multiples(groups, x, y):
             return plot_l + (plot_r - plot_l) / 2
         return plot_l + i / (n_cats - 1) * (plot_r - plot_l)
 
-    def fy(v):
-        return plot_b - (max(v, 0) / shared_max) * (plot_b - plot_t)
+    def fy(v, ceiling):
+        return plot_b - (max(v, 0) / ceiling) * (plot_b - plot_t)
 
     parts = []
     for idx, (title, facet_rows) in enumerate(items):
         col, row = idx % cols, idx // cols
         ox, oy = col * fw, row * fh
+        ceiling = facet_max(facet_rows)
         g = [f'<g transform="translate({ox},{oy})">']
         # The panel's own total, because twenty-five sparklines with no numbers on
         # them show who is busier without ever saying how busy anyone is. The
         # shape answers "when", the total answers "how much", and the shared peak
         # printed once below answers "compared with what".
-        facet_total = sum(v for v in (_num(r.get(y)) for r in facet_rows) if v is not None)
-        heading = ("" if title is None else str(title)) + f" \u00b7 {_fmt_num(facet_total)}"
+        # Summing y is right for a count and wrong for an average: on a rolling
+        # mean it prints a sum of means as though it were a number of tickets.
+        # `heading` names a column carrying the real figure instead, and max()
+        # reads it because such a column is constant across the panel.
+        if heading:
+            own = [v for v in (_num(r.get(heading)) for r in facet_rows) if v is not None]
+            facet_total = max(own) if own else 0
+        else:
+            facet_total = sum(
+                v for v in (_num(r.get(y)) for r in facet_rows) if v is not None)
+        # Not `heading`: that is the parameter, and reassigning it here made every
+        # panel after the first look up a column named "Alder \u00b7 7".
+        caption = ("" if title is None else str(title)) + f" \u00b7 {_fmt_num(facet_total)}"
         g.append(
             f'<text x="{fw / 2}" y="12" class="facet-title" text-anchor="middle">'
-            f"{esc(heading)}<title>{esc('' if title is None else title)}</title></text>"
+            f"{esc(caption)}<title>{esc('' if title is None else title)}</title></text>"
         )
 
         if not facet_rows:
@@ -1397,7 +1423,7 @@ def small_multiples(groups, x, y):
             segments, current = [], []
             for cat in shared_cats:
                 if cat in facet_vals:
-                    current.append((fx(cat), fy(facet_vals[cat])))
+                    current.append((fx(cat), fy(facet_vals[cat], ceiling)))
                 elif current:
                     segments.append(current)
                     current = []
@@ -1655,7 +1681,9 @@ def figure(chart, rows, subtitle, con, link_base=None):
         grouped = {}
         for row in rows:
             grouped.setdefault(row.get(o["group"]), []).append(row)
-        body = small_multiples(grouped, o["x"], o["y"])
+        body = small_multiples(grouped, o["x"], o["y"],
+                               share_y=o.get("share_y", True),
+                               heading=o.get("heading"))
     else:
         raise ValueError(f"no renderer for chart kind {chart.kind!r}")
     if chart.options.get("interactive"):
