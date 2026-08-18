@@ -1,9 +1,28 @@
+import urllib.request
+
 import test_helpers
 import wizard as wizard_mod
 
 _registry = test_helpers.registry
 _client = test_helpers.client
 _synced = test_helpers.synced
+
+
+def _refuse_network(self, req, *args, **kwargs):
+    """Every test here must be hermetic. `wizard.validate` ends in a real HTTP
+    request built from urd.token()'s real credential (an env var, or this
+    machine's keychain), so any test that forgets to mock it would send that
+    credential to whatever host the test data happens to name. A leaked
+    credential is not a failure anyone would notice by reading test output, so
+    the network is refused outright rather than trusted to stay mocked.
+    Mirrors test_urd.py's _assert_nothing_is_fetched, aimed at the tests
+    instead of the page they render.
+    """
+    url = req.full_url if hasattr(req, "full_url") else req
+    raise AssertionError(f"test_views_wizard.py must not touch the network: {url!r}")
+
+
+urllib.request.OpenerDirector.open = _refuse_network
 
 
 def test_setup_offers_a_form_when_there_are_no_projects():
@@ -79,13 +98,27 @@ def test_confirming_writes_the_scope_and_redirects():
 
 
 def test_a_bad_slug_is_refused_with_a_message():
-    body = _client(_registry()).post("/setup", data={
-        "slug": "../escape", "site": "example.atlassian.net", "email": "a@b.c",
-        "project": "PROJ", "component": "", "since": "2026-01-01",
-        "status_order": "To Do,Done", "start_status": "To Do",
-        "review_status": "", "abandoned_status": "", "confirm": "yes",
-    }).get_data(as_text=True)
-    assert "slug" in body.lower()
+    # validate must be mocked to ok=True: unmocked, the route never reaches
+    # registry.add at all (it returns earlier on the real credential/scope
+    # check), so this test would pass without ever exercising the bad-slug
+    # path it names. See ValueError's message in projects.py: add().
+    registry = _registry()
+    original = wizard_mod.validate
+    wizard_mod.validate = lambda p, t, opener=None: wizard_mod.Result(
+        True, who="A Person", issues=1)
+    try:
+        body = _client(registry).post("/setup", data={
+            "slug": "../escape", "site": "example.atlassian.net", "email": "a@b.c",
+            "project": "PROJ", "component": "", "since": "2026-01-01",
+            "status_order": "To Do,Done", "start_status": "To Do",
+            "review_status": "", "abandoned_status": "", "confirm": "yes",
+        }).get_data(as_text=True)
+    finally:
+        wizard_mod.validate = original
+    # The exact wording ValueError carries, not "slug", which every field
+    # label on this page also contains and would satisfy by accident.
+    assert "not a usable project slug" in body
+    assert "../escape" in body
 
 
 def test_setup_still_adds_projects_once_one_exists():
