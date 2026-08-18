@@ -38,6 +38,15 @@ def test_report_html_writes_no_file():
         os.chdir(was)
 
 
+def test_derive_creates_the_sprint_view_without_a_sprint_field():
+    """VIEWS_SPRINT_ATTRIBUTION reads issue_sprints unconditionally, so a database
+    that never synced a Sprint field must still get the view. None of the existing
+    305 tests cover this branch: they all seed a Sprint field before calling derive."""
+    con = _configured_db()
+    urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+    assert con.execute("SELECT count(*) FROM issue_sprints").fetchone()[0] == 0
+
+
 def test_a_notice_is_a_whole_page_not_a_fragment():
     """First-run states are pages a browser lands on, so they need the doctype and
     the stylesheet the report has, or they arrive unstyled."""
