@@ -80,3 +80,53 @@ class ProjectRegistry:
         project = Project(slug, os.path.join(self.volume, f"{slug}.duckdb"))
         self._projects[slug] = project
         return project
+
+
+def _default_jira(scope):
+    return urd.Jira(scope["site"], scope["email"], urd.token())
+
+
+def start_refresh(project, jira_factory=None):
+    """Sync then derive on a background thread. False if it did not start.
+
+    The lock is taken here rather than inside the thread, so the caller learns
+    immediately whether it started. Two clicks would otherwise be two threads
+    writing one database.
+    """
+    if project.con is None:
+        project.job.state = "failed"
+        project.job.message = project.error or "this database could not be opened"
+        return False
+    if not project.configured():
+        project.job.state = "failed"
+        project.job.message = "no scope yet: finish setup before refreshing"
+        return False
+    if not project.lock.acquire(blocking=False):
+        return False
+
+    project.job.state = "running"
+    project.job.progress = "starting"
+    project.job.message = ""
+    factory = jira_factory or _default_jira
+
+    def run():
+        try:
+            scope = urd.load_scope(project.con)
+            project.job.progress = "syncing"
+            urd.sync(project.con, factory(scope))
+            project.job.progress = "deriving"
+            urd.derive(project.con, scope["status_order"], scope["start_status"],
+                       scope["review_status"], scope["abandoned_status"])
+            project.job.state = "idle"
+            project.job.progress = ""
+        except BaseException as exc:      # noqa: BLE001 - SystemExit included
+            # SystemExit is how urd reports every operational failure, and it is
+            # not an Exception, so a bare `except Exception` would let a failed
+            # sync kill the thread silently with the job stuck on "running".
+            project.job.state = "failed"
+            project.job.message = str(exc) or type(exc).__name__
+        finally:
+            project.lock.release()
+
+    threading.Thread(target=run, name=f"refresh-{project.slug}", daemon=True).start()
+    return True

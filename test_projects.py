@@ -1,6 +1,8 @@
 import os
 import pathlib
 import tempfile
+import threading
+import time
 
 import projects
 import urd
@@ -129,6 +131,104 @@ def test_a_slug_must_match_the_allowed_charset():
         except ValueError:
             continue
         raise AssertionError(f"{bad!r} was accepted as a slug")
+
+
+def _configured(registry, slug="alpha"):
+    project = registry.add(slug)
+    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+                   project="PROJ", earliest_since="2026-01-01",
+                   status_order="To Do,In Progress,Review,Done",
+                   start_status="In Progress", review_status="Review")
+    return project
+
+
+class _FakeJira:
+    def __init__(self, block=None):
+        self.block = block
+
+    def search(self, jql):
+        if self.block:
+            self.block.wait(5)
+        yield "PROJ-1", "u1"
+
+    def issue(self, key, fields):
+        # "updated" has to be a real timestamp, not the "u1" change marker used
+        # above: derive() parses it with datetime.fromisoformat.
+        return {"key": key, "fields": {"updated": "2026-01-06T09:00:00.000+0000",
+                                       "created": "2026-01-05T09:00:00.000+0000",
+                                       "status": {"name": "To Do",
+                                                  "statusCategory": {"key": "new"}}}}
+
+    def fields(self):
+        return []
+
+    def statuses(self):
+        return [{"name": "Done", "statusCategory": {"key": "done"}}]
+
+
+def _wait_idle(project, seconds=5):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if project.job.state != "running":
+            return project.job.state
+        time.sleep(0.01)
+    raise AssertionError("job never finished")
+
+
+def test_a_refresh_syncs_then_derives_and_returns_to_idle():
+    registry = projects.ProjectRegistry(_volume())
+    project = _configured(registry)
+    assert projects.start_refresh(project, jira_factory=lambda scope: _FakeJira()) is True
+    assert _wait_idle(project) == "idle", project.job.message
+    assert project.con.cursor().execute(
+        "SELECT count(*) FROM raw_issues").fetchone()[0] == 1
+
+
+def test_a_second_refresh_while_one_runs_is_refused():
+    """Not queued and not run twice: two clicks would have two threads writing
+    the same database."""
+    registry = projects.ProjectRegistry(_volume())
+    project = _configured(registry)
+    gate = threading.Event()
+    assert projects.start_refresh(
+        project, jira_factory=lambda scope: _FakeJira(block=gate)) is True
+    assert projects.start_refresh(
+        project, jira_factory=lambda scope: _FakeJira()) is False
+    gate.set()
+    _wait_idle(project)
+
+
+def test_a_failure_leaves_the_reason_on_the_job():
+    registry = projects.ProjectRegistry(_volume())
+    project = _configured(registry)
+
+    def explode(scope):
+        raise SystemExit("no API token")
+
+    assert projects.start_refresh(project, jira_factory=explode) is True
+    assert _wait_idle(project) == "failed"
+    assert "token" in project.job.message
+
+
+def test_an_unconfigured_project_cannot_be_refreshed():
+    registry = projects.ProjectRegistry(_volume())
+    project = registry.add("alpha")
+    assert projects.start_refresh(project, jira_factory=lambda scope: _FakeJira()) is False
+    assert project.job.state == "failed"
+    assert "scope" in project.job.message.lower()
+
+
+def test_pages_can_still_be_read_while_a_refresh_runs():
+    """The reason the whole design works. If this fails, Refresh has to take the
+    server offline while it runs."""
+    registry = projects.ProjectRegistry(_volume())
+    project = _configured(registry)
+    gate = threading.Event()
+    projects.start_refresh(project, jira_factory=lambda scope: _FakeJira(block=gate))
+    rows = project.con.cursor().execute("SELECT count(*) FROM raw_issues").fetchone()[0]
+    assert rows == 0, "the snapshot should predate the running sync"
+    gate.set()
+    _wait_idle(project)
 
 
 if __name__ == "__main__":
