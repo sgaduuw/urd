@@ -42,7 +42,22 @@ def test_min_closed_zero_is_rejected_not_ignored():
     registry = _registry()
     _synced(registry)
     body = _client(registry).get("/alpha/?min_closed=0").get_data(as_text=True)
-    assert "min-closed" in body or "min_closed" in body
+    assert "wants a whole number of 1 or more, got 0" in body
+
+
+def test_min_closed_empty_is_reported_not_silently_ignored():
+    """`min_closed=` is present but empty: raw_floor is `""`, not `None`, so a
+    truthiness guard (`if raw_floor:`) would treat it as absent and fall back to
+    the stored default with no indication, the same bug shape as the zero case.
+
+    Asserts the reported problem text itself, not a bare "--min-closed" substring:
+    one of the report's own static chart captions contains that flag name in its
+    explanatory prose, so a looser check would pass on every render regardless of
+    whether anything was rejected."""
+    registry = _registry()
+    _synced(registry)
+    body = _client(registry).get("/alpha/?min_closed=").get_data(as_text=True)
+    assert "--min-closed: invalid literal for int" in body
 
 
 def test_the_page_offers_controls_for_every_flag():

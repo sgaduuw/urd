@@ -4,6 +4,8 @@ Flags are read from the query string and never written back to sync_state. A
 request that wrote its window would make two browser tabs fight over each other,
 and the CLI stays the way a default is changed.
 """
+import threading
+
 import flask
 
 import render
@@ -11,6 +13,12 @@ import urd
 import webapp
 
 bp = flask.Blueprint("report", __name__)
+
+# ponytail: one lock for every project, not one per project. A render measures
+# about 194ms and this is a single-user tool, so two renders serializing is not
+# worth solving. Upgrade path: a per-project lock (mirroring projects.Project's
+# refresh lock) if concurrent readers on different projects ever start to matter.
+_RENDER_LOCK = threading.Lock()
 
 
 def flags_from(request, project):
@@ -110,14 +118,24 @@ def project(slug):
     # not as parameters report_html takes, so applying a request's flags means
     # writing them. Snapshotting here (before flags_from mutates anything) and
     # restoring after the render is what keeps that mutation request-scoped.
-    stored_window = urd.load_scope(con)["report_since"]
-    stored_epics = urd.stored_excluded_epics(con)
-    stored_floor = urd.stored_min_closed(con)
-    flags = flags_from(flask.request, found)
-    page = webapp.project_page(found, flags["tiers"])
-    urd.set_report_window(con, stored_window)
-    urd.set_excluded_epics(con, stored_epics)
-    urd.set_min_closed(con, stored_floor)
+    #
+    # Both the snapshot and the restore have to run under the same lock as the
+    # render: without it, a second overlapping request could snapshot the first
+    # request's still-applied flags instead of the real stored defaults, and
+    # each would go on to restore over the other's in-flight state. The finally
+    # keeps a render that raises from leaving its flags stuck as the new
+    # defaults, which a bare sequence (apply, render, restore) would not.
+    with _RENDER_LOCK:
+        stored_window = urd.load_scope(con)["report_since"]
+        stored_epics = urd.stored_excluded_epics(con)
+        stored_floor = urd.stored_min_closed(con)
+        try:
+            flags = flags_from(flask.request, found)
+            page = webapp.project_page(found, flags["tiers"])
+        finally:
+            urd.set_report_window(con, stored_window)
+            urd.set_excluded_epics(con, stored_epics)
+            urd.set_min_closed(con, stored_floor)
     controls = _controls(found, flags, registry.projects())
     # Injected after <body> so the controls precede the report without the report
     # needing to know they exist.
