@@ -1,0 +1,25 @@
+# compose.yaml
+services:
+  urd:
+    build: .
+    # 127.0.0.1 on purpose. The report is unauthenticated: anyone who reaches
+    # this port reads every ticket title and can trigger a sync. Publishing it to
+    # a network has to be a deliberate edit of this line.
+    ports:
+      - "127.0.0.1:8731:8731"
+    environment:
+      # Passed through from the host, never written here. A token in a committed
+      # file is a token in everyone's clone.
+      - URD_TOKEN
+      # Seeds the first project only. Adding more is the setup page's job, and a
+      # database that is already configured wins over these.
+      - URD_SITE=${URD_SITE:-}
+      - URD_EMAIL=${URD_EMAIL:-}
+      - URD_PROJECT=${URD_PROJECT:-}
+      - URD_COMPONENT=${URD_COMPONENT:-}
+      - URD_SINCE=${URD_SINCE:-}
+    volumes:
+      - urd-data:/var/lib/urd
+
+volumes:
+  urd-data:
