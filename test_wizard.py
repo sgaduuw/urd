@@ -85,17 +85,21 @@ def test_apply_writes_every_field_of_the_proposal():
     wizard.apply(con, _proposal())
     scope = urd.load_scope(con)
     assert scope["site"] == "example.atlassian.net"
+    assert scope["email"] == "a@b.c"
     assert scope["project"] == "PROJ"
     assert scope["component"] == "TEAM"
     assert scope["earliest_since"] == "2026-01-01"
     assert scope["status_order"] == "To Do,In Progress,Review,Done"
     assert scope["start_status"] == "In Progress"
     assert scope["review_status"] == "Review"
+    # The base proposal carries "", and apply maps empty to None: deliberate,
+    # not an omission, so make the mapping explicit here.
+    assert scope["abandoned_status"] is None
 
 
 def test_an_incomplete_proposal_is_refused_before_any_request():
     opener = _ok_opener()
-    for field in ("site", "project", "since", "status_order", "start_status"):
+    for field in ("site", "email", "project", "since", "status_order", "start_status"):
         result = wizard.validate(_proposal(**{field: ""}), "tok", opener=opener)
         assert result.ok is False, field
         assert field.replace("_", " ") in result.problem.lower() or field in result.problem
