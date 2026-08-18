@@ -39,6 +39,26 @@ def test_a_project_with_scope_is_configured():
     assert projects.ProjectRegistry(volume).get("alpha").configured() is True
 
 
+def test_a_project_missing_the_project_field_is_not_configured():
+    """site alone must not satisfy configured(): the AND is undefended if every
+    test either sets nothing or sets all three fields together."""
+    volume = _volume()
+    con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c")
+    con.close()
+    assert projects.ProjectRegistry(volume).get("alpha").configured() is False
+
+
+def test_a_project_missing_earliest_since_is_not_configured():
+    """site and project alone must not satisfy configured() either, or the third
+    term of the AND is just as undefended as the second."""
+    volume = _volume()
+    con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ")
+    con.close()
+    assert projects.ProjectRegistry(volume).get("alpha").configured() is False
+
+
 def test_a_broken_file_is_listed_rather_than_crashing_startup():
     """One unreadable database must not take out the other projects, or a single
     bad volume entry makes the whole instance unreachable."""
@@ -74,6 +94,15 @@ def test_add_creates_a_database_and_returns_it():
     assert project.slug == "gamma"
     assert os.path.exists(project.path)
     assert registry.get("gamma") is project
+
+
+def test_add_is_idempotent_for_an_existing_slug():
+    """A second add() for the same slug must return the same Project rather than
+    build a new one: a new Project opens a new connection, and opening a second
+    connection to a DuckDB file already held open is exactly what one Project per
+    file exists to prevent."""
+    registry = projects.ProjectRegistry(_volume())
+    assert registry.add("gamma") is registry.add("gamma")
 
 
 def test_a_slug_cannot_escape_the_volume():
