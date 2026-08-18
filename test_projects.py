@@ -143,15 +143,30 @@ def _configured(registry, slug="alpha"):
 
 
 class _FakeJira:
-    def __init__(self, block=None):
+    """block, unqualified, still gates search() before any write starts, as the
+    other tests use it. block_at_issue instead gates issue() on its Nth call
+    (1-indexed), so the write loop can be paused with earlier rows already
+    committed. ready fires right before that wait, so a test can synchronize on
+    "the row before this one is committed" instead of racing the writer thread.
+    """
+    def __init__(self, block=None, keys=("PROJ-1",), block_at_issue=None):
         self.block = block
+        self.keys = keys
+        self.block_at_issue = block_at_issue
+        self.ready = threading.Event()
+        self._issue_calls = 0
 
     def search(self, jql):
-        if self.block:
+        if self.block and self.block_at_issue is None:
             self.block.wait(5)
-        yield "PROJ-1", "u1"
+        for key in self.keys:
+            yield key, "u1"
 
     def issue(self, key, fields):
+        self._issue_calls += 1
+        if self._issue_calls == self.block_at_issue:
+            self.ready.set()
+            self.block.wait(5)
         # "updated" has to be a real timestamp, not the "u1" change marker used
         # above: derive() parses it with datetime.fromisoformat.
         return {"key": key, "fields": {"updated": "2026-01-06T09:00:00.000+0000",
@@ -220,15 +235,42 @@ def test_an_unconfigured_project_cannot_be_refreshed():
 
 def test_pages_can_still_be_read_while_a_refresh_runs():
     """The reason the whole design works. If this fails, Refresh has to take the
-    server offline while it runs."""
+    server offline while it runs.
+
+    Blocks the second issue, not the search: by then the first issue's row is
+    already committed (sync commits per row, with no surrounding transaction),
+    so the read below races a write actually in flight. Blocking before any
+    write starts would pass in a design with no concurrent access at all.
+    """
     registry = projects.ProjectRegistry(_volume())
     project = _configured(registry)
     gate = threading.Event()
-    projects.start_refresh(project, jira_factory=lambda scope: _FakeJira(block=gate))
-    rows = project.con.cursor().execute("SELECT count(*) FROM raw_issues").fetchone()[0]
-    assert rows == 0, "the snapshot should predate the running sync"
-    gate.set()
+    fake = _FakeJira(keys=("PROJ-1", "PROJ-2"), block=gate, block_at_issue=2)
+    assert projects.start_refresh(project, jira_factory=lambda scope: fake) is True
+
+    result = {}
+
+    def read():
+        result["rows"] = project.con.cursor().execute(
+            "SELECT count(*) FROM raw_issues").fetchone()[0]
+
+    try:
+        if not fake.ready.wait(5):
+            raise AssertionError("sync never reached the second issue")
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        # The read is bounded on its own thread, independently of _wait_idle
+        # below: if a read could block on the write, this is where it would
+        # hang, and joining with a timeout turns that into a failure.
+        reader.join(5)
+        assert not reader.is_alive(), "the read blocked on the running write"
+    finally:
+        gate.set()
+
+    assert result["rows"] == 1, f"expected the one committed row, got {result}"
     _wait_idle(project)
+    assert project.con.cursor().execute(
+        "SELECT count(*) FROM raw_issues").fetchone()[0] == 2
 
 
 if __name__ == "__main__":
