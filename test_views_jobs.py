@@ -54,7 +54,11 @@ def test_a_refused_refresh_still_redirects_and_says_so():
     finally:
         projects_mod.start_refresh = original
     assert response.status_code == 200
-    assert "already" in response.get_data(as_text=True).lower()
+    # The exact sentence flags_from appends, not a short substring: "already"
+    # alone also matches render.py's stylesheet comment ("the room the page
+    # already has"), which is inlined into every report page regardless of
+    # whether the refusal was ever reported.
+    assert "A refresh is already running for this project." in response.get_data(as_text=True)
 
 
 def test_status_on_an_unknown_project_is_404():
