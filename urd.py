@@ -684,6 +684,12 @@ def derive_sprints(con):
     Upgrade path: detect and reject string elements, or stash both and fail the derive.
     """
     con.execute(SPRINTS_SCHEMA)
+    # Created unconditionally, like VIEWS_SCOPE_ISSUES in derive_issues: a database
+    # that has a scope but was never synced has no Sprint field to resolve, yet
+    # VIEWS_SPRINT_ATTRIBUTION reads this view regardless of whether any sprint
+    # data exists. Without this, report_html on a fresh, unsynced database fails
+    # with "issue_sprints does not exist" rather than rendering an empty report.
+    con.execute(VIEWS_SCOPE_SPRINTS)
     sprint_field = resolve_field(con, "Sprint")
     if not sprint_field:
         return 0
@@ -699,7 +705,6 @@ def derive_sprints(con):
             )
     if rows:
         con.executemany(f"INSERT INTO issue_sprints_all VALUES ({','.join(['?'] * 7)})", rows)
-    con.execute(VIEWS_SCOPE_SPRINTS)
     return len(rows)
 
 
@@ -1075,7 +1080,13 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
         print(f"{field}: {rate:.0%} empty")
 
 
-def report(con, path="report.html", tiers=None):
+def report_html(con, tiers=None):
+    """The report as a string. `report` writes this to a file.
+
+    One rendering path, not two: the served page and the archived file are the
+    same bytes, so a chart cannot look different depending on how it was asked
+    for.
+    """
     scope = load_scope(con)
     header = {
         "project": scope["project"] or "unknown",
@@ -1089,8 +1100,12 @@ def report(con, path="report.html", tiers=None):
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
+    return render.page(header, render_sections(con, tiers))
+
+
+def report(con, path="report.html", tiers=None):
     with open(path, "w") as fh:
-        fh.write(render.page(header, render_sections(con, tiers)))
+        fh.write(report_html(con, tiers))
     print(f"wrote {path}")
     return 0
 
