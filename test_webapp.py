@@ -1,10 +1,14 @@
 import os
+import pathlib
 import re
 import tempfile
 
 import render
 import test_helpers
 import urd
+
+_registry = test_helpers.registry
+_client = test_helpers.client
 
 
 def _configured_db():
@@ -79,6 +83,59 @@ def test_a_notice_fetches_nothing():
     without_anchors = re.sub(r"<a\b[^>]*>", "", out)
     for pattern in (r"\bsrc\s*=", r"@import", r"url\(", r"\bfetch\s*\("):
         assert not re.search(pattern, without_anchors), pattern
+
+
+def test_no_projects_redirects_to_setup():
+    response = _client(_registry()).get("/")
+    assert response.status_code == 302
+    assert "/setup" in response.headers["Location"]
+
+
+def test_a_configured_project_is_redirected_to_from_the_root():
+    registry = _registry()
+    project = registry.add("alpha")
+    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+                   project="PROJ", earliest_since="2026-01-01")
+    response = _client(registry).get("/")
+    assert response.status_code == 302
+    assert "/alpha/" in response.headers["Location"]
+
+
+def test_an_unknown_slug_is_404_not_500():
+    assert _client(_registry()).get("/nope/").status_code == 404
+
+
+def test_a_project_that_never_synced_gets_a_notice_with_refresh():
+    registry = _registry()
+    project = registry.add("alpha")
+    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+                   project="PROJ", earliest_since="2026-01-01")
+    body = _client(registry).get("/alpha/").get_data(as_text=True)
+    assert "never synced" in body.lower()
+    assert 'action="/alpha/refresh"' in body
+    assert "<svg" not in body, "no chart should be drawn from an empty database"
+
+
+def test_a_broken_database_says_so_rather_than_500ing():
+    volume = tempfile.mkdtemp()
+    pathlib.Path(volume, "bad.duckdb").write_text("not a database")
+    response = _client(_registry(volume)).get("/bad/")
+    assert response.status_code == 200
+    assert "could not" in response.get_data(as_text=True).lower()
+
+
+def test_a_synced_project_renders_the_report():
+    registry = _registry()
+    project = registry.add("alpha")
+    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+                   project="PROJ", earliest_since="2026-01-01",
+                   status_order="To Do,In Progress,Review,Done",
+                   start_status="In Progress", review_status="Review",
+                   last_sync_at="2026-08-01T00:00:00Z")
+    urd.derive(project.con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+    body = _client(registry).get("/alpha/").get_data(as_text=True)
+    assert body.startswith("<!doctype html>")
+    assert "flow report" in body
 
 
 if __name__ == "__main__":
