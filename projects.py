@@ -73,7 +73,7 @@ class ProjectRegistry:
         return self._projects.get(slug)
 
     def add(self, slug):
-        if not _SLUG.match(slug or ""):
+        if not _SLUG.fullmatch(slug or ""):
             raise ValueError(f"not a usable project slug: {slug!r}")
         if slug in self._projects:
             return self._projects[slug]

@@ -40,21 +40,33 @@ def test_a_project_with_scope_is_configured():
 
 
 def test_a_project_missing_the_project_field_is_not_configured():
-    """site alone must not satisfy configured(): the AND is undefended if every
-    test either sets nothing or sets all three fields together."""
+    """Isolates the project term: site and earliest_since are both set, so only
+    project is missing. Setting fewer than two of the other fields would leave
+    this indistinguishable from a mutant that drops a different term."""
     volume = _volume()
     con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c")
+    urd.save_scope(con, site="example.atlassian.net", email="a@b.c",
+                   earliest_since="2026-01-01")
     con.close()
     assert projects.ProjectRegistry(volume).get("alpha").configured() is False
 
 
 def test_a_project_missing_earliest_since_is_not_configured():
-    """site and project alone must not satisfy configured() either, or the third
-    term of the AND is just as undefended as the second."""
+    """Isolates the earliest_since term: site and project are both set, so only
+    earliest_since is missing."""
     volume = _volume()
     con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
     urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ")
+    con.close()
+    assert projects.ProjectRegistry(volume).get("alpha").configured() is False
+
+
+def test_a_project_missing_the_site_field_is_not_configured():
+    """Isolates the site term: project and earliest_since are both set, so only
+    site is missing."""
+    volume = _volume()
+    con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
+    urd.save_scope(con, email="a@b.c", project="PROJ", earliest_since="2026-01-01")
     con.close()
     assert projects.ProjectRegistry(volume).get("alpha").configured() is False
 
@@ -105,11 +117,13 @@ def test_add_is_idempotent_for_an_existing_slug():
     assert registry.add("gamma") is registry.add("gamma")
 
 
-def test_a_slug_cannot_escape_the_volume():
-    """Slugs reach this from a URL and a form field, so a traversal attempt has to
-    be refused rather than resolved."""
+def test_a_slug_must_match_the_allowed_charset():
+    """Slugs reach this from a URL and a form field, so anything outside the
+    declared charset (lowercase, digits, hyphens) has to be refused rather than
+    resolved, whether it is an attempt to escape the volume or just a stray
+    character re.match would let slide, such as a trailing newline."""
     registry = projects.ProjectRegistry(_volume())
-    for bad in ("../escape", "a/b", "", ".", "with space", "UPPER"):
+    for bad in ("../escape", "a/b", "", ".", "with space", "UPPER", "gamma\n"):
         try:
             registry.add(bad)
         except ValueError:

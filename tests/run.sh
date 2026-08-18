@@ -8,5 +8,17 @@ for f in test_urd.py test_projects.py test_wizard.py test_container.py test_weba
 	test_views_report.py test_views_jobs.py test_views_wizard.py; do
 	[ -f "$f" ] || continue
 	printf '== %s\n' "$f"
-	uv run --with duckdb --with flask python "$f" | tail -1
+	# Piping through tail throws away the test process's own exit status: under
+	# `set -eu` without pipefail, a pipeline's status is its last command's
+	# (tail's, always 0), so a failing test would print its traceback and this
+	# script would still exit 0. tests/no-leaks.sh already carries the same
+	# lesson at length (it decides on grep's output, never its exit status);
+	# capture the output and branch on the test process's own status instead.
+	if out=$(uv run --with duckdb --with flask python "$f" 2>&1); then
+		printf '%s\n' "$out" | tail -1
+	else
+		printf '%s\n' "$out" | tail -20
+		echo "FAILED: $f"
+		exit 1
+	fi
 done
