@@ -10,6 +10,7 @@ import base64
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -1183,7 +1184,7 @@ def render_sections(con, tiers=None):
     ]
 
 
-def main(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(prog="urd", description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DB_DEFAULT)
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -1226,8 +1227,62 @@ def main(argv=None):
     p_sql = sub.add_parser("sql", help="run a query against the database")
     p_sql.add_argument("query")
 
+    p_serve = sub.add_parser("serve", help="serve the report over HTTP")
+    # 127.0.0.1, not 0.0.0.0. The report is unauthenticated: anyone who reaches
+    # the port reads every ticket title and can start a sync. Exposing it has to
+    # be a deliberate flag rather than the default.
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8731)
+    p_serve.add_argument("--volume", default=os.environ.get("URD_VOLUME", "urd-data"))
+    return parser
+
+
+def seed_from_env(registry, env=None):
+    """Create the first project from the environment, and only the first.
+
+    A configured database wins over a disagreeing environment: restarting with a
+    stale compose file must not silently rescope someone's data. With any project
+    already present this does nothing at all.
+    """
+    env = os.environ if env is None else env
+    if registry.projects():
+        return None
+    site, project, email, since = (env.get("URD_SITE"), env.get("URD_PROJECT"),
+                                   env.get("URD_EMAIL"), env.get("URD_SINCE"))
+    if not (site and project and email and since):
+        return None
+    slug = re.sub(r"[^a-z0-9-]", "-", project.split(",")[0].strip().lower())
+    created = registry.add(slug)
+    save_scope(created.con, site=site, email=email, project=project,
+               component=env.get("URD_COMPONENT") or None, earliest_since=since,
+               status_order=env.get("URD_STATUS_ORDER") or None,
+               start_status=env.get("URD_START_STATUS") or None,
+               review_status=env.get("URD_REVIEW_STATUS") or None)
+    return created
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
-    con = open_db(args.db)
+
+    if args.verb == "serve":
+        import projects
+        import webapp
+        registry = projects.ProjectRegistry(args.volume)
+        seed_from_env(registry)
+        print(f"urd serving {len(registry.projects())} project(s) on "
+              f"http://{args.host}:{args.port}")
+        webapp.create_app(registry).run(host=args.host, port=args.port)
+        return 0
+
+    try:
+        con = open_db(args.db)
+    except duckdb.IOException as exc:
+        # "Conflicting lock is held" is what a running `urd serve` looks like
+        # from a second process. DuckDB refuses even read-only, so there is
+        # nothing to fall back to; say which process to stop.
+        sys.exit(f"cannot open {args.db}: another urd is holding it "
+                 f"(stop `urd serve` first)\n  {exc}")
 
     if args.verb == "sql":
         # ponytail: three lines instead of a dependency on the duckdb CLI. Upgrade

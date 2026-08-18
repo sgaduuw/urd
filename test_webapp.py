@@ -1,10 +1,12 @@
 import os
 import pathlib
 import re
+import sys
 import tempfile
 
 import werkzeug.exceptions
 
+import projects as projects_mod
 import render
 import test_helpers
 import urd
@@ -143,6 +145,68 @@ def test_a_synced_project_renders_the_report():
     body = webapp.project_page(project)
     assert body.startswith("<!doctype html>")
     assert "flow report" in body
+
+
+def test_serve_defaults_to_loopback():
+    """An unauthenticated report must not reach a network by default."""
+    parser = urd.build_parser()
+    args = parser.parse_args(["serve"])
+    assert args.host == "127.0.0.1"
+    assert args.port == 8731
+
+
+def test_serve_takes_its_volume_from_the_environment():
+    parser = urd.build_parser()
+    assert parser.parse_args(["serve", "--volume", "/tmp/x"]).volume == "/tmp/x"
+
+
+def test_the_environment_seeds_only_the_first_project():
+    """A stale compose file must not silently rescope a configured database."""
+    volume = tempfile.mkdtemp()
+    registry = projects_mod.ProjectRegistry(volume)
+    project = registry.add("alpha")
+    urd.save_scope(project.con, site="kept.example.net", email="a@b.c",
+                   project="KEPT", earliest_since="2026-01-01")
+    urd.seed_from_env(registry, {"URD_SITE": "other.example.net",
+                                 "URD_PROJECT": "OTHER",
+                                 "URD_EMAIL": "b@c.d",
+                                 "URD_SINCE": "2020-01-01"})
+    assert urd.load_scope(project.con)["project"] == "KEPT"
+
+
+def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+                                 "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c",
+                                 "URD_SINCE": "2026-01-01"})
+    project = registry.get("proj")
+    assert project is not None
+    assert urd.load_scope(project.con)["project"] == "PROJ"
+
+
+def test_an_incomplete_environment_seeds_nothing():
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net"})
+    assert registry.projects() == []
+
+
+def test_the_cli_reports_a_held_lock_as_such():
+    """A second process gets DuckDB's raw lock error otherwise, which names no
+    cause and suggests no fix."""
+    import subprocess
+    path = os.path.join(tempfile.mkdtemp(), "held.duckdb")
+    held = urd.open_db(path)
+    held.execute("BEGIN")
+    held.execute("CREATE TABLE t (i INTEGER)")
+    try:
+        done = subprocess.run(
+            [sys.executable, "urd.py", "--db", path, "report"],
+            capture_output=True, text=True, timeout=60)
+    finally:
+        held.execute("ROLLBACK")
+    combined = done.stdout + done.stderr
+    assert done.returncode != 0
+    assert "another urd is holding it" in combined, combined
 
 
 if __name__ == "__main__":
