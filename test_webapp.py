@@ -3,9 +3,12 @@ import pathlib
 import re
 import tempfile
 
+import werkzeug.exceptions
+
 import render
 import test_helpers
 import urd
+import webapp
 
 _registry = test_helpers.registry
 _client = test_helpers.client
@@ -85,24 +88,36 @@ def test_a_notice_fetches_nothing():
         assert not re.search(pattern, without_anchors), pattern
 
 
-def test_no_projects_redirects_to_setup():
-    response = _client(_registry()).get("/")
-    assert response.status_code == 302
-    assert "/setup" in response.headers["Location"]
-
-
-def test_a_configured_project_is_redirected_to_from_the_root():
+def test_slug_or_404_returns_the_project_for_a_known_slug():
     registry = _registry()
     project = registry.add("alpha")
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
-                   project="PROJ", earliest_since="2026-01-01")
-    response = _client(registry).get("/")
-    assert response.status_code == 302
-    assert "/alpha/" in response.headers["Location"]
+    assert webapp.slug_or_404(registry, "alpha") is project
 
 
-def test_an_unknown_slug_is_404_not_500():
-    assert _client(_registry()).get("/nope/").status_code == 404
+def test_slug_or_404_raises_not_found_for_an_unknown_slug():
+    try:
+        webapp.slug_or_404(_registry(), "nope")
+        raise AssertionError("expected NotFound")
+    except werkzeug.exceptions.NotFound:
+        pass
+
+
+def test_the_404_handler_lists_configured_projects():
+    """The handler is webapp's own, not Flask's default page, and it names what
+    is actually configured so a wrong URL still points somewhere useful."""
+    registry = _registry()
+    registry.add("alpha")
+    response = _client(registry).get("/does-not-exist")
+    assert response.status_code == 404
+    assert "alpha" in response.get_data(as_text=True)
+
+
+def test_a_project_with_no_scope_gets_a_notice_to_finish_setup():
+    registry = _registry()
+    project = registry.add("alpha")
+    body = webapp.project_page(project)
+    assert "no scope" in body.lower()
+    assert 'href="/setup"' in body
 
 
 def test_a_project_that_never_synced_gets_a_notice_with_refresh():
@@ -110,7 +125,7 @@ def test_a_project_that_never_synced_gets_a_notice_with_refresh():
     project = registry.add("alpha")
     urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01")
-    body = _client(registry).get("/alpha/").get_data(as_text=True)
+    body = webapp.project_page(project)
     assert "never synced" in body.lower()
     assert 'action="/alpha/refresh"' in body
     assert "<svg" not in body, "no chart should be drawn from an empty database"
@@ -119,21 +134,13 @@ def test_a_project_that_never_synced_gets_a_notice_with_refresh():
 def test_a_broken_database_says_so_rather_than_500ing():
     volume = tempfile.mkdtemp()
     pathlib.Path(volume, "bad.duckdb").write_text("not a database")
-    response = _client(_registry(volume)).get("/bad/")
-    assert response.status_code == 200
-    assert "could not" in response.get_data(as_text=True).lower()
+    project = _registry(volume).get("bad")
+    assert "could not" in webapp.project_page(project).lower()
 
 
 def test_a_synced_project_renders_the_report():
-    registry = _registry()
-    project = registry.add("alpha")
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
-                   project="PROJ", earliest_since="2026-01-01",
-                   status_order="To Do,In Progress,Review,Done",
-                   start_status="In Progress", review_status="Review",
-                   last_sync_at="2026-08-01T00:00:00Z")
-    urd.derive(project.con, "To Do,In Progress,Review,Done", "In Progress", "Review")
-    body = _client(registry).get("/alpha/").get_data(as_text=True)
+    project = test_helpers.synced(_registry())
+    body = webapp.project_page(project)
     assert body.startswith("<!doctype html>")
     assert "flow report" in body
 

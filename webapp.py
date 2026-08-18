@@ -33,17 +33,6 @@ def create_app(registry):
             continue
         app.register_blueprint(importlib.import_module(module).bp)
 
-    @app.route("/")
-    def index():
-        projects = registry.projects()
-        if not projects:
-            return flask.redirect("/setup")
-        return flask.redirect(f"/{projects[0].slug}/")
-
-    @app.route("/<slug>/")
-    def project_view(slug):
-        return project_page(slug_or_404(registry, slug))
-
     @app.errorhandler(404)
     def not_found(_):
         return render.notice(
