@@ -46,13 +46,21 @@ def token(env=None):
     env = os.environ if env is None else env
     if env.get("URD_TOKEN"):
         return env["URD_TOKEN"]
-    found = subprocess.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if found.returncode != 0 or not found.stdout.strip():
+    try:
+        found = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        # check=False only stops a non-zero exit from raising; the binary not
+        # existing at all (every non-macOS host, including the container) is a
+        # separate failure subprocess.run raises regardless. Without this, the
+        # exact case the wizard exists to catch in seconds (URD_TOKEN unset) is
+        # a 500 on Linux instead of the same friendly message as below.
+        found = None
+    if found is None or found.returncode != 0 or not found.stdout.strip():
         raise SystemExit(
             "no API token. Either export URD_TOKEN, or store one once with:\n"
             f"  security add-generic-password -s {KEYCHAIN_SERVICE} -a <email> -w"

@@ -112,6 +112,28 @@ def test_a_missing_token_is_reported_rather_than_crashing():
     assert "token" in result.problem.lower()
 
 
+def test_token_reports_a_missing_security_binary_as_no_token():
+    """check=False only stops a non-zero exit from raising; the binary not
+    existing at all (every non-macOS host, including the container this ships
+    in) raises FileNotFoundError regardless, which used to escape as a bare
+    exception instead of the same "no API token" SystemExit every other
+    no-credential path already gets."""
+    original_run = urd.subprocess.run
+
+    def _no_such_binary(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "security")
+
+    urd.subprocess.run = _no_such_binary
+    try:
+        try:
+            urd.token({})
+            raise AssertionError("expected SystemExit")
+        except SystemExit as exc:
+            assert "no API token" in str(exc)
+    finally:
+        urd.subprocess.run = original_run
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
