@@ -307,6 +307,51 @@ def test_pages_can_still_be_read_while_a_refresh_runs():
         f"{len(failures)} of {len(outcomes)} renders failed: {failures[:5]}")
 
 
+def test_project_page_with_no_cursor_survives_a_concurrent_refresh():
+    """The near-miss that almost reopened the Critical during verification:
+    calling webapp.project_page(project) directly, with no con, used to fall
+    back to project.con itself, the same shared connection the sync thread
+    writes to, so this call pattern raced exactly like the unfixed served
+    route did (measured: 2 succeeded, 16 raised the same zip() error). The
+    only production caller that omits con (views_report.py's early return for
+    an unconfigured/unopenable project) returns a notice with no chart SQL,
+    so nothing was actually exposed, but the default was still the dangerous
+    one: safe only because every current caller happens to be right, not
+    because the function can't be called wrong. project_page now makes its
+    own cursor when none is given, so this is safe by construction instead of
+    by convention.
+    """
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)  # already has one derive behind it
+
+    assert projects_mod.start_refresh(
+        project, jira_factory=lambda scope: _BulkFakeJira()) is True
+
+    outcomes = []
+    stop = threading.Event()
+
+    def render_loop():
+        while not stop.is_set():
+            try:
+                webapp.project_page(project)
+                outcomes.append(True)
+            except Exception as exc:      # noqa: BLE001 - recording, not handling
+                outcomes.append(exc)
+
+    renderer = threading.Thread(target=render_loop, daemon=True)
+    renderer.start()
+    deadline = time.time() + 10
+    while project.job.state == "running" and time.time() < deadline:
+        time.sleep(0.002)
+    stop.set()
+    renderer.join(5)
+
+    assert project.job.state == "idle", project.job.message
+    assert outcomes, "the render loop never ran"
+    failures = [o for o in outcomes if o is not True]
+    assert not failures, f"{len(failures)} of {len(outcomes)} renders failed: {failures[:5]}"
+
+
 def test_pages_render_throughout_a_derive():
     """derive_issues drops and recreates the `issues` view without the
     `abandoned` column, which derive() only adds afterward, then recreates the

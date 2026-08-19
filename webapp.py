@@ -131,10 +131,9 @@ def project_page(project, tiers=None, con=None):
     Every state here is a page rather than an exception, because these are all
     reachable by someone whose only interface is a browser tab.
 
-    `con` is the connection to render from; a caller inside a request defaults
-    to None and gets project.con, but the served route passes its own request
-    cursor so this reads from the same transaction flags_from wrote its flags
-    into rather than the shared connection the sync thread also writes to.
+    `con` is the connection to render from; the served route passes its own
+    request cursor so this reads from the same transaction flags_from wrote
+    its flags into. A caller with no cursor to pass gets one made here.
     """
     if project.con is None:
         return render.notice(
@@ -142,7 +141,7 @@ def project_page(project, tiers=None, con=None):
             [project.error or "unknown error",
              "The file is in the volume but DuckDB refused it."],
         )
-    con = project.con if con is None else con
+    con = project.con.cursor() if con is None else con
     if not project.configured():
         return render.notice(
             f"{project.slug}: no scope yet",
