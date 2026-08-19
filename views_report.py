@@ -1,11 +1,10 @@
 """`/` and `/<slug>/`, and the flag controls.
 
-Flags are read from the query string and never written back to sync_state. A
-request that wrote its window would make two browser tabs fight over each other,
-and the CLI stays the way a default is changed.
+Flags are read from the query string and applied inside this request's own
+cursor, in a transaction that is always rolled back: the writes never reach
+sync_state, so two browser tabs never fight over each other's window and the
+CLI stays the way a default is changed.
 """
-import threading
-
 import flask
 
 import render
@@ -14,21 +13,20 @@ import webapp
 
 bp = flask.Blueprint("report", __name__)
 
-# ponytail: one lock for every project, not one per project. A render measures
-# about 194ms and this is a single-user tool, so two renders serializing is not
-# worth solving. Upgrade path: a per-project lock (mirroring projects.Project's
-# refresh lock) if concurrent readers on different projects ever start to matter.
-_RENDER_LOCK = threading.Lock()
 
-
-def flags_from(request, project):
+def flags_from(request, project, con):
     """Query string over stored defaults, with the errors collected, not raised.
 
     urd's validators exit on bad input, which is right for a CLI and a 500 through
     a route. Each is caught, reported on the page, and falls back to that
     project's stored default.
+
+    `con` is the caller's own cursor, inside its own transaction: applying a
+    request's flags means writing them (window/epics/min_closed live in tables
+    the chart SQL reads at query time, not as parameters report_html takes),
+    and the transaction is what keeps that write from ever reaching another
+    connection.
     """
-    con = project.con
     problems = []
     stored_window = urd.load_scope(con)["report_since"]
     since = request.args.get("since", stored_window)
@@ -64,10 +62,16 @@ def flags_from(request, project):
     except SystemExit as exc:
         problems.append(str(exc))
 
-    if request.args.get("refused"):
-        # Set by the refresh route when a sync is already running. It redirects
-        # rather than rendering, so the marker rides in the query string; the
-        # whole point of refusing instead of queueing is that the clicker learns.
+    # The job's own state, not a query-string marker: start_refresh can return
+    # False for three different reasons (already running, no scope, the
+    # database would not open), and collapsing all three onto one marker meant
+    # this text was wrong two times out of three. Reading job.state directly
+    # is accurate for whichever reason applies, and also surfaces a failure
+    # that happened after the redirect already sent the clicker back here,
+    # which used to be reported nowhere at all.
+    if project.job.state == "failed" and project.job.message:
+        problems.append(project.job.message)
+    elif project.job.state == "running":
         problems.append("A refresh is already running for this project.")
 
     return {"since": since, "epics": epics, "min_closed": floor,
@@ -76,13 +80,13 @@ def flags_from(request, project):
 
 def _controls(project, flags, others):
     switcher = " ".join(
-        f'<a href="/{p.slug}/">{render.esc(p.slug)}</a>' for p in others
+        f'<a href="/{render.esc(p.slug)}/">{render.esc(p.slug)}</a>' for p in others
         if p.slug != project.slug
     )
     problems = "".join(
         f'<p class="warn">{render.esc(p)}</p>' for p in flags["problems"])
     return (
-        f'<form method="get" action="/{project.slug}/" class="controls">'
+        f'<form method="get" action="/{render.esc(project.slug)}/" class="controls">'
         f'<label>since <input name="since" value="{render.esc(flags["since"] or "")}"'
         f' placeholder="YYYY-MM-DD"></label>'
         f'<label>min closed <input name="min_closed" type="number" min="1"'
@@ -91,7 +95,7 @@ def _controls(project, flags, others):
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
         f'<label>threshold <input name="threshold" placeholder="default=0.5"></label>'
         f'<button type="submit">Apply</button></form>'
-        f'<form method="post" action="/{project.slug}/refresh">'
+        f'<form method="post" action="/{render.esc(project.slug)}/refresh">'
         f'<button type="submit">Refresh</button></form>'
         f'{problems}'
         + (f"<p>other projects: {switcher}</p>" if switcher else "")
@@ -113,29 +117,32 @@ def project(slug):
     found = webapp.slug_or_404(registry, slug)
     if found.con is None or not found.configured():
         return webapp.project_page(found)
-    con = found.con
-    # window/epics/min_closed live in tables the chart SQL reads at query time,
-    # not as parameters report_html takes, so applying a request's flags means
-    # writing them. Snapshotting here (before flags_from mutates anything) and
-    # restoring after the render is what keeps that mutation request-scoped.
-    #
-    # Both the snapshot and the restore have to run under the same lock as the
-    # render: without it, a second overlapping request could snapshot the first
-    # request's still-applied flags instead of the real stored defaults, and
-    # each would go on to restore over the other's in-flight state. The finally
-    # keeps a render that raises from leaving its flags stuck as the new
-    # defaults, which a bare sequence (apply, render, restore) would not.
-    with _RENDER_LOCK:
-        stored_window = urd.load_scope(con)["report_since"]
-        stored_epics = urd.stored_excluded_epics(con)
-        stored_floor = urd.stored_min_closed(con)
-        try:
-            flags = flags_from(flask.request, found)
-            page = webapp.project_page(found, flags["tiers"])
-        finally:
-            urd.set_report_window(con, stored_window)
-            urd.set_excluded_epics(con, stored_epics)
-            urd.set_min_closed(con, stored_floor)
+
+    # Render on this request's own cursor, inside a transaction that is always
+    # rolled back. found.con is shared with the background sync thread, and
+    # DuckDBPyConnection.execute returns the connection itself rather than a
+    # separate result object, so reading `description`/`fetchall` off it after
+    # a concurrent execute() reads state the sync thread already overwrote.
+    # A cursor's own transaction is isolated from that: it sees a stable
+    # snapshot regardless of what the sync thread commits meanwhile, and the
+    # rollback discards this request's flag writes unconditionally, including
+    # on a render that raises, which a bare apply/render/restore sequence
+    # would not.
+    con = found.con.cursor()
+    con.execute("BEGIN")
+    try:
+        if not webapp.report_ready(found, con):
+            # No report to decorate: project_page's own notice already offers
+            # whatever action applies (finish setup, refresh), and splicing
+            # the controls form on top would add a second Refresh button and
+            # a since/min-closed/exclude box that does nothing without a
+            # report under it.
+            return webapp.project_page(found, con=con)
+        flags = flags_from(flask.request, found, con)
+        page = webapp.project_page(found, flags["tiers"], con)
+    finally:
+        con.execute("ROLLBACK")
+
     controls = _controls(found, flags, registry.projects())
     # Injected after <body> so the controls precede the report without the report
     # needing to know they exist.

@@ -35,7 +35,7 @@ def test_a_project_without_scope_is_not_configured():
 def test_a_project_with_scope_is_configured():
     volume = _volume()
     con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
     con.close()
     assert projects.ProjectRegistry(volume).get("alpha").configured() is True
@@ -47,7 +47,7 @@ def test_a_project_missing_the_project_field_is_not_configured():
     this indistinguishable from a mutant that drops a different term."""
     volume = _volume()
     con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c",
+    urd.save_scope(con, site="example.invalid", email="a@b.c",
                    earliest_since="2026-01-01")
     con.close()
     assert projects.ProjectRegistry(volume).get("alpha").configured() is False
@@ -58,7 +58,7 @@ def test_a_project_missing_earliest_since_is_not_configured():
     earliest_since is missing."""
     volume = _volume()
     con = urd.open_db(os.path.join(volume, "alpha.duckdb"))
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ")
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ")
     con.close()
     assert projects.ProjectRegistry(volume).get("alpha").configured() is False
 
@@ -86,10 +86,16 @@ def test_a_broken_file_is_listed_rather_than_crashing_startup():
     assert registry.get("bad").con is None
 
 
-def test_a_request_sees_the_pre_write_snapshot():
+def test_a_cursor_sees_the_pre_write_snapshot():
     """The measurement the whole concurrency model rests on: a cursor read during
     an open write transaction returns the old data rather than blocking. If this
-    fails, Refresh cannot run while pages are served."""
+    fails, Refresh cannot run while pages are served.
+
+    Named for what it measures, a cursor's isolation, not a served request: no
+    request actually read through cursor() when this test was first written
+    (see test_webapp.py's test_pages_can_still_be_read_while_a_refresh_runs for
+    that, driven through the served path itself), and a name implying it did
+    is exactly why that gap went unnoticed for thirteen rounds of review."""
     volume = _volume()
     registry = projects.ProjectRegistry(volume)
     project = registry.add("alpha")
@@ -135,7 +141,7 @@ def test_a_slug_must_match_the_allowed_charset():
 
 def _configured(registry, slug="alpha"):
     project = registry.add(slug)
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+    urd.save_scope(project.con, site="example.invalid", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01",
                    status_order="To Do,In Progress,Review,Done",
                    start_status="In Progress", review_status="Review")
@@ -233,9 +239,24 @@ def test_an_unconfigured_project_cannot_be_refreshed():
     assert "scope" in project.job.message.lower()
 
 
-def test_pages_can_still_be_read_while_a_refresh_runs():
-    """The reason the whole design works. If this fails, Refresh has to take the
-    server offline while it runs.
+def test_a_refresh_on_an_unopenable_database_is_refused():
+    """The third of start_refresh's three refusal reasons (already running, no
+    scope, this one: the database itself would not open), isolated the same
+    way the other two are."""
+    registry = projects.ProjectRegistry(_volume())
+    project = registry.add("alpha")
+    project.con = None
+    project.error = "IOException: simulated failure"
+    assert projects.start_refresh(project, jira_factory=lambda scope: _FakeJira()) is False
+    assert project.job.state == "failed"
+    assert "simulated failure" in project.job.message
+
+
+def test_a_write_in_flight_does_not_block_a_cursor_read():
+    """The raw-connection-level half of the property test_webapp.py's
+    test_pages_can_still_be_read_while_a_refresh_runs exercises through the
+    served path: a cursor read must not block on, or wait for, a write actually
+    in progress on the same connection.
 
     Blocks the second issue, not the search: by then the first issue's row is
     already committed (sync commits per row, with no surrounding transaction),

@@ -1,8 +1,11 @@
+import json
 import os
 import pathlib
 import re
 import sys
 import tempfile
+import threading
+import time
 
 import duckdb
 import werkzeug.exceptions
@@ -13,18 +16,11 @@ import test_helpers
 import urd
 import webapp
 
-_registry = test_helpers.registry
-_client = test_helpers.client
-
-
-def _configured_db():
-    return test_helpers.configured_db()
-
 
 def test_report_html_returns_what_report_writes():
     """One rendering path, not two. If these ever diverge, the served page and the
     archived file stop being the same report."""
-    con = _configured_db()
+    con = test_helpers.configured_db()
     urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
     path = os.path.join(tempfile.mkdtemp(), "r.html")
     urd.report(con, path)
@@ -36,7 +32,7 @@ def test_report_html_returns_what_report_writes():
 def test_report_html_writes_no_file():
     """`report` defaults to writing report.html in the working directory. The
     server calls this thousands of times, so it must not touch the disk at all."""
-    con = _configured_db()
+    con = test_helpers.configured_db()
     urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
     workdir = tempfile.mkdtemp()
     was = os.getcwd()
@@ -52,7 +48,12 @@ def test_derive_creates_the_sprint_view_without_a_sprint_field():
     """VIEWS_SPRINT_ATTRIBUTION reads issue_sprints unconditionally, so a database
     that never synced a Sprint field must still get the view. None of the existing
     305 tests cover this branch: they all seed a Sprint field before calling derive."""
-    con = _configured_db()
+    con = test_helpers.configured_db()
+    # This test's whole point depends on the fixture having no resolved Sprint
+    # field yet; asserting that here means a future change to configured_db()
+    # that starts seeding one fails this test loudly instead of leaving it
+    # green while silently no longer covering the branch it names.
+    assert urd.resolve_field(con, "Sprint") is None
     urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
     assert con.execute("SELECT count(*) FROM issue_sprints").fetchone()[0] == 0
 
@@ -92,14 +93,14 @@ def test_a_notice_fetches_nothing():
 
 
 def test_slug_or_404_returns_the_project_for_a_known_slug():
-    registry = _registry()
+    registry = test_helpers.registry()
     project = registry.add("alpha")
     assert webapp.slug_or_404(registry, "alpha") is project
 
 
 def test_slug_or_404_raises_not_found_for_an_unknown_slug():
     try:
-        webapp.slug_or_404(_registry(), "nope")
+        webapp.slug_or_404(test_helpers.registry(), "nope")
         raise AssertionError("expected NotFound")
     except werkzeug.exceptions.NotFound:
         pass
@@ -108,15 +109,15 @@ def test_slug_or_404_raises_not_found_for_an_unknown_slug():
 def test_the_404_handler_lists_configured_projects():
     """The handler is webapp's own, not Flask's default page, and it names what
     is actually configured so a wrong URL still points somewhere useful."""
-    registry = _registry()
+    registry = test_helpers.registry()
     registry.add("alpha")
-    response = _client(registry).get("/does-not-exist")
+    response = test_helpers.client(registry).get("/does-not-exist")
     assert response.status_code == 404
     assert "alpha" in response.get_data(as_text=True)
 
 
 def test_a_project_with_no_scope_gets_a_notice_to_finish_setup():
-    registry = _registry()
+    registry = test_helpers.registry()
     project = registry.add("alpha")
     body = webapp.project_page(project)
     assert "no scope" in body.lower()
@@ -124,7 +125,7 @@ def test_a_project_with_no_scope_gets_a_notice_to_finish_setup():
 
 
 def test_a_project_that_never_synced_gets_a_notice_with_refresh():
-    registry = _registry()
+    registry = test_helpers.registry()
     project = registry.add("alpha")
     urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01")
@@ -137,15 +138,214 @@ def test_a_project_that_never_synced_gets_a_notice_with_refresh():
 def test_a_broken_database_says_so_rather_than_500ing():
     volume = tempfile.mkdtemp()
     pathlib.Path(volume, "bad.duckdb").write_text("not a database")
-    project = _registry(volume).get("bad")
+    project = test_helpers.registry(volume).get("bad")
     assert "could not" in webapp.project_page(project).lower()
 
 
 def test_a_synced_project_renders_the_report():
-    project = test_helpers.synced(_registry())
+    project = test_helpers.synced(test_helpers.registry())
     body = webapp.project_page(project)
     assert body.startswith("<!doctype html>")
     assert "flow report" in body
+
+
+def test_a_cross_site_post_is_refused():
+    """Loopback binding does not stop a cross-origin form POST; any page open
+    in the same browser could otherwise trigger a sync or reconfigure via
+    /setup."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry).post(
+        f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "cross-site"})
+    assert response.status_code == 403
+
+
+def test_an_ordinary_same_origin_post_still_works():
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry).post(f"/{project.slug}/refresh")
+    assert response.status_code == 302
+
+
+def test_a_foreign_host_header_is_refused():
+    """Catches DNS rebinding: a name that resolves to loopback but is not one
+    of the hosts a legitimate browser tab for this app would carry."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry).get(
+        f"/{project.slug}/", headers={"Host": "evil.example"})
+    assert response.status_code == 403
+
+
+def test_a_system_exit_from_a_route_becomes_a_500_not_a_dropped_connection():
+    """SystemExit is not an Exception, so Flask's own error handler never sees
+    it; without the WSGI-level guard this crashes silently on the threaded dev
+    server (threading.excepthook drops a SystemExit with no response logged)."""
+    registry = test_helpers.registry()
+    app = webapp.create_app(registry)
+    app.config["TESTING"] = True
+
+    @app.get("/boom-system-exit")
+    def _boom():
+        raise SystemExit("simulated operational failure")
+
+    response = app.test_client().get("/boom-system-exit")
+    assert response.status_code == 500
+    assert "simulated operational failure" in response.get_data(as_text=True)
+
+
+def test_an_ordinary_exception_from_a_route_is_a_notice_not_a_bare_500():
+    registry = test_helpers.registry()
+    app = webapp.create_app(registry)
+    app.config["TESTING"] = True
+
+    @app.get("/boom-value-error")
+    def _boom():
+        raise ValueError("kaboom")
+
+    response = app.test_client().get("/boom-value-error")
+    assert response.status_code == 500
+    assert "kaboom" in response.get_data(as_text=True)
+
+
+class _BulkFakeJira:
+    """A second refresh's worth of fake issues, sized to match the
+    reproduction in .superpowers/sdd/2026-08-18-urd-web/final-fixes.md (a live
+    120-issue refresh): enough writes that a render loop on another thread has
+    a real chance of landing mid-sync and mid-derive, not just at the very
+    end, where nothing is racing anything."""
+
+    def __init__(self, count=120):
+        self.keys = [f"PROJ-{i}" for i in range(1, count + 1)]
+
+    def search(self, jql):
+        yield from ((key, "u1") for key in self.keys)
+
+    def issue(self, key, fields):
+        # "updated"/"created" have to be real timestamps, not the "u1" change
+        # marker above: derive() parses them with datetime.fromisoformat.
+        return {"key": key, "fields": {
+            "updated": "2026-01-06T09:00:00.000+0000",
+            "created": "2026-01-05T09:00:00.000+0000",
+            "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+        }}
+
+    def fields(self):
+        return []
+
+    def statuses(self):
+        return [{"name": "Done", "statusCategory": {"key": "done"}}]
+
+
+def test_pages_can_still_be_read_while_a_refresh_runs():
+    """The reason the whole design works, and the defect a whole-branch review
+    found that thirteen rounds of task-scoped review did not: every request
+    used to read `found.con` directly, and DuckDBPyConnection.execute()
+    returns the connection itself rather than a separate result object, so a
+    chart's `cursor.description`/`fetchall()` could read state the sync
+    thread's next execute() had already overwritten (ValueError: zip()
+    argument 2 is shorter than argument 1).
+
+    Drives the served path itself, a GET through the test client, not a
+    hand-made cursor: a hand-made cursor is exactly what the design spec's own
+    concurrency test called, which is why it passed on code that could not
+    actually serve a page during a sync. See test_projects.py for the
+    connection-level property this builds on.
+    """
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)  # already has one derive behind it
+    client = test_helpers.client(registry)
+
+    assert projects_mod.start_refresh(
+        project, jira_factory=lambda scope: _BulkFakeJira()) is True
+
+    outcomes = []
+    stop = threading.Event()
+
+    def render_loop():
+        while not stop.is_set():
+            try:
+                outcomes.append(client.get(f"/{project.slug}/").status_code)
+            except Exception as exc:      # noqa: BLE001 - recording, not handling
+                # Without a registered error handler, Flask's test client
+                # re-raises an unhandled view exception directly rather than
+                # turning it into a response; caught here so a crash mid-loop
+                # is recorded as a failed outcome instead of silently ending
+                # the thread with nothing in `outcomes` at all.
+                outcomes.append(exc)
+
+    renderer = threading.Thread(target=render_loop, daemon=True)
+    renderer.start()
+    deadline = time.time() + 10
+    while project.job.state == "running" and time.time() < deadline:
+        time.sleep(0.002)
+    stop.set()
+    renderer.join(5)
+
+    assert project.job.state == "idle", project.job.message
+    assert outcomes, "the render loop never ran"
+    failures = [o for o in outcomes if o != 200]
+    assert not failures, (
+        f"{len(failures)} of {len(outcomes)} renders failed: {failures[:5]}")
+
+
+def test_pages_render_throughout_a_derive():
+    """derive_issues drops and recreates the `issues` view without the
+    `abandoned` column, which derive() only adds afterward, then recreates the
+    view again; fifteen chart queries filter on that column. A reader on
+    another cursor in the gap between those two points would see a view with
+    no such column. Wrapping the whole rebuild in one BEGIN/COMMIT is what
+    makes a cursor see either the complete old schema or the complete new
+    one, never the gap.
+
+    Re-derives repeatedly against the same raw_issues, rather than a real sync
+    between passes, so the loop is fast enough to hit the gap (if there were
+    one) many times inside this test's own timeout.
+    """
+    con = urd.open_db(os.path.join(tempfile.mkdtemp(), "derive-race.duckdb"))
+    urd.save_scope(con, site=test_helpers.SITE, email=test_helpers.EMAIL,
+                   project="PROJ", earliest_since="2026-01-01")
+    issue_json = json.dumps({
+        "fields": {
+            "summary": "x", "issuetype": {"name": "Task"},
+            "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+            "created": "2026-01-01T00:00:00.000+0000",
+            "updated": "2026-01-01T00:00:00.000+0000",
+        },
+        "changelog": {"histories": []},
+    })
+    rows = [(f"PROJ-{i}", "u1", urd._now(), issue_json) for i in range(1, 301)]
+    con.executemany("INSERT INTO raw_issues VALUES (?, ?, ?, ?)", rows)
+    urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+
+    outcomes = []
+    stop = threading.Event()
+
+    def rederive_loop():
+        while not stop.is_set():
+            urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+
+    def read_loop():
+        reader = con.cursor()
+        while not stop.is_set():
+            try:
+                urd.report_html(reader)
+                outcomes.append(True)
+            except Exception as exc:      # noqa: BLE001 - recording, not handling
+                outcomes.append(exc)
+
+    writer = threading.Thread(target=rederive_loop, daemon=True)
+    reader_thread = threading.Thread(target=read_loop, daemon=True)
+    writer.start()
+    reader_thread.start()
+    time.sleep(1.5)
+    stop.set()
+    writer.join(5)
+    reader_thread.join(5)
+
+    failures = [o for o in outcomes if o is not True]
+    assert outcomes, "the reader never ran"
+    assert not failures, f"{len(failures)} of {len(outcomes)} reads raised: {failures[:3]}"
 
 
 def test_serve_defaults_to_loopback():

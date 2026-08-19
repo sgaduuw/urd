@@ -14,7 +14,9 @@ import urd
 
 # Lowercase, digits and hyphens. Slugs arrive from a URL path and a form field,
 # so anything that could climb out of the volume is refused rather than resolved.
-_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# No ^/$ anchors: this is always called through fullmatch, which already anchors
+# both ends; keeping them was harmless but redundant.
+_SLUG = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
 class JobState:
@@ -29,9 +31,6 @@ class JobState:
         self.state = "idle"
         self.progress = ""
         self.message = ""
-
-    def as_dict(self):
-        return {"state": self.state, "progress": self.progress, "message": self.message}
 
 
 class Project:
@@ -52,7 +51,10 @@ class Project:
     def configured(self):
         if self.con is None:
             return False
-        scope = urd.load_scope(self.con)
+        # On a cursor, not self.con directly: this is called from request
+        # threads and from start_refresh, so it can race a sync's writes to
+        # sync_state exactly like a chart query can.
+        scope = urd.load_scope(self.con.cursor())
         return bool(scope["site"] and scope["project"] and scope["earliest_since"])
 
 
@@ -64,6 +66,11 @@ class ProjectRegistry:
         for name in sorted(os.listdir(volume)):
             if name.endswith(".duckdb"):
                 slug = name[: -len(".duckdb")]
+                # A hand-dropped UPPER.duckdb or similar never passed add()'s
+                # validator; skip it rather than register a slug the URL and
+                # form-field charset check would have refused.
+                if not _SLUG.fullmatch(slug):
+                    continue
                 self._projects[slug] = Project(slug, os.path.join(volume, name))
 
     def projects(self):
@@ -128,5 +135,13 @@ def start_refresh(project, jira_factory=None):
         finally:
             project.lock.release()
 
-    threading.Thread(target=run, name=f"refresh-{project.slug}", daemon=True).start()
+    thread = threading.Thread(target=run, name=f"refresh-{project.slug}", daemon=True)
+    try:
+        thread.start()
+    except BaseException:
+        # run()'s own finally is what normally releases this; if the thread
+        # never actually started, that finally never runs, and the lock would
+        # stay held until the process restarts.
+        project.lock.release()
+        raise
     return True
