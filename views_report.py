@@ -7,6 +7,7 @@ CLI stays the way a default is changed.
 """
 import flask
 
+import projects
 import render
 import urd
 import webapp
@@ -66,13 +67,13 @@ def flags_from(request, project, con):
     # False for three different reasons (already running, no scope, the
     # database would not open), and collapsing all three onto one marker meant
     # this text was wrong two times out of three. Reading job.state directly
-    # is accurate for whichever reason applies, and also surfaces a failure
-    # that happened after the redirect already sent the clicker back here,
-    # which used to be reported nowhere at all.
-    if project.job.state == "failed" and project.job.message:
-        problems.append(project.job.message)
-    elif project.job.state == "running":
-        problems.append("A refresh is already running for this project.")
+    # (projects.job_message, shared with webapp's notice pages) is accurate
+    # for whichever reason applies, and also surfaces a failure that happened
+    # after the redirect already sent the clicker back here, which used to be
+    # reported nowhere at all.
+    message = projects.job_message(project)
+    if message:
+        problems.append(message)
 
     return {"since": since, "epics": epics, "min_closed": floor,
             "tiers": tiers, "problems": problems}

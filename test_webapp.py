@@ -135,6 +135,24 @@ def test_a_project_that_never_synced_gets_a_notice_with_refresh():
     assert "<svg" not in body, "no chart should be drawn from an empty database"
 
 
+def test_a_failed_refresh_shows_its_message_on_the_never_synced_notice():
+    """The "never synced" notice is the only page a project that has never
+    completed a sync ever shows, and it offers the same Refresh button the
+    full report does; flags_from's job-message logic only runs on the full
+    report path, so a failure here would otherwise be invisible exactly like
+    the bug this whole item exists to fix, just for a different first-run
+    state instead of a later one."""
+    registry = test_helpers.registry()
+    project = registry.add("alpha")
+    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+                   project="PROJ", earliest_since="2026-01-01")
+    project.job.state = "failed"
+    project.job.message = "no API token"
+    body = webapp.project_page(project)
+    assert "never synced" in body.lower()
+    assert "no API token" in body
+
+
 def test_a_broken_database_says_so_rather_than_500ing():
     volume = tempfile.mkdtemp()
     pathlib.Path(volume, "bad.duckdb").write_text("not a database")

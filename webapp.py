@@ -7,6 +7,7 @@ module makes every route change serial.
 import flask
 import werkzeug.exceptions
 
+import projects
 import render
 import urd
 
@@ -151,19 +152,29 @@ def project_page(project, tiers=None, con=None):
         )
     scope = urd.load_scope(con)
     if not scope["last_sync_at"]:
+        lines = [f"Configured for {scope['project']} since {scope['earliest_since']}.",
+                 "Nothing has been fetched yet."]
+        # Both notice states below offer the same Refresh button the full
+        # report does, so a failed or in-progress attempt has to be visible
+        # here too: this is the only page a project that has never
+        # successfully synced ever shows.
+        message = projects.job_message(project)
+        if message:
+            lines.append(message)
         return render.notice(
-            f"{project.slug}: never synced",
-            [f"Configured for {scope['project']} since {scope['earliest_since']}.",
-             "Nothing has been fetched yet."],
+            f"{project.slug}: never synced", lines,
             actions=[("Refresh", f"/{project.slug}/refresh", "post")],
         )
     if not _has_issues_view(con):
         # Reachable only by a CLI user who synced without deriving; the Refresh
         # button always does both.
+        lines = ["Raw issues are present but the derived tables are not.",
+                 "Refresh runs both steps."]
+        message = projects.job_message(project)
+        if message:
+            lines.append(message)
         return render.notice(
-            f"{project.slug}: synced but not derived",
-            ["Raw issues are present but the derived tables are not.",
-             "Refresh runs both steps."],
+            f"{project.slug}: synced but not derived", lines,
             actions=[("Refresh", f"/{project.slug}/refresh", "post")],
         )
     return urd.report_html(con, tiers)

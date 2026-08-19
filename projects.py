@@ -33,6 +33,26 @@ class JobState:
         self.message = ""
 
 
+def job_message(project):
+    """A one-line status worth showing on any page this project appears on, if
+    the job has anything to say: the failure message when the last attempt
+    failed, or that one is already running. None when idle with nothing to
+    report, which is true both before a first run and after a successful one,
+    a distinction this deliberately does not have to make since neither case
+    is worth a line on the page.
+
+    Shared by every page that offers a Refresh button (the full report and
+    the "never synced"/"synced but not derived" notices alike), so a refresh
+    that fails is visible wherever it could have been clicked from, not only
+    on the one page that happens to already have a report to decorate.
+    """
+    if project.job.state == "failed" and project.job.message:
+        return project.job.message
+    if project.job.state == "running":
+        return "A refresh is already running for this project."
+    return None
+
+
 class Project:
     def __init__(self, slug, path):
         self.slug = slug
