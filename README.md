@@ -36,6 +36,47 @@ uv run --with duckdb python urd.py report
 open report.html
 ```
 
+## Serving it
+
+`urd serve` renders the report over HTTP instead of writing a file, with the report
+flags as controls and a Refresh button that syncs in the background:
+
+```
+uv run --with duckdb --with flask python urd.py serve --volume ./urd-data
+```
+
+One DuckDB file per Jira project, all in the volume, each with its own workflow
+configuration, component filter and report flags. `/` redirects to the first
+configured project; `/setup` adds another. Three projects mean three workflows, and
+`status_order` is a single table per database, which is why they are separate files
+rather than one.
+
+Nothing about the CLI changes. `urd report` still writes the self-contained file,
+and it is the same bytes the server serves.
+
+### In a container
+
+```
+URD_TOKEN=... docker compose up
+```
+
+`URD_TOKEN` is passed through from your environment and is never written to the
+database, a file, or a log. `URD_SITE`, `URD_EMAIL`, `URD_PROJECT`,
+`URD_COMPONENT` and `URD_SINCE` seed the *first* project so a fresh volume comes up
+working; a database that is already configured wins over them, so restarting with a
+stale compose file cannot rescope your data.
+
+### It has no authentication
+
+Anyone who can reach the port reads every ticket title and can trigger a sync. The
+server binds `127.0.0.1` and compose publishes to `127.0.0.1`, so putting it on a
+network is a deliberate edit of both. Do not make that edit on a shared host until
+authentication exists.
+
+While `urd serve` is running it holds the write lock on every database in its
+volume, so the CLI verbs cannot be used against them: DuckDB refuses a second
+process even read-only. Stop the server first.
+
 ## The three verbs
 
 `sync` fetches issues matching the persisted project, component and `since`
