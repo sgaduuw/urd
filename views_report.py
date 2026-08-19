@@ -5,6 +5,8 @@ cursor, in a transaction that is always rolled back: the writes never reach
 sync_state, so two browser tabs never fight over each other's window and the
 CLI stays the way a default is changed.
 """
+import threading
+
 import flask
 
 import projects
@@ -13,6 +15,23 @@ import urd
 import webapp
 
 bp = flask.Blueprint("report", __name__)
+
+# ponytail: one lock for every project, not one per project. A render measures
+# about 194ms and this is a single-user tool, so two renders serializing is not
+# worth solving further. Upgrade path: a per-project lock (mirroring
+# projects.Project's refresh lock) if concurrent readers on different projects
+# ever start to matter.
+#
+# This and the per-request cursor below are complementary, not alternatives:
+# the cursor stops a render from reading state the sync thread's next
+# execute() already overwrote (corruption between a render and a concurrent
+# sync); the lock stops two overlapping renders from writing the same
+# one-row report_window at once, which DuckDB detects as a write-write
+# conflict, not corruption, and 500s on ("Conflict on tuple deletion"). The
+# cursor only isolates a render from the sync thread; it does nothing about
+# two renders racing each other, which is exactly the gap that opened when
+# this lock was removed under the belief the cursor had made it redundant.
+_RENDER_LOCK = threading.Lock()
 
 
 def flags_from(request, project, con):
@@ -120,7 +139,8 @@ def project(slug):
         return webapp.project_page(found)
 
     # Render on this request's own cursor, inside a transaction that is always
-    # rolled back. found.con is shared with the background sync thread, and
+    # rolled back, and under _RENDER_LOCK (see its own comment for why both
+    # exist). found.con is shared with the background sync thread, and
     # DuckDBPyConnection.execute returns the connection itself rather than a
     # separate result object, so reading `description`/`fetchall` off it after
     # a concurrent execute() reads state the sync thread already overwrote.
@@ -128,21 +148,23 @@ def project(slug):
     # snapshot regardless of what the sync thread commits meanwhile, and the
     # rollback discards this request's flag writes unconditionally, including
     # on a render that raises, which a bare apply/render/restore sequence
-    # would not.
+    # would not. None of that stops two overlapping renders from both writing
+    # report_window's one row, which is what the lock is for.
     con = found.con.cursor()
-    con.execute("BEGIN")
-    try:
-        if not webapp.report_ready(found, con):
-            # No report to decorate: project_page's own notice already offers
-            # whatever action applies (finish setup, refresh), and splicing
-            # the controls form on top would add a second Refresh button and
-            # a since/min-closed/exclude box that does nothing without a
-            # report under it.
-            return webapp.project_page(found, con=con)
-        flags = flags_from(flask.request, found, con)
-        page = webapp.project_page(found, flags["tiers"], con)
-    finally:
-        con.execute("ROLLBACK")
+    with _RENDER_LOCK:
+        con.execute("BEGIN")
+        try:
+            if not webapp.report_ready(found, con):
+                # No report to decorate: project_page's own notice already
+                # offers whatever action applies (finish setup, refresh), and
+                # splicing the controls form on top would add a second
+                # Refresh button and a since/min-closed/exclude box that does
+                # nothing without a report under it.
+                return webapp.project_page(found, con=con)
+            flags = flags_from(flask.request, found, con)
+            page = webapp.project_page(found, flags["tiers"], con)
+        finally:
+            con.execute("ROLLBACK")
 
     controls = _controls(found, flags, registry.projects())
     # Injected after <body> so the controls precede the report without the report

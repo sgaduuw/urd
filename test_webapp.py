@@ -278,10 +278,17 @@ def test_pages_can_still_be_read_while_a_refresh_runs():
         project, jira_factory=lambda scope: _BulkFakeJira()) is True
 
     outcomes = []
+    saw_running = []
     stop = threading.Event()
 
     def render_loop():
         while not stop.is_set():
+            # Recorded before the request, not after: job.state can flip to
+            # "idle" while the render itself is in flight, and the point is
+            # to know a render was attempted while a sync was genuinely
+            # running, not merely that the job hadn't finished yet when this
+            # loop last checked.
+            saw_running.append(project.job.state == "running")
             try:
                 outcomes.append(client.get(f"/{project.slug}/").status_code)
             except Exception as exc:      # noqa: BLE001 - recording, not handling
@@ -302,9 +309,56 @@ def test_pages_can_still_be_read_while_a_refresh_runs():
 
     assert project.job.state == "idle", project.job.message
     assert outcomes, "the render loop never ran"
+    # Without this, a fast machine that finishes the refresh before the loop
+    # gets going leaves a green test that raced nothing: every render would
+    # have hit an already-idle project, which this fix is not needed for.
+    assert any(saw_running), "no render overlapped a running refresh; this proves nothing"
     failures = [o for o in outcomes if o != 200]
     assert not failures, (
         f"{len(failures)} of {len(outcomes)} renders failed: {failures[:5]}")
+
+
+def test_two_concurrent_renders_on_one_project_do_not_conflict():
+    """Restoring _RENDER_LOCK's actual job: the per-request cursor and
+    transaction stop a render from reading state a concurrent *sync*
+    overwrote (corruption), but do nothing about two renders racing each
+    other. flags_from writes on every render regardless of whether anything
+    actually changed (urd.set_report_window does DELETE FROM report_window
+    on a one-row table even when the value is unchanged), so two overlapping
+    request transactions on that row are a deterministic write-write
+    conflict, not the corruption the cursor guards against. Reproduced live
+    against the real app, two threads, an otherwise idle server: about 97% of
+    3750 requests came back 500 with "Conflict on tuple deletion". Reachable
+    by one person on a laptop: a reload while a ~194ms render is in flight, a
+    double-clicked Apply, or the same project open in two tabs.
+
+    No refresh needed here at all: the conflict is between two renders, not
+    between a render and a sync, which is what makes this a different defect
+    from the one test_pages_can_still_be_read_while_a_refresh_runs pins.
+    """
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    app = webapp.create_app(registry)
+    app.config["TESTING"] = True
+
+    per_thread = 60
+    outcomes = []
+
+    def hammer():
+        client = app.test_client()
+        for _ in range(per_thread):
+            outcomes.append(client.get(f"/{project.slug}/").status_code)
+
+    threads = [threading.Thread(target=hammer) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert len(outcomes) == 2 * per_thread
+    failures = [o for o in outcomes if o != 200]
+    assert not failures, (
+        f"{len(failures)} of {len(outcomes)} renders failed with a non-200")
 
 
 def test_project_page_with_no_cursor_survives_a_concurrent_refresh():
