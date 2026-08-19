@@ -41,7 +41,11 @@ def create_app(registry):
         if (flask.request.method == "POST"
                 and flask.request.headers.get("Sec-Fetch-Site") == "cross-site"):
             flask.abort(403)
-        host = (flask.request.host or "").split(":")[0]
+        # An IPv6 literal Host is bracketed ("[::1]:8731" or "[::1]"), so a
+        # plain split(":")[0] returns "[" and the [::1] allowlist entry could
+        # never match; strip the port after the closing bracket instead.
+        host = flask.request.host or ""
+        host = host.split("]")[0] + "]" if host.startswith("[") else host.split(":")[0]
         if host not in ("127.0.0.1", "localhost", "[::1]"):
             flask.abort(403)
 

@@ -179,9 +179,18 @@ def test_a_cross_site_post_is_refused():
 
 
 def test_an_ordinary_same_origin_post_still_works():
+    """start_refresh is mocked, as its sibling in test_views_jobs.py does:
+    unmocked, the default jira_factory calls urd.token() for real on a
+    background thread, stopped only by the network guard rather than by this
+    test never needing a credential in the first place."""
     registry = test_helpers.registry()
     project = test_helpers.synced(registry)
-    response = test_helpers.client(registry).post(f"/{project.slug}/refresh")
+    original = projects_mod.start_refresh
+    projects_mod.start_refresh = lambda project, jira_factory=None: True
+    try:
+        response = test_helpers.client(registry).post(f"/{project.slug}/refresh")
+    finally:
+        projects_mod.start_refresh = original
     assert response.status_code == 302
 
 
@@ -193,6 +202,19 @@ def test_a_foreign_host_header_is_refused():
     response = test_helpers.client(registry).get(
         f"/{project.slug}/", headers={"Host": "evil.example"})
     assert response.status_code == 403
+
+
+def test_an_ipv6_loopback_host_header_is_accepted():
+    """A bracketed IPv6 Host ("[::1]:8731") split on the first ":" gives "[",
+    which the allowlist could never contain; that dead entry let every IPv6
+    loopback request 403 rather than the network-rebinding attempt the check
+    exists for."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    for host in ("[::1]:8731", "[::1]"):
+        response = test_helpers.client(registry).get(
+            f"/{project.slug}/", headers={"Host": host})
+        assert response.status_code == 200, host
 
 
 def test_a_system_exit_from_a_route_becomes_a_500_not_a_dropped_connection():
@@ -223,7 +245,12 @@ def test_an_ordinary_exception_from_a_route_is_a_notice_not_a_bare_500():
 
     response = app.test_client().get("/boom-value-error")
     assert response.status_code == 500
-    assert "kaboom" in response.get_data(as_text=True)
+    body = response.get_data(as_text=True)
+    # Not just "kaboom" appearing somewhere: that alone would also pass for a
+    # bare traceback dump. Pin that this is actually render.notice's page.
+    assert body.startswith("<!doctype html>")
+    assert "<h1>Something went wrong</h1>" in body
+    assert "kaboom" in body
 
 
 class _BulkFakeJira:

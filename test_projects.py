@@ -5,6 +5,7 @@ import threading
 import time
 
 import projects
+import test_helpers  # noqa: F401 - installs the network-refusal guard on import
 import urd
 
 
@@ -84,6 +85,23 @@ def test_a_broken_file_is_listed_rather_than_crashing_startup():
     assert registry.get("good").error is None
     assert registry.get("bad").error, "a broken file must carry its reason"
     assert registry.get("bad").con is None
+
+
+def test_a_bad_slug_file_is_skipped_and_named():
+    """A hand-dropped MyProject.duckdb never passed add()'s slug validator.
+    The startup scan skips it rather than registering an unreachable slug,
+    but silently is not good enough: without a line naming the file, it just
+    vanishes from the volume with nothing anywhere saying why."""
+    import contextlib
+    import io
+
+    volume = _volume()
+    urd.open_db(os.path.join(volume, "MyProject.duckdb")).close()
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        registry = projects.ProjectRegistry(volume)
+    assert registry.projects() == []
+    assert "MyProject.duckdb" in stderr.getvalue()
 
 
 def test_a_cursor_sees_the_pre_write_snapshot():

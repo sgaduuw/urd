@@ -73,10 +73,13 @@ same failure.
 ### It has no authentication
 
 Anyone who can reach the port reads every ticket title and can trigger a sync. The
-Dockerfile's own `CMD` binds `0.0.0.0`; only compose's published port keeps that off
-a network by default, so putting it there is one deliberate edit (`-p 8731:8731`
-instead of `-p 127.0.0.1:8731:8731`), not two. Do not make that edit on a shared
-host until authentication exists.
+Dockerfile's own `CMD` binds `0.0.0.0`; compose's published port is what keeps that
+off a network by default. The app also refuses any request whose `Host` header is
+not `127.0.0.1`, `localhost` or `[::1]` (`webapp.py`'s `_same_origin_only`), so
+widening the published port alone (`-p 8731:8731` instead of
+`-p 127.0.0.1:8731:8731`) is not enough on its own: every request still 403s until
+that allowlist is widened too, which is deliberately awkward rather than one flag
+away. Do not make either edit on a shared host until authentication exists.
 
 ### The write lock
 

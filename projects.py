@@ -8,6 +8,7 @@ So each file is opened exactly once, here, for the process's lifetime.
 """
 import os
 import re
+import sys
 import threading
 
 import urd
@@ -88,8 +89,12 @@ class ProjectRegistry:
                 slug = name[: -len(".duckdb")]
                 # A hand-dropped UPPER.duckdb or similar never passed add()'s
                 # validator; skip it rather than register a slug the URL and
-                # form-field charset check would have refused.
+                # form-field charset check would have refused. Printed, not
+                # silent: the file otherwise just vanishes from the volume
+                # with nothing anywhere saying why.
                 if not _SLUG.fullmatch(slug):
+                    print(f"{name}: {slug!r} is not a usable project slug "
+                          f"(need [a-z0-9][a-z0-9-]*); skipping", file=sys.stderr)
                     continue
                 self._projects[slug] = Project(slug, os.path.join(volume, name))
 

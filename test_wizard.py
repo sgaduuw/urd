@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 
+import test_helpers  # noqa: F401 - installs the network-refusal guard on import
 import urd
 import wizard
 
