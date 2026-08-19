@@ -4,6 +4,7 @@ import re
 import sys
 import tempfile
 
+import duckdb
 import werkzeug.exceptions
 
 import projects as projects_mod
@@ -303,6 +304,31 @@ def test_a_bad_path_is_not_reported_as_a_held_lock():
     assert done.returncode != 0
     assert "another urd is holding it" not in combined, combined
     assert "No such file" in combined, combined
+
+
+def test_a_block_related_ioexception_does_not_collide_with_the_lock_phrase():
+    """Pins the discriminator against the substring it must not match: "block"
+    contains "lock", and DuckDB's storage is organised in blocks, so a corrupted
+    or short block read is a plausible IOException that must not be misdiagnosed
+    as a running server. Constructed directly rather than by corrupting a real
+    database, since the point is the string match, not reproducing storage
+    corruption."""
+    real_open_db = urd.open_db
+
+    def fake_open_db(path):
+        raise duckdb.IOException("IO Error: could not read block 3 of file, short read")
+
+    urd.open_db = fake_open_db
+    try:
+        try:
+            urd.main(["--db", "irrelevant.duckdb", "report"])
+            raise AssertionError("expected SystemExit")
+        except SystemExit as exc:
+            message = str(exc)
+    finally:
+        urd.open_db = real_open_db
+    assert "another urd is holding it" not in message, message
+    assert "could not read block" in message, message
 
 
 if __name__ == "__main__":

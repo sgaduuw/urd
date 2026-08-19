@@ -1293,8 +1293,10 @@ def main(argv=None):
         # one: a bad path raises it too. Only "Conflicting lock is held", which is
         # what a running `urd serve` looks like from a second process, gets the
         # friendly phrasing; anything else (a typo'd path, for instance) would be
-        # misdiagnosed as a server that isn't actually running.
-        if "lock" in str(exc).lower():
+        # misdiagnosed as a server that isn't actually running. Match the full
+        # phrase, not "lock" alone: DuckDB's storage is organised in blocks, and
+        # "block" contains "lock" as a substring.
+        if "conflicting lock" in str(exc).lower():
             sys.exit(f"cannot open {args.db}: another urd is holding it "
                      f"(stop `urd serve` first)\n  {exc}")
         sys.exit(f"cannot open {args.db}: {exc}")
