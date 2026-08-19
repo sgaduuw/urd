@@ -1,4 +1,3 @@
-# Dockerfile
 # 3.11 is a floor, not a preference: _ts relies on its fromisoformat parsing both
 # the "+0000" shape Jira sends on issue fields and the "Z" shape it sends on the
 # sprint field. On 3.10 it raises.
