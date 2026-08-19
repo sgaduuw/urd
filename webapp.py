@@ -120,7 +120,7 @@ def report_ready(project, con=None):
     """
     if project.con is None or not project.configured():
         return False
-    con = project.con if con is None else con
+    con = project.con.cursor() if con is None else con
     scope = urd.load_scope(con)
     return bool(scope["last_sync_at"]) and _has_issues_view(con)
 
