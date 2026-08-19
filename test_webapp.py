@@ -155,9 +155,39 @@ def test_serve_defaults_to_loopback():
     assert args.port == 8731
 
 
-def test_serve_takes_its_volume_from_the_environment():
-    parser = urd.build_parser()
+def test_serve_volume_flag_wins_over_the_environment():
+    """URD_VOLUME is set to a different path than the flag, so a pass here proves
+    the flag overrides the environment rather than merely matching a default that
+    happens to equal the flag's value.
+
+    The default is captured once, inside build_parser (the os.environ.get call
+    runs at add_argument time, not at parse_args time), so URD_VOLUME has to be
+    set before build_parser() runs, or this test would pass for the wrong reason."""
+    was = os.environ.get("URD_VOLUME")
+    os.environ["URD_VOLUME"] = "/tmp/from-env"
+    try:
+        parser = urd.build_parser()
+    finally:
+        if was is None:
+            os.environ.pop("URD_VOLUME", None)
+        else:
+            os.environ["URD_VOLUME"] = was
     assert parser.parse_args(["serve", "--volume", "/tmp/x"]).volume == "/tmp/x"
+
+
+def test_serve_volume_defaults_from_the_environment():
+    """Same ordering constraint as above: URD_VOLUME must be set before
+    build_parser() runs, since that call is what reads it."""
+    was = os.environ.get("URD_VOLUME")
+    os.environ["URD_VOLUME"] = "/tmp/from-env"
+    try:
+        parser = urd.build_parser()
+    finally:
+        if was is None:
+            os.environ.pop("URD_VOLUME", None)
+        else:
+            os.environ["URD_VOLUME"] = was
+    assert parser.parse_args(["serve"]).volume == "/tmp/from-env"
 
 
 def test_the_environment_seeds_only_the_first_project():
@@ -187,6 +217,43 @@ def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
 def test_an_incomplete_environment_seeds_nothing():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
     urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net"})
+    assert registry.projects() == []
+
+
+def test_seed_from_env_missing_site_seeds_nothing():
+    """Isolates the site term: project, email and since are all set, so only site
+    is missing. Setting fewer than three of the other fields would leave this
+    indistinguishable from a mutant that drops a different term."""
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c",
+                                 "URD_SINCE": "2026-01-01"})
+    assert registry.projects() == []
+
+
+def test_seed_from_env_missing_project_seeds_nothing():
+    """Isolates the project term: site, email and since are all set, so only
+    project is missing."""
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+                                 "URD_EMAIL": "a@b.c", "URD_SINCE": "2026-01-01"})
+    assert registry.projects() == []
+
+
+def test_seed_from_env_missing_email_seeds_nothing():
+    """Isolates the email term: site, project and since are all set, so only
+    email is missing."""
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+                                 "URD_PROJECT": "PROJ", "URD_SINCE": "2026-01-01"})
+    assert registry.projects() == []
+
+
+def test_seed_from_env_missing_since_seeds_nothing():
+    """Isolates the since term: site, project and email are all set, so only
+    since is missing."""
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+                                 "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c"})
     assert registry.projects() == []
 
 
