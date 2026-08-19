@@ -52,7 +52,7 @@ configured project; `/setup` adds another. Three projects mean three workflows, 
 rather than one.
 
 Nothing about the CLI changes. `urd report` still writes the self-contained file,
-and the server renders the same report with the controls added around it.
+and the server renders the same report with a controls form prepended to it.
 
 ### In a container
 
@@ -62,16 +62,21 @@ URD_TOKEN=... docker compose up
 
 `URD_TOKEN` is passed through from your environment and is never written to the
 database, a file, or a log. `URD_SITE`, `URD_EMAIL`, `URD_PROJECT`,
-`URD_COMPONENT` and `URD_SINCE` seed the *first* project so a fresh volume comes up
-working; a database that is already configured wins over them, so restarting with a
-stale compose file cannot rescope your data.
+`URD_COMPONENT`, `URD_SINCE`, `URD_STATUS_ORDER`, `URD_START_STATUS` and
+`URD_REVIEW_STATUS` seed the *first* project so a fresh volume comes up already
+synced and derived; a database that is already configured wins over them, so
+restarting with a stale compose file cannot rescope your data. Without the three
+status keys, the seeded project can sync but derive refuses for want of
+`--status-order`, landing on a page whose only action is Refresh, which repeats the
+same failure.
 
 ### It has no authentication
 
 Anyone who can reach the port reads every ticket title and can trigger a sync. The
-server binds `127.0.0.1` and compose publishes to `127.0.0.1`, so putting it on a
-network is a deliberate edit of both. Do not make that edit on a shared host until
-authentication exists.
+Dockerfile's own `CMD` binds `0.0.0.0`; only compose's published port keeps that off
+a network by default, so putting it there is one deliberate edit (`-p 8731:8731`
+instead of `-p 127.0.0.1:8731:8731`), not two. Do not make that edit on a shared
+host until authentication exists.
 
 ### The write lock
 

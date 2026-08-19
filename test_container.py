@@ -1,6 +1,7 @@
-# test_container.py
 import pathlib
 import re
+
+import urd
 
 ROOT = pathlib.Path(__file__).parent
 
@@ -22,7 +23,21 @@ def test_the_token_is_passed_through_rather_than_defined():
     file that gets committed."""
     compose = _read("compose.yaml")
     assert "URD_TOKEN" in compose
-    assert re.search(r"URD_TOKEN\s*$|URD_TOKEN\s*\n|\$\{URD_TOKEN", compose), compose
+    # No re.MULTILINE: `$` here only ever matches at the very end of the whole
+    # file, not the end of the URD_TOKEN line, so a bare `URD_TOKEN\s*$`
+    # alternative would be dead code that happens to pass on the second
+    # alternative instead. Keep only the alternatives that can actually match.
+    assert re.search(r"URD_TOKEN\s*\n|\$\{URD_TOKEN", compose), compose
+
+
+def test_the_compose_file_passes_through_every_seed_key():
+    """A key seed_from_env reads but compose does not list can never be set
+    from the environment: this is exactly how a container once shipped a
+    project that could sync but never derive, since derive refuses without
+    status_order."""
+    compose = _read("compose.yaml")
+    for key in urd.SEED_ENV_KEYS:
+        assert key in compose, key
 
 
 def test_the_database_is_a_volume():

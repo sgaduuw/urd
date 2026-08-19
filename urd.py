@@ -1257,6 +1257,15 @@ def build_parser():
     return parser
 
 
+# Every key seed_from_env reads. compose.yaml must pass through exactly this
+# set, or a key it forgets can never be set from the environment at all; that
+# gap is what once shipped a container that could sync but never derive, since
+# derive refuses without status_order. test_container.py checks compose.yaml
+# against this same list, so the two cannot drift apart silently again.
+SEED_ENV_KEYS = ("URD_SITE", "URD_EMAIL", "URD_PROJECT", "URD_COMPONENT", "URD_SINCE",
+                 "URD_STATUS_ORDER", "URD_START_STATUS", "URD_REVIEW_STATUS")
+
+
 def seed_from_env(registry, env=None):
     """Create the first project from the environment, and only the first.
 

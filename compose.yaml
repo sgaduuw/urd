@@ -1,4 +1,3 @@
-# compose.yaml
 services:
   urd:
     build: .
@@ -12,12 +11,19 @@ services:
       # file is a token in everyone's clone.
       - URD_TOKEN
       # Seeds the first project only. Adding more is the setup page's job, and a
-      # database that is already configured wins over these.
+      # database that is already configured wins over these. All eight are
+      # required for seed_from_env to leave a project that can derive, not just
+      # sync: without the three status keys, the seeded project syncs, then
+      # derive refuses for want of --status-order, and the only action the
+      # resulting page offers is Refresh, which repeats the same failure.
       - URD_SITE=${URD_SITE:-}
       - URD_EMAIL=${URD_EMAIL:-}
       - URD_PROJECT=${URD_PROJECT:-}
       - URD_COMPONENT=${URD_COMPONENT:-}
       - URD_SINCE=${URD_SINCE:-}
+      - URD_STATUS_ORDER=${URD_STATUS_ORDER:-}
+      - URD_START_STATUS=${URD_START_STATUS:-}
+      - URD_REVIEW_STATUS=${URD_REVIEW_STATUS:-}
     volumes:
       - urd-data:/var/lib/urd
 
