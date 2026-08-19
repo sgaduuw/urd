@@ -1037,34 +1037,54 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
                 f"done-category status. Candidates: {', '.join(sorted(known))}"
             )
 
-    save_scope(con, status_order=status_order, start_status=start_status,
-               review_status=review_status, abandoned_status=abandoned_status)
-    con.execute("CREATE OR REPLACE TABLE abandoned_status (status VARCHAR PRIMARY KEY)")
-    if abandoned:
-        # Guarded: DuckDB's executemany rejects an empty parameter list outright
-        # rather than doing nothing, and no abandoned status is the default case.
-        con.executemany("INSERT INTO abandoned_status VALUES (?)", [(a,) for a in abandoned])
+    # Everything from here on is one transaction. derive_issues drops and
+    # recreates the `issues` view with the old column list, then this function
+    # adds `abandoned` to issues_all and recreates the view again; a reader on
+    # another cursor between those two points sees a view with no `abandoned`
+    # column while every chart that filters on it is still live. BEGIN/COMMIT
+    # makes the whole rebuild atomic, so a concurrent reader sees either the
+    # complete old schema or the complete new one, never the gap between them.
+    # A lock would serialize this against every reader instead of just hiding
+    # the gap from them, and item 1 removes the only lock this could have used
+    # anyway. sync is the long phase and stays outside this entirely, which is
+    # what keeps pages serving while it runs.
+    con.execute("BEGIN")
+    try:
+        save_scope(con, status_order=status_order, start_status=start_status,
+                   review_status=review_status, abandoned_status=abandoned_status)
+        con.execute("CREATE OR REPLACE TABLE abandoned_status (status VARCHAR PRIMARY KEY)")
+        if abandoned:
+            # Guarded: DuckDB's executemany rejects an empty parameter list
+            # outright rather than doing nothing, and no abandoned status is
+            # the default case.
+            con.executemany("INSERT INTO abandoned_status VALUES (?)",
+                            [(a,) for a in abandoned])
 
-    con.execute("CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
-    con.executemany(
-        "INSERT INTO status_order VALUES (?, ?)",
-        [(s, i) for i, s in enumerate(statuses)],
-    )
+        con.execute(
+            "CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
+        con.executemany(
+            "INSERT INTO status_order VALUES (?, ?)",
+            [(s, i) for i, s in enumerate(statuses)],
+        )
 
-    _migrate_scope_views(con)
-    issues = derive_issues(con)
-    # Current-state twin of closures.abandoned, for the charts that ask
-    # `status_category = 'done'` rather than counting closure events. Added here
-    # rather than in ISSUES_SCHEMA so the insert keeps its positional column
-    # list; CREATE OR REPLACE drops it again on every derive anyway.
-    con.execute("ALTER TABLE issues_all ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
-    con.execute(
-        "UPDATE issues_all SET abandoned = status IN (SELECT status FROM abandoned_status)")
-    con.execute(VIEWS_SCOPE_ISSUES)
-    changes = derive_changes(con)
-    sprints = derive_sprints(con)
-    con.execute(VIEWS_METRICS)
-    con.execute(VIEWS_SPRINT_ATTRIBUTION)
+        _migrate_scope_views(con)
+        issues = derive_issues(con)
+        # Current-state twin of closures.abandoned, for the charts that ask
+        # `status_category = 'done'` rather than counting closure events. Added
+        # here rather than in ISSUES_SCHEMA so the insert keeps its positional
+        # column list; CREATE OR REPLACE drops it again on every derive anyway.
+        con.execute("ALTER TABLE issues_all ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
+        con.execute(
+            "UPDATE issues_all SET abandoned = status IN (SELECT status FROM abandoned_status)")
+        con.execute(VIEWS_SCOPE_ISSUES)
+        changes = derive_changes(con)
+        sprints = derive_sprints(con)
+        con.execute(VIEWS_METRICS)
+        con.execute(VIEWS_SPRINT_ATTRIBUTION)
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
 
     print(f"derived {issues} issues, {changes} changes, {sprints} sprint memberships")
     unknown = con.execute(
