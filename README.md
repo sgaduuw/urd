@@ -52,7 +52,7 @@ configured project; `/setup` adds another. Three projects mean three workflows, 
 rather than one.
 
 Nothing about the CLI changes. `urd report` still writes the self-contained file,
-and it is the same bytes the server serves.
+and the server renders the same report with the controls added around it.
 
 ### In a container
 
@@ -72,6 +72,8 @@ Anyone who can reach the port reads every ticket title and can trigger a sync. T
 server binds `127.0.0.1` and compose publishes to `127.0.0.1`, so putting it on a
 network is a deliberate edit of both. Do not make that edit on a shared host until
 authentication exists.
+
+### The write lock
 
 While `urd serve` is running it holds the write lock on every database in its
 volume, so the CLI verbs cannot be used against them: DuckDB refuses a second
