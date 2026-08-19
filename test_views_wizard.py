@@ -1,32 +1,15 @@
-import urllib.request
-
 import test_helpers
 import wizard as wizard_mod
 
-_registry = test_helpers.registry
-_client = test_helpers.client
-_synced = test_helpers.synced
-
-
-def _refuse_network(self, req, *args, **kwargs):
-    """Every test here must be hermetic. `wizard.validate` ends in a real HTTP
-    request built from urd.token()'s real credential (an env var, or this
-    machine's keychain), so any test that forgets to mock it would send that
-    credential to whatever host the test data happens to name. A leaked
-    credential is not a failure anyone would notice by reading test output, so
-    the network is refused outright rather than trusted to stay mocked.
-    Mirrors test_urd.py's _assert_nothing_is_fetched, aimed at the tests
-    instead of the page they render.
-    """
-    url = req.full_url if hasattr(req, "full_url") else req
-    raise AssertionError(f"test_views_wizard.py must not touch the network: {url!r}")
-
-
-urllib.request.OpenerDirector.open = _refuse_network
+# The network guard lives in test_helpers now (importing it protects every
+# file, not just this one): `wizard.validate` ends in a real HTTP request
+# built from urd.token()'s real credential, so any test anywhere that forgets
+# to mock it would otherwise send that credential to whatever host the test
+# data happens to name.
 
 
 def test_setup_offers_a_form_when_there_are_no_projects():
-    body = _client(_registry()).get("/setup").get_data(as_text=True)
+    body = test_helpers.client(test_helpers.registry()).get("/setup").get_data(as_text=True)
     for field in ("slug", "site", "email", "project", "since", "status_order",
                   "start_status"):
         assert f'name="{field}"' in body, field
@@ -35,7 +18,7 @@ def test_setup_offers_a_form_when_there_are_no_projects():
 
 
 def test_setup_validates_before_writing_anything():
-    registry = _registry()
+    registry = test_helpers.registry()
     calls = {}
 
     def fake_validate(proposal, token, opener=None):
@@ -45,7 +28,7 @@ def test_setup_validates_before_writing_anything():
     original = wizard_mod.validate
     wizard_mod.validate = fake_validate
     try:
-        response = _client(registry).post("/setup", data={
+        response = test_helpers.client(registry).post("/setup", data={
             "slug": "alpha", "site": "example.atlassian.net", "email": "a@b.c",
             "project": "PROJ", "component": "TEAM", "since": "2026-01-01",
             "status_order": "To Do,Done", "start_status": "To Do",
@@ -59,12 +42,12 @@ def test_setup_validates_before_writing_anything():
 
 
 def test_a_validated_scope_is_shown_for_confirmation_before_it_is_written():
-    registry = _registry()
+    registry = test_helpers.registry()
     original = wizard_mod.validate
     wizard_mod.validate = lambda p, t, opener=None: wizard_mod.Result(
         True, who="A Person", issues=751)
     try:
-        body = _client(registry).post("/setup", data={
+        body = test_helpers.client(registry).post("/setup", data={
             "slug": "alpha", "site": "example.atlassian.net", "email": "a@b.c",
             "project": "PROJ", "component": "TEAM", "since": "2026-01-01",
             "status_order": "To Do,Done", "start_status": "To Do",
@@ -79,12 +62,12 @@ def test_a_validated_scope_is_shown_for_confirmation_before_it_is_written():
 
 
 def test_confirming_writes_the_scope_and_redirects():
-    registry = _registry()
+    registry = test_helpers.registry()
     original = wizard_mod.validate
     wizard_mod.validate = lambda p, t, opener=None: wizard_mod.Result(
         True, who="A Person", issues=751)
     try:
-        response = _client(registry).post("/setup", data={
+        response = test_helpers.client(registry).post("/setup", data={
             "slug": "alpha", "site": "example.atlassian.net", "email": "a@b.c",
             "project": "PROJ", "component": "TEAM", "since": "2026-01-01",
             "status_order": "To Do,Done", "start_status": "To Do",
@@ -102,12 +85,12 @@ def test_a_bad_slug_is_refused_with_a_message():
     # registry.add at all (it returns earlier on the real credential/scope
     # check), so this test would pass without ever exercising the bad-slug
     # path it names. See ValueError's message in projects.py: add().
-    registry = _registry()
+    registry = test_helpers.registry()
     original = wizard_mod.validate
     wizard_mod.validate = lambda p, t, opener=None: wizard_mod.Result(
         True, who="A Person", issues=1)
     try:
-        body = _client(registry).post("/setup", data={
+        body = test_helpers.client(registry).post("/setup", data={
             "slug": "../escape", "site": "example.atlassian.net", "email": "a@b.c",
             "project": "PROJ", "component": "", "since": "2026-01-01",
             "status_order": "To Do,Done", "start_status": "To Do",
@@ -123,9 +106,9 @@ def test_a_bad_slug_is_refused_with_a_message():
 
 def test_setup_still_adds_projects_once_one_exists():
     """Adding a second project is the main reason this page exists."""
-    registry = _registry()
-    _synced(registry)
-    assert _client(registry).get("/setup").status_code == 200
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    assert test_helpers.client(registry).get("/setup").status_code == 200
 
 
 if __name__ == "__main__":

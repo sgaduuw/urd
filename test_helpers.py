@@ -5,10 +5,28 @@ directory the runner is invoked from.
 """
 import os
 import tempfile
+import urllib.request
 
 import urd
 
-SITE = "example.atlassian.net"
+
+# Every test file that touches a Jira-shaped scope imports this module for its
+# fixtures, so the network guard belongs here rather than in just the one file
+# that happened to need it first: a future test that forgets to mock
+# wizard.validate or urd.Jira would otherwise send a stranger the token of
+# whoever cloned this repository, and nothing short of reading its output
+# would show that it happened.
+def _refuse_network(self, req, *args, **kwargs):
+    url = req.full_url if hasattr(req, "full_url") else req
+    raise AssertionError(f"tests must not touch the network: {url!r}")
+
+
+urllib.request.OpenerDirector.open = _refuse_network
+
+# .invalid is reserved by RFC 6761: nobody can ever register a name under it,
+# unlike "example.atlassian.net", which is a real, registrable Atlassian site
+# slug that happens to look like a placeholder.
+SITE = "example.invalid"
 EMAIL = "a@b.c"
 STATUSES = "To Do,In Progress,Review,Done"
 
@@ -38,16 +56,12 @@ def client(reg):
     return app.test_client()
 
 
-def scope(project, **over):
-    fields = dict(site=SITE, email=EMAIL, project="PROJ", component="TEAM",
-                  earliest_since="2026-01-01", status_order=STATUSES,
-                  start_status="In Progress", review_status="Review")
-    urd.save_scope(project.con, **{**fields, **over})
-    return project
-
-
 def synced(reg, slug="alpha"):
     """A project that has a scope, a sync timestamp and derived tables."""
-    project = scope(reg.add(slug), last_sync_at="2026-08-01T00:00:00Z")
+    project = reg.add(slug)
+    urd.save_scope(project.con, site=SITE, email=EMAIL, project="PROJ", component="TEAM",
+                   earliest_since="2026-01-01", status_order=STATUSES,
+                   start_status="In Progress", review_status="Review",
+                   last_sync_at="2026-08-01T00:00:00Z")
     urd.derive(project.con, STATUSES, "In Progress", "Review")
     return project

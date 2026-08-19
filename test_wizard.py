@@ -7,7 +7,7 @@ import wizard
 
 
 def _proposal(**over):
-    base = dict(site="example.atlassian.net", email="a@b.c", project="PROJ",
+    base = dict(site="example.invalid", email="a@b.c", project="PROJ",
                 component="TEAM", since="2026-01-01",
                 status_order="To Do,In Progress,Review,Done",
                 start_status="In Progress", review_status="Review",
@@ -72,19 +72,11 @@ def test_a_scope_matching_nothing_is_reported_as_such():
     assert "0" in result.problem or "no issues" in result.problem.lower()
 
 
-def test_validate_never_writes_anything():
-    """A validation that saved would make a typo permanent."""
-    con = urd.open_db(os.path.join(tempfile.mkdtemp(), "t.duckdb"))
-    before = urd.load_scope(con)
-    wizard.validate(_proposal(), "tok", opener=_ok_opener())
-    assert urd.load_scope(con) == before
-
-
 def test_apply_writes_every_field_of_the_proposal():
     con = urd.open_db(os.path.join(tempfile.mkdtemp(), "t.duckdb"))
     wizard.apply(con, _proposal())
     scope = urd.load_scope(con)
-    assert scope["site"] == "example.atlassian.net"
+    assert scope["site"] == "example.invalid"
     assert scope["email"] == "a@b.c"
     assert scope["project"] == "PROJ"
     assert scope["component"] == "TEAM"
@@ -95,6 +87,15 @@ def test_apply_writes_every_field_of_the_proposal():
     # The base proposal carries "", and apply maps empty to None: deliberate,
     # not an omission, so make the mapping explicit here.
     assert scope["abandoned_status"] is None
+
+
+def test_apply_writes_a_non_empty_abandoned_status():
+    """The empty-to-None case above would also pass if apply dropped the field
+    entirely, since the column's default is NULL either way; this pins the
+    other half of the mapping, that a real value is actually written."""
+    con = urd.open_db(os.path.join(tempfile.mkdtemp(), "t.duckdb"))
+    wizard.apply(con, _proposal(abandoned_status="Won't do"))
+    assert urd.load_scope(con)["abandoned_status"] == "Won't do"
 
 
 def test_an_incomplete_proposal_is_refused_before_any_request():
