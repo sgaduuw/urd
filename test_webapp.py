@@ -257,6 +257,19 @@ def test_seed_from_env_missing_since_seeds_nothing():
     assert registry.projects() == []
 
 
+def test_a_punctuation_only_project_is_skipped_not_crashed():
+    """URD_PROJECT="," is non-empty, so it survives the emptiness check, but
+    project.split(",")[0] reduces it to "", which registry.add refuses with
+    ValueError. That is exactly the class of stale or hand-edited compose file
+    this function's own docstring anticipates: the server must still start,
+    landing on /setup, rather than crash-loop on a traceback."""
+    registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
+    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+                                 "URD_PROJECT": ",", "URD_EMAIL": "a@b.c",
+                                 "URD_SINCE": "2026-01-01"})
+    assert registry.projects() == []
+
+
 def test_the_cli_reports_a_held_lock_as_such():
     """A second process gets DuckDB's raw lock error otherwise, which names no
     cause and suggests no fix."""
@@ -274,6 +287,22 @@ def test_the_cli_reports_a_held_lock_as_such():
     combined = done.stdout + done.stderr
     assert done.returncode != 0
     assert "another urd is holding it" in combined, combined
+
+
+def test_a_bad_path_is_not_reported_as_a_held_lock():
+    """IOException is DuckDB's general filesystem error, not lock-specific: a
+    typo'd path raises it too. This is the load-bearing test of the pair: without
+    it, a future edit could widen the friendly branch back to every IOException
+    and nothing here would notice."""
+    import subprocess
+    bad_path = os.path.join(tempfile.mkdtemp(), "no-such-dir", "x.duckdb")
+    done = subprocess.run(
+        [sys.executable, "urd.py", "--db", bad_path, "report"],
+        capture_output=True, text=True, timeout=60)
+    combined = done.stdout + done.stderr
+    assert done.returncode != 0
+    assert "another urd is holding it" not in combined, combined
+    assert "No such file" in combined, combined
 
 
 if __name__ == "__main__":

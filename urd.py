@@ -1252,7 +1252,18 @@ def seed_from_env(registry, env=None):
     if not (site and project and email and since):
         return None
     slug = re.sub(r"[^a-z0-9-]", "-", project.split(",")[0].strip().lower())
-    created = registry.add(slug)
+    try:
+        created = registry.add(slug)
+    except ValueError:
+        # A value that survives the emptiness check above can still reduce to an
+        # unusable slug (",", "!!!"). A stale or hand-edited compose file is
+        # exactly the kind of input that does this, and starting with nothing
+        # seeded beats a crash loop: land on /setup instead, where a person can
+        # fix it by hand.
+        print(f"URD_PROJECT={project!r} does not make a usable project key "
+              f"(need [a-z0-9][a-z0-9-]*, got {slug!r}); not seeding, use /setup",
+              file=sys.stderr)
+        return None
     save_scope(created.con, site=site, email=email, project=project,
                component=env.get("URD_COMPONENT") or None, earliest_since=since,
                status_order=env.get("URD_STATUS_ORDER") or None,
@@ -1278,11 +1289,15 @@ def main(argv=None):
     try:
         con = open_db(args.db)
     except duckdb.IOException as exc:
-        # "Conflicting lock is held" is what a running `urd serve` looks like
-        # from a second process. DuckDB refuses even read-only, so there is
-        # nothing to fall back to; say which process to stop.
-        sys.exit(f"cannot open {args.db}: another urd is holding it "
-                 f"(stop `urd serve` first)\n  {exc}")
+        # IOException is DuckDB's general filesystem error, not a lock-specific
+        # one: a bad path raises it too. Only "Conflicting lock is held", which is
+        # what a running `urd serve` looks like from a second process, gets the
+        # friendly phrasing; anything else (a typo'd path, for instance) would be
+        # misdiagnosed as a server that isn't actually running.
+        if "lock" in str(exc).lower():
+            sys.exit(f"cannot open {args.db}: another urd is holding it "
+                     f"(stop `urd serve` first)\n  {exc}")
+        sys.exit(f"cannot open {args.db}: {exc}")
 
     if args.verb == "sql":
         # ponytail: three lines instead of a dependency on the duckdb CLI. Upgrade
