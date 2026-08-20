@@ -125,6 +125,9 @@ def test_a_bad_slug_is_refused_with_a_message():
     # label on this page also contains and would satisfy by accident.
     assert "not a usable project slug" in body
     assert "../escape" in body
+    # Row 5 of the discovery-state table: no discovery ran for this re-render
+    # (found is None), so the page must not claim it did.
+    assert "Status order is every status this project uses" not in body
 
 
 def test_setup_still_adds_projects_once_one_exists():
@@ -243,6 +246,12 @@ def test_confirming_without_a_status_order_is_refused_with_a_message():
     # pass even if the missing-field check were removed).
     assert "missing: status order, start status" in body
     assert registry.projects() == []
+    # Row 4 of the discovery-state table: this is a re-render after a 403 lost
+    # the hint, and confirming with the field left empty must not make the
+    # page start claiming discovery worked and forget the 403 ever happened.
+    assert "Status order is every status this project uses" not in body
+    assert 'name="status_order"' in body, "the field must still be there to type into"
+    assert 'name="confirm"' in body, "setup must still be completable"
 
 
 def test_page_two_says_which_values_are_guesses():
@@ -260,8 +269,73 @@ def test_page_two_says_which_values_are_guesses():
     # message) could also satisfy on its own.
     assert ("Start, review and abandoned status are guesses from the names; "
             "check them.") in body
-    assert ("so derive prints a better order from real history after the "
-            "first sync.") in body
+    assert ("so derive prints a better order to the terminal running urd "
+            "serve after the first sync.") in body
+
+
+def test_discovery_finding_nothing_does_not_claim_it_worked():
+    """Row 3 of the discovery-state table: a real discovery call that returns
+    no statuses and no error is the same story as a failed lookup, since there
+    is equally nothing to show. It must not fall into the "worked" branch just
+    because found.problem happens to be empty."""
+    monkey = {}
+    _patched(monkey, discover=lambda p, t, opener=None: wizard_mod.Discovery([]))
+    try:
+        body = test_helpers.client(test_helpers.registry()).post(
+            "/setup", data=_SCOPE).get_data(as_text=True)
+    finally:
+        _restore(monkey)
+    assert "Status order is every status this project uses" not in body
+    assert "Type the workflow fields yourself" in body
+    assert 'name="confirm"' in body
+
+
+def test_confirming_a_slug_already_in_use_does_not_rescope_it():
+    """registry.add returns the existing project for a slug already present
+    rather than refusing, so confirming a second setup with the same
+    prefilled slug used to silently repoint that project's database at a
+    different scope, and the redirect looked like success either way. Assert
+    on the stored scope, not the response code."""
+    registry = test_helpers.registry()
+    monkey = {}
+    _patched(monkey)
+    try:
+        first = test_helpers.client(registry).post("/setup", data={
+            "site": "one.invalid", "email": "a@b.c", "project": "PROJ",
+            "component": "TEAM-A", "since": "2026-01-01", "slug": "proj",
+            "status_order": "To Do,Done", "start_status": "To Do",
+            "review_status": "", "abandoned_status": "", "confirm": "yes"})
+        assert first.status_code == 302
+        original_scope = urd.load_scope(registry.get("proj").con)
+
+        second = test_helpers.client(registry).post("/setup", data={
+            "site": "two.invalid", "email": "x@y.z", "project": "OTHER",
+            "component": "TEAM-B", "since": "2020-01-01", "slug": "proj",
+            "status_order": "To Do,Done", "start_status": "To Do",
+            "review_status": "", "abandoned_status": "", "confirm": "yes"})
+    finally:
+        _restore(monkey)
+    body = second.get_data(as_text=True)
+    assert len(registry.projects()) == 1
+    assert urd.load_scope(registry.get("proj").con) == original_scope, \
+        "the second confirm must not change the first project's stored scope"
+    assert "already in use" in body
+
+
+def test_the_guessed_fields_are_marked_in_the_form():
+    """The caveat naming start, review and abandoned status as guesses is easy
+    to miss two paragraphs up; the label the operator is actually looking at
+    should say so too."""
+    monkey = {}
+    _patched(monkey)
+    try:
+        body = test_helpers.client(test_helpers.registry()).post(
+            "/setup", data=_SCOPE).get_data(as_text=True)
+    finally:
+        _restore(monkey)
+    for field in ("start status", "review status", "abandoned status"):
+        assert f"{field} (guess)" in body, field
+    assert "status order (guess)" not in body, "status order is derived, not guessed"
 
 
 if __name__ == "__main__":

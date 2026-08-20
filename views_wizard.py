@@ -20,11 +20,17 @@ bp = flask.Blueprint("wizard", __name__)
 _SCOPE_FIELDS = ("site", "email", "project", "component", "since")
 _WORKFLOW_FIELDS = ("slug", "status_order", "start_status", "review_status",
                     "abandoned_status")
+# Derived from the names, not asked for, so the page marks them as guesses
+# where the operator is actually looking rather than only in prose above the
+# form. status_order and slug are not here: one is a derived listing, the
+# other a filename, neither is a guess about the workflow.
+_GUESSED_FIELDS = ("start_status", "review_status", "abandoned_status")
 
 
-def _inputs(names, values):
+def _inputs(names, values, guesses=()):
     return "".join(
-        f'<label>{render.esc(name.replace("_", " "))} '
+        f'<label>{render.esc(name.replace("_", " "))}'
+        f'{" (guess)" if name in guesses else ""} '
         f'<input name="{name}" value="{render.esc(values.get(name, ""))}"></label>'
         for name in names
     )
@@ -57,20 +63,27 @@ def _scope_page(values=None, message=""):
 
 
 def _workflow_page(values, found, message=""):
-    lines = [message] if message else []
-    if found.problem:
-        lines.append(found.problem)
+    """found is None on a re-render that ran no discovery of its own (a missing
+    required field, or a slug the registry refuses): say nothing about
+    discovery rather than reaching for a value that was never asked for. A
+    real Discovery with no problem and no statuses is the same story the
+    design assigns to a failed lookup, since there is equally nothing to show.
+    """
+    lines = []
+    if found is not None and (found.problem or not found.statuses):
+        if found.problem:
+            lines.append(found.problem)
         lines.append("Type the workflow fields yourself, or leave them and let "
                      "derive list what it finds after the first sync.")
-    else:
+    elif found is not None:
         lines.append("Status order is every status this project uses, in category "
                      "order. Start, review and abandoned status are guesses from "
                      "the names; check them.")
         lines.append("Ordering inside a category needs the transition graph, which "
-                     "needs admin rights, so derive prints a better order from real "
-                     "history after the first sync.")
+                     "needs admin rights, so derive prints a better order to the "
+                     "terminal running urd serve after the first sync.")
     table = ""
-    if found.statuses:
+    if found is not None and found.statuses:
         rows = "".join(
             f"<tr><td>{render.esc(s.name)}</td>"
             f"<td>{render.esc(s.category or 'no category')}</td></tr>"
@@ -81,10 +94,11 @@ def _workflow_page(values, found, message=""):
                  f"</tr></thead><tbody>{rows}</tbody></table></details>")
     return _page(
         "Confirm the workflow", lines,
-        table + _inputs(_WORKFLOW_FIELDS, values)
+        table + _inputs(_WORKFLOW_FIELDS, values, guesses=_GUESSED_FIELDS)
         + _hidden(_SCOPE_FIELDS, values)
         + '<input type="hidden" name="confirm" value="yes">'
         + '<button type="submit">Confirm and add</button>',
+        message,
     )
 
 
@@ -134,12 +148,25 @@ def submit():
         # derive refuses without these, and a project that cannot derive lands on
         # a page whose only offered action repeats the failure.
         return _workflow_page(
-            values, wizard.Discovery([]),
+            values, None,
             "missing: " + ", ".join(f.replace("_", " ") for f in missing))
+
+    if registry.get(values["slug"]) is not None:
+        # registry.add returns the existing project for a slug already taken
+        # rather than refusing, so confirming here without a check would
+        # upsert this proposal's scope over that project's in place. The slug
+        # used to be typed; now it arrives prefilled, so accepting the default
+        # twice is an ordinary thing to do, not a typo. The design does want
+        # two databases for one project key to be possible, so this points at
+        # editing the slug rather than forbidding the second database.
+        return _workflow_page(
+            values, None,
+            f'the slug "{values["slug"]}" is already in use by another '
+            "project; edit it below and confirm again")
 
     try:
         project = registry.add(values["slug"])
     except ValueError as exc:
-        return _workflow_page(values, wizard.Discovery([]), str(exc))
+        return _workflow_page(values, None, str(exc))
     wizard.apply(project.con, _proposal_from(values))
     return flask.redirect(f"/{values['slug']}/")
