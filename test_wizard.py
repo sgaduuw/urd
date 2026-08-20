@@ -101,7 +101,7 @@ def test_apply_writes_a_non_empty_abandoned_status():
 
 def test_an_incomplete_proposal_is_refused_before_any_request():
     opener = _ok_opener()
-    for field in ("site", "email", "project", "since", "status_order", "start_status"):
+    for field in wizard.REQUIRED_FOR_SCOPE:
         result = wizard.validate(_proposal(**{field: ""}), "tok", opener=opener)
         assert result.ok is False, field
         assert field.replace("_", " ") in result.problem.lower() or field in result.problem
@@ -134,6 +134,129 @@ def test_token_reports_a_missing_security_binary_as_no_token():
             assert "no API token" in str(exc)
     finally:
         urd.subprocess.run = original_run
+
+
+_INSTANCE_STATUSES = [
+    {"name": "To Do", "statusCategory": {"key": "new"}},
+    {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+    {"name": "Code Review", "statusCategory": {"key": "indeterminate"}},
+    {"name": "Blocked", "statusCategory": {"key": "indeterminate"}},
+    {"name": "Done", "statusCategory": {"key": "done"}},
+    {"name": "Won't Do", "statusCategory": {"key": "done"}},
+    {"name": "Retired", "statusCategory": {"key": "new"}},
+    # The real API does send this, and test_urd.py already pins the case.
+    {"name": "Odd", "statusCategory": None},
+]
+
+_WORKFLOW = [
+    {"statuses": [{"name": "To Do"}, {"name": "In Progress"}]},
+    {"statuses": [{"name": "Code Review"}, {"name": "Blocked"},
+                  {"name": "Done"}, {"name": "Won't Do"}, {"name": "Odd"}]},
+]
+
+
+def _discovery_opener(statuses=None, workflow=None, fail=None):
+    """Answers the two discovery endpoints. `fail` names a URL fragment that
+    should return 403 instead, so the degradation path is exercised with the
+    real client rather than a stub."""
+    def opener(url, headers):
+        if fail and fail in url:
+            return 403, b'{"message": "no"}'
+        if "/project/" in url:
+            return 200, json.dumps(workflow if workflow is not None else _WORKFLOW).encode()
+        if url.rstrip("/").endswith("/status"):
+            payload = statuses if statuses is not None else _INSTANCE_STATUSES
+            return 200, json.dumps(payload).encode()
+        raise AssertionError(f"unexpected request: {url}")
+    return opener
+
+
+def test_discovery_keeps_only_the_project_s_own_statuses():
+    """Retired is in the instance list but not this project's workflow, so it
+    must not reach the proposal."""
+    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
+    assert found.problem == ""
+    assert "Retired" not in [s.name for s in found.statuses]
+    assert "To Do" in [s.name for s in found.statuses]
+
+
+def test_discovery_attaches_the_category_from_the_instance_list():
+    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
+    by_name = {s.name: s.category for s in found.statuses}
+    assert by_name["To Do"] == "new"
+    assert by_name["In Progress"] == "indeterminate"
+    assert by_name["Done"] == "done"
+
+
+def test_a_status_the_instance_list_does_not_describe_has_no_category():
+    """statusCategory can be null, and a status in the workflow can be absent
+    from the instance list entirely. Both end up uncategorised rather than
+    guessed at."""
+    workflow = [{"statuses": [{"name": "To Do"}, {"name": "Odd"},
+                              {"name": "Unlisted"}]}]
+    found = wizard.discover(_proposal(), "tok",
+                            opener=_discovery_opener(workflow=workflow))
+    by_name = {s.name: s.category for s in found.statuses}
+    assert by_name["Odd"] == ""
+    assert by_name["Unlisted"] == ""
+
+
+def test_discovery_reports_a_refusal_instead_of_raising():
+    """Either call can 403 on a restricted project, and setup must still finish."""
+    found = wizard.discover(_proposal(), "tok",
+                            opener=_discovery_opener(fail="/project/"))
+    assert found.statuses == []
+    assert "403" in found.problem or "could not" in found.problem.lower()
+
+
+def test_the_proposed_order_is_category_order_with_uncategorised_last():
+    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
+    order = wizard.propose(found.statuses)["status_order"].split(",")
+    assert order[0] == "To Do"
+    assert order.index("In Progress") < order.index("Done")
+    assert order[-1] == "Odd", order
+
+
+def test_the_first_indeterminate_status_is_proposed_as_the_start():
+    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
+    assert wizard.propose(found.statuses)["start_status"] == "In Progress"
+
+
+def test_a_review_looking_status_is_proposed_as_review():
+    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
+    assert wizard.propose(found.statuses)["review_status"] == "Code Review"
+
+
+def test_no_review_looking_status_leaves_review_blank():
+    """A wrong guess here silently mislabels every review measurement, so
+    nothing is better than something."""
+    statuses = [wizard.Status("To Do", "new"), wizard.Status("Doing", "indeterminate")]
+    assert wizard.propose(statuses)["review_status"] == ""
+
+
+def test_rejection_looking_done_statuses_are_proposed_as_abandoned():
+    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
+    assert wizard.propose(found.statuses)["abandoned_status"] == "Won't Do"
+
+
+def test_propose_on_nothing_returns_four_empty_strings():
+    """The degradation path renders these into the form, so they have to be
+    strings rather than None."""
+    proposed = wizard.propose([])
+    assert set(proposed) == {"status_order", "start_status", "review_status",
+                             "abandoned_status"}
+    assert all(v == "" for v in proposed.values())
+
+
+def test_validate_no_longer_demands_the_workflow_fields():
+    """Page one has no status fields to send. Whether a scope works against Jira
+    has nothing to do with the workflow ordering, so validate stopped asking."""
+    assert "status_order" not in wizard.REQUIRED_FOR_SCOPE
+    assert "start_status" not in wizard.REQUIRED_FOR_SCOPE
+    assert "status_order" in wizard.REQUIRED_FOR_DERIVE
+    result = wizard.validate(_proposal(status_order="", start_status=""), "tok",
+                             opener=_ok_opener(3))
+    assert result.ok is True, result.problem
 
 
 if __name__ == "__main__":
