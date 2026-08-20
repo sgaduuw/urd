@@ -32,35 +32,11 @@ def test_a_bad_parameter_is_reported_and_the_page_still_renders():
     assert "flow report" in body, "the page should still render with the default"
 
 
-def test_min_closed_zero_is_rejected_not_ignored():
-    """0 is falsy, and the CLI had exactly this bug: `or` sent it to the stored
-    default and the validation never ran."""
-    registry = test_helpers.registry()
-    test_helpers.synced(registry)
-    body = test_helpers.client(registry).get("/alpha/?min_closed=0").get_data(as_text=True)
-    assert "wants a whole number of 1 or more, got 0" in body
-
-
-def test_min_closed_empty_is_reported_not_silently_ignored():
-    """`min_closed=` is present but empty: raw_floor is `""`, not `None`, so a
-    truthiness guard (`if raw_floor:`) would treat it as absent and fall back to
-    the stored default with no indication, the same bug shape as the zero case.
-
-    Asserts the reported problem text itself, not a bare "--min-closed" substring:
-    one of the report's own static chart captions contains that flag name in its
-    explanatory prose, so a looser check would pass on every render regardless of
-    whether anything was rejected."""
-    registry = test_helpers.registry()
-    test_helpers.synced(registry)
-    body = test_helpers.client(registry).get("/alpha/?min_closed=").get_data(as_text=True)
-    assert "--min-closed: invalid literal for int" in body
-
-
 def test_the_page_offers_controls_for_every_flag():
     registry = test_helpers.registry()
     test_helpers.synced(registry)
     body = test_helpers.client(registry).get("/alpha/").get_data(as_text=True)
-    for control in ("since", "min_closed", "exclude_epic", "threshold"):
+    for control in ("since", "exclude_epic", "threshold"):
         assert f'name="{control}"' in body, control
     assert 'method="get"' in body
 
@@ -114,7 +90,7 @@ def test_a_failed_refresh_shows_its_message_on_the_page():
 
 def test_a_never_synced_project_gets_no_duplicate_controls():
     """project_page's own notice already offers a Refresh button; splicing the
-    controls form on top doubled it and added a since/min-closed/exclude box
+    controls form on top doubled it and added a since/exclude box
     that does nothing without a report to apply it to."""
     registry = test_helpers.registry()
     project = registry.add("alpha")

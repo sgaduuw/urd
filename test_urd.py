@@ -3645,7 +3645,7 @@ def test_every_table_chart_is_sortable():
     so a table added later has to make the same decision deliberately: a genuinely
     short one may opt out, but it cannot forget."""
     tables = [c for c in chart_specs.CHARTS if c.kind in ("table", "matrix")]
-    assert len(tables) >= 3, tables
+    assert len(tables) >= 2, tables
     missing = [c.key for c in tables if not c.options.get("sortable")]
     assert not missing, f"table charts without sorting: {missing}"
 
@@ -4042,79 +4042,6 @@ def test_multiline_joins_across_a_missing_value():
     assert all(path.count("M") == 1 for path in paths), paths
 
 
-def test_the_per_person_chart_drops_barely_active_people():
-    """Three closures in eleven weeks draws a flat line at zero with one blip, and
-    spends a palette slot on it. The floor is read at query time so it can be set
-    per run rather than compiled in."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    everyone = {r["person"] for r in _flow_rows(con, "throughput_per_person")[1]}
-    assert everyone, "fixtures produce nobody at all"
-    urd.set_min_closed(con, 99)
-    assert _flow_rows(con, "throughput_per_person")[1] == [], "the floor did nothing"
-    urd.set_min_closed(con, 1)
-
-
-def test_the_floor_counts_closures_inside_the_window_only():
-    """Otherwise someone busy last year but silent all quarter keeps a line, which
-    is the opposite of what the floor is for."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    _, whole = _flow_rows(con, "throughput_per_person")
-    assert whole
-    urd.set_report_window(con, "2030-01-01")
-    assert _flow_rows(con, "throughput_per_person")[1] == []
-    urd.set_report_window(con, None)
-
-
-def test_a_zero_floor_is_rejected_rather_than_ignored():
-    """0 is falsy, so `args.min_closed or stored` handed it straight back to the
-    stored default and the validation never ran. The operator saw a clean report
-    and no complaint about a value that means nothing."""
-    db = _tmpdb()
-    con = urd.open_db(db)
-    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
-                   earliest_since="2026-01-01")
-    con.close()
-    try:
-        urd.main(["--db", db, "report", "--min-closed", "0"])
-    except SystemExit as exc:
-        assert "min-closed" in str(exc), exc
-    else:
-        raise AssertionError("--min-closed 0 was accepted")
-
-
-def test_the_min_closed_floor_is_remembered_and_validated():
-    con = _derived("reopened", "two_sprints")
-    urd.set_min_closed(con, 3)
-    assert urd.stored_min_closed(con) == 3
-    for bad in ("many", -1, 0.5):
-        try:
-            urd.set_min_closed(con, bad)
-        except SystemExit:
-            continue
-        raise AssertionError(f"{bad!r} was accepted as a floor")
-    urd.set_min_closed(con, 1)
-
-
-def test_the_per_person_chart_has_a_value_for_every_week():
-    """A week in which someone closed nothing is zero closures, not an unknown.
-    Encoding it as null made the two renderings of this chart disagree: the SVG
-    joined straight across, implying steady output, while uPlot broke the line and
-    scattered each person into dozens of fragments that read as several people."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    people = {r["person"] for r in rows}
-    weeks = {r["week"] for r in rows}
-    assert len(rows) == len(people) * len(weeks), (len(rows), len(people), len(weeks))
-    assert all(r["closed"] is not None for r in rows)
-    assert any(r["closed"] == 0 for r in rows), "no zero weeks at all: nothing to fill"
-    payload = render.plot_payload(chart, rows)
-    for series in payload["series"]:
-        assert None not in series["data"], series["label"]
-
-
 def test_multiline_stays_in_frame_with_more_people_than_the_palette():
     """Twenty-five people against eight colours. The chart has to survive that,
     even though the legend and the hover are what tell two same-coloured lines
@@ -4181,18 +4108,6 @@ def test_facet_panels_are_large_enough_to_read():
     _assert_content_within_viewbox(out, "big facets")
 
 
-def test_the_per_person_trend_chart_smooths_each_person_separately():
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_trend_per_person")
-    assert chart.kind == "small_multiples"
-    assert chart.options.get("share_y") is False
-    people = {r["person"] for r in rows}
-    weeks = {r["week"] for r in rows}
-    assert len(rows) == len(people) * len(weeks), "the grid is not filled"
-    assert all(r["closed_trend"] is not None for r in rows)
-
-
 def test_each_small_multiple_states_its_own_total():
     """Twenty-five sparklines with no numbers on them are a shape, not a chart:
     a reader can see who is busier without learning how busy anyone is."""
@@ -4213,21 +4128,6 @@ def test_a_small_multiple_states_the_scale_its_panels_share():
     out = render.small_multiples(groups, x="w", y="n")
     # A bare "9" appears in path coordinates, so this asks for the labelled form.
     assert re.search(r'>peak 9\b', out), "the shared peak must be stated in words"
-
-
-def test_the_per_person_chart_is_one_chart_with_one_line_each():
-    """It was 25 panels and is now one chart, which reverses a spec decision. The
-    rule that survived is the one that mattered: no ranking. This asserts the
-    shape, so a silent slide back to a sorted bar chart of people fails here."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    assert chart.kind == "multiline"
-    payload = render.plot_payload(chart, rows)
-    assert payload["kind"] == "lines"
-    people = [p for p in dict.fromkeys(r["person"] for r in rows) if p is not None]
-    assert [s["label"] for s in payload["series"]] == people
-    assert len(payload["x"]) == len({r["week"] for r in rows})
 
 
 def test_a_stacked_island_carries_cumulative_sums_computed_in_python():
@@ -4515,8 +4415,6 @@ def test_dropped_work_never_counts_as_delivered_in_any_chart():
     _, flow = _flow_rows(con, "created_vs_closed")
     assert sum(r["delivered"] for r in flow) == 0
     assert sum(r["dropped"] for r in flow) == 1
-    _, thr = _flow_rows(con, "throughput_per_person")
-    assert thr == [], "dropped work still counted as throughput"
 
 
 def test_bars_is_renderable_now_that_charts_ask_for_it():
@@ -4849,57 +4747,30 @@ def test_the_chart_list_matches_the_section_index():
     section and no two share a key, which stays true however many there are."""
     keys = [c.key for c in chart_specs.CHARTS]
     assert len(keys) == len(set(keys)), "duplicate chart key"
-    assert len(keys) >= 16
+    assert len(keys) >= 15
     for chart in chart_specs.CHARTS:
         assert chart.section in chart_specs.SECTIONS, f"{chart.key}: {chart.section}"
 
 
-def test_people_charts_are_all_present():
-    keys = {c.key for c in chart_specs.CHARTS if c.section == "People"}
-    assert keys == {"throughput_per_person", "throughput_trend_per_person",
-                    "review_load", "handoffs", "points_per_person"}
+# The one chart allowed to name a person: it names the assignee of a single open
+# ticket, which is who to ask about it, not a comparison between people.
+NAMES_A_PERSON = {"aging_wip"}
 
 
-def test_review_load_counts_every_move_out_of_review_including_rejections():
-    """Birch moves PROJ-1 out of Review twice: back to In Progress on 01-09, then
-    to Done on 01-20. Both are review decisions. Alder only ever moves work in."""
-    con = _derived("reopened")
-    _, rows = _flow_rows(con, "review_load")
-    counts = {r["reviewer"]: r["reviews"] for r in rows}
-    assert counts == {"Birch": 2}
+def test_no_chart_measures_an_individual():
+    """The People section was deleted deliberately. Per-person throughput, points,
+    review load and handoffs all read as a scoreboard, whatever the caption says,
+    and the tool is meant to be shared with the people it would have ranked.
 
-
-def test_handoffs_pair_the_starting_assignee_with_the_closing_one():
-    con = _derived("reopened")
-    _, rows = _flow_rows(con, "handoffs")
-    assert [(r["started_by"], r["finished_by"], r["tickets"]) for r in rows] == [
-        ("Alder", "Birch", 1)]
-
-
-def test_the_per_person_chart_is_not_a_ranking():
-    """The spec rule that survived merging 25 panels into one chart. A time series
-    of 25 people is dense, not ordered, and nobody reads a position off it; a
-    sorted bar chart of the same numbers would be a leaderboard and is still out."""
-    chart, _ = _flow_rows(_derived("reopened"), "throughput_per_person")
-    assert chart.kind == "multiline"
-    assert chart.kind not in ("bars", "hbars"), "people must not be ranked"
-    assert "ORDER BY" not in chart.sql.upper().split("GROUP BY")[-1].replace(
-        "ORDER BY 1, 2", ""), chart.sql
-
-
-def test_the_per_person_chart_draws_a_line_for_everyone():
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    # The fixtures close one ticket per person, so the default floor of three
-    # would empty this chart. The floor has its own tests; this one is about lines.
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    people = {r[chart.options["band"]] for r in rows}
-    assert len(people) >= 2, "fixture has too few people to tell lines apart"
-    out = render.figure(chart, rows, "sub", con)
-    for person in people:
-        assert person in out, f"no line for {person}"
-    for chunk in re.findall(r"<svg\b.*?</svg>", out, re.S):
-        _assert_content_within_viewbox(chunk, "throughput")
+    Asserted rather than remembered because the original specs still sit in
+    docs/superpowers/plans/2026-08-13-urd.md and a paste from there would put
+    them back silently. `people` is the only table holding a human identity, so
+    joining it is the thing to catch. Run against the specs as they were before
+    the deletion this flags exactly the five that went."""
+    for chart in chart_specs.CHARTS:
+        if chart.key in NAMES_A_PERSON:
+            continue
+        assert not re.search(r"\b(?:FROM|JOIN)\s+people\b", chart.sql, re.I), chart.key
 
 
 def test_the_whole_report_renders_end_to_end():
