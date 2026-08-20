@@ -100,6 +100,9 @@ def test_apply_writes_a_non_empty_abandoned_status():
 
 
 def test_an_incomplete_proposal_is_refused_before_any_request():
+    # Pinned literally: the loop below iterates this same constant, so a name
+    # silently dropped from it would just shorten the loop and still pass.
+    assert wizard.REQUIRED_FOR_SCOPE == ("site", "email", "project", "since")
     opener = _ok_opener()
     for field in wizard.REQUIRED_FOR_SCOPE:
         result = wizard.validate(_proposal(**{field: ""}), "tok", opener=opener)
@@ -237,6 +240,36 @@ def test_no_review_looking_status_leaves_review_blank():
 def test_rejection_looking_done_statuses_are_proposed_as_abandoned():
     found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
     assert wizard.propose(found.statuses)["abandoned_status"] == "Won't Do"
+
+
+def test_a_review_looking_name_outside_indeterminate_is_not_proposed():
+    """"Reviewed" reads as review-complete, not review-in-progress. The shared
+    fixture's only review-hint match happens to be indeterminate, which cannot
+    tell a category-scoped search apart from a name-only one; this local
+    fixture can, by putting the hint match in "done" instead."""
+    statuses = [wizard.Status("To Do", "new"),
+                wizard.Status("In Progress", "indeterminate"),
+                wizard.Status("Reviewed", "done")]
+    assert wizard.propose(statuses)["review_status"] == ""
+
+
+def test_an_abandoned_looking_name_outside_done_is_not_proposed():
+    """Same shape as the review case: the shared fixture's only abandoned-hint
+    match happens to already be "done", so it cannot catch a search that was
+    never actually scoped to that category."""
+    statuses = [wizard.Status("To Do", "new"),
+                wizard.Status("Duplicate", "indeterminate"),
+                wizard.Status("Done", "done")]
+    assert wizard.propose(statuses)["abandoned_status"] == ""
+
+
+def test_abandoned_status_joins_multiple_matches_in_order():
+    """Nothing else exercises more than one abandoned-looking status, so the
+    comma-join itself is otherwise unverified."""
+    statuses = [wizard.Status("Won't Do", "done"),
+                wizard.Status("Rejected", "done"),
+                wizard.Status("Done", "done")]
+    assert wizard.propose(statuses)["abandoned_status"] == "Won't Do,Rejected"
 
 
 def test_propose_on_nothing_returns_four_empty_strings():
