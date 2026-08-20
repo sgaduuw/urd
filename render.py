@@ -117,6 +117,61 @@ body {
   padding: 24px;
 }
 
+/* There are two forms in the app: the setup wizard and the report's flag
+   controls. With no rules at all a label is inline, so the wizard's ten
+   label-and-input pairs flowed as one wrapping paragraph with every label
+   butting against the previous input, and the inputs kept the browser's white
+   default on a dark page. Stacked for the wizard, which is a column of ten
+   fields; a wrapping row for the controls, which are five short ones sitting
+   above a report. */
+form { margin: 20px 0; }
+
+label {
+  display: block;
+  max-width: 32rem;
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+label input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 9px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+label input:focus {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: -1px;
+}
+
+button {
+  padding: 8px 16px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover { border-color: var(--text-secondary); }
+
+form.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+}
+
+form.controls label { max-width: 11rem; margin-bottom: 0; }
+
 svg.chart.chart-wide {
   /* Horizontal bars carry their labels inside the frame, so they need the room
      the page already has. Still capped, so a very wide window does not stretch a
