@@ -8,6 +8,7 @@ from datetime import datetime
 
 import charts as chart_specs
 import render
+import test_helpers  # noqa: F401 - installs the network-refusal guard on import
 import urd
 
 
@@ -229,7 +230,7 @@ def test_sync_records_the_statuses_in_the_project_workflow():
 
 def test_each_project_in_a_comma_separated_scope_is_asked():
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ,OTHER",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ,OTHER",
                    earliest_since="2026-01-01")
     jira = _WorkflowJira()
     urd.sync(con, jira)
@@ -667,7 +668,7 @@ def test_search_follows_the_page_token_and_stops_on_is_last():
         "isLast": True,
     }
     opener = FakeOpener({"nextPageToken=tok2": page2, "/search/jql": page1})
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
     assert [k for k, _ in jira.search("project = PROJ")] == ["PROJ-1", "PROJ-2"]
     assert len(opener.calls) == 2
 
@@ -679,7 +680,7 @@ def test_get_is_authenticated_with_basic_auth():
         seen.update(headers)
         return 200, b"{}"
 
-    urd.Jira("example.atlassian.net", "a@b.c", "tok", opener=opener).get("/field")
+    urd.Jira("example.invalid", "a@b.c", "tok", opener=opener).get("/field")
     assert seen["Authorization"].startswith("Basic ")
 
 
@@ -697,7 +698,7 @@ def test_issue_pages_a_truncated_changelog():
     }
     rest = {"total": 3, "maxResults": 2, "startAt": 2, "values": [{"id": "3"}]}
     opener = FakeOpener({"/changelog": rest, "/issue/PROJ-9": truncated})
-    got = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener).issue(
+    got = urd.Jira("example.invalid", "a@b.c", "t", opener=opener).issue(
         "PROJ-9", "summary"
     )
     assert [h["id"] for h in got["changelog"]["histories"]] == ["1", "2", "3"]
@@ -716,7 +717,7 @@ def test_transport_failures_retry_then_exit():
     real_sleep = urd.time.sleep
     urd.time.sleep = lambda seconds: None
     try:
-        jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+        jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
         jira.get("/field")
         assert attempt[0] == 2
     finally:
@@ -731,7 +732,7 @@ def test_transport_failures_exit_on_second_attempt():
     real_sleep = urd.time.sleep
     urd.time.sleep = lambda seconds: None
     try:
-        jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+        jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
         try:
             jira.get("/field")
             raise AssertionError("expected SystemExit")
@@ -749,7 +750,7 @@ def test_search_detects_stalled_page_token():
         "isLast": False,
     }
     opener = FakeOpener({"/search/jql": page})
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
     try:
         list(jira.search("project = PROJ"))
         raise AssertionError("expected SystemExit")
@@ -771,7 +772,7 @@ def test_truncated_changelog_raises_instead_of_corrupting():
     }
     empty_page = {"total": 3, "maxResults": 2, "startAt": 2, "values": []}
     opener = FakeOpener({"/changelog": empty_page, "/issue/PROJ-9": truncated})
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
     try:
         jira.issue("PROJ-9", "summary")
         raise AssertionError("expected SystemExit")
@@ -792,7 +793,7 @@ def test_malformed_response_maps_to_599():
     real_sleep = urd.time.sleep
     urd.time.sleep = lambda seconds: None
     try:
-        jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+        jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
         jira.get("/field")
         assert attempt[0] == 2
     finally:
@@ -807,7 +808,7 @@ def test_redirects_are_refused():
         attempt[0] += 1
         raise SystemExit("refusing redirect to https://attacker.com; check --site")
 
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=opener)
+    jira = urd.Jira("example.invalid", "a@b.c", "t", opener=opener)
     try:
         jira.get("/field")
         raise AssertionError("expected SystemExit")
@@ -843,17 +844,17 @@ def test_schema_is_created_on_open():
 
 def test_scope_round_trips():
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", project="PROJ", component="TEAM")
+    urd.save_scope(con, site="example.invalid", project="PROJ", component="TEAM")
     assert urd.load_scope(con)["project"] == "PROJ"
 
 
 def test_saving_scope_partially_keeps_the_rest():
     """A later `urd sync --since` must not wipe the site it was told once."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", project="PROJ")
+    urd.save_scope(con, site="example.invalid", project="PROJ")
     urd.save_scope(con, earliest_since="2026-01-01")
     scope = urd.load_scope(con)
-    assert scope["site"] == "example.atlassian.net"
+    assert scope["site"] == "example.invalid"
     assert scope["earliest_since"] == "2026-01-01"
 
 
@@ -889,7 +890,7 @@ def test_jql_without_a_component_scopes_the_whole_project():
 
 def test_a_failed_issue_is_recorded_and_the_rest_still_land():
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class Flaky:
@@ -917,7 +918,7 @@ def test_second_sync_does_not_refetch_unchanged_issues():
     """Verify the fetch rule's headline property: unchanged remote issues are not
     refetched on a second sync."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     issue_fetch_count = [0]
@@ -950,7 +951,7 @@ def test_resumable_backfill_after_error():
     """After a failed issue, re-running fetches only the failed one and clears
     its error entry."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class Flaky:
@@ -988,7 +989,7 @@ def test_bare_sync_after_first_run_keeps_config():
     """A bare `urd sync` after a first run with flags still knows the site,
     project and window."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class FakeJira:
@@ -1012,7 +1013,7 @@ def test_malformed_issue_response_is_recorded_not_fatal():
     """An issue response with no fields key (empty 200 body or malformed JSON)
     is recorded in sync_errors and the run continues."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class MalformedResponseJira:
@@ -1045,7 +1046,7 @@ def test_json_array_issue_response_is_recorded_not_fatal():
     """A JSON array body from /issue/KEY (not a dict) is recorded in sync_errors
     and the run continues, not a traceback."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class ArrayResponseOpener:
@@ -1065,7 +1066,7 @@ def test_json_array_issue_response_is_recorded_not_fatal():
                 }).encode()
             return 200, b"{}"
 
-    jira = urd.Jira("example.atlassian.net", "a@b.c", "t", opener=ArrayResponseOpener())
+    jira = urd.Jira("example.invalid", "a@b.c", "t", opener=ArrayResponseOpener())
 
     class Syncer:
         def search(self, jql):
@@ -1094,7 +1095,7 @@ def test_json_array_issue_response_is_recorded_not_fatal():
 
 def test_lookups_and_sync_timestamp_are_written():
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class LookupJira:
@@ -1150,7 +1151,7 @@ class _FieldJira:
 
 def _scoped_db():
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
     return con
 
@@ -1197,7 +1198,7 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
     """Keys that have left the scope are removed from sync_errors, but errors
     for keys still in scope survive the prune even if not refetched."""
     con = urd.open_db(_tmpdb())
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
 
     class FirstSync:
@@ -1263,7 +1264,7 @@ def test_urd_email_is_used_when_no_flag_is_given():
     through main(), or the test just re-computes the expression it is checking."""
     db = _tmpdb()
     con = urd.open_db(db)
-    urd.save_scope(con, site="example.atlassian.net", email="stored@example.com",
+    urd.save_scope(con, site="example.invalid", email="stored@example.com",
                    project="PROJ", earliest_since="2026-01-01")
     con.close()
 
@@ -3983,7 +3984,7 @@ def test_the_fetch_check_is_not_blinded_by_its_own_exemptions():
         raise AssertionError(f"not caught: {markup}")
     # And the two things that must stay allowed.
     _assert_nothing_is_fetched(
-        '<a href="https://example.atlassian.net/browse/PROJ-1">PROJ-1</a>')
+        '<a href="https://example.invalid/browse/PROJ-1">PROJ-1</a>')
     _assert_nothing_is_fetched("<script>/*! https://github.com/leeoniya/uPlot */</script>")
 
 
@@ -4072,7 +4073,7 @@ def test_a_zero_floor_is_rejected_rather_than_ignored():
     and no complaint about a value that means nothing."""
     db = _tmpdb()
     con = urd.open_db(db)
-    urd.save_scope(con, site="example.atlassian.net", email="a@b.c", project="PROJ",
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
     con.close()
     try:
@@ -4370,10 +4371,10 @@ def test_the_vendored_library_is_present_and_makes_no_requests():
 
 def test_a_ticket_key_links_to_the_configured_site():
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.save_scope(con, site="example.atlassian.net")
+    urd.save_scope(con, site="example.invalid")
     chart, rows = _flow_rows(con, "aging_wip")
     out = urd.run_chart(con, chart)
-    assert 'href="https://example.atlassian.net/browse/PROJ-3"' in out, out[:400]
+    assert 'href="https://example.invalid/browse/PROJ-3"' in out, out[:400]
     assert ">PROJ-3</a>" in out
     # Only the linked column becomes a link; a status is not a ticket.
     assert "browse/In Progress" not in out
@@ -4394,7 +4395,7 @@ def test_no_site_means_no_links_rather_than_a_broken_one():
 def test_a_linked_key_is_escaped_in_both_the_href_and_the_text():
     out = render.table([{"key": 'A"><script>x</script>', "days": 1}],
                        headers=["key", "days"],
-                       link_base="https://example.atlassian.net/browse/",
+                       link_base="https://example.invalid/browse/",
                        links=["key"])
     assert "<script>" not in out
     assert '"><script' not in out
