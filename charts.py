@@ -415,7 +415,10 @@ CHARTS = [
             WHERE i.parent IS NOT NULL AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             -- Ordered before limiting, so the cap keeps the epics worth keeping.
-            ORDER BY count(*) DESC
+            -- Tie-broken on the label, which GROUP BY 1 makes unique, so the order
+            -- is total: on count alone, epics with equal totals came back in an
+            -- arbitrary order and two renders of one database did not diff.
+            ORDER BY count(*) DESC, 1
             LIMIT 40
         """,
     ),

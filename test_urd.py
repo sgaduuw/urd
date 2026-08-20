@@ -4012,6 +4012,31 @@ def test_the_epic_chart_labels_carry_the_title_as_well_as_the_key():
     assert any("PROJ-100" in x and "Rebuild the widget pipeline" in x for x in labels), labels
 
 
+def test_per_epic_breaks_a_tie_so_two_renders_of_one_database_agree():
+    """The cap was `ORDER BY count(*) DESC LIMIT 40`, so epics on equal counts came
+    back in an arbitrary order: which of them survived the cap, and in what order,
+    varied between runs on identical data. Two renders of one database are meant to
+    diff, which the README states as a design property, and they did not.
+
+    Eight tied epics rather than two. Two passed the unfixed query on the first
+    try, because DuckDB happened to return that pair in order; eight produced six
+    distinct orderings over thirty runs of one process, none of them sorted. The
+    parents are inserted alphabetically backwards on top of that, so insertion
+    order cannot be mistaken for a working tiebreaker."""
+    con = _derived("reopened", "two_sprints")
+    parents = [f"PROJ-{n}" for n in range(800, 100, -100)]
+    for i, parent in enumerate(parents):
+        con.execute("INSERT INTO issues_all (key, project, type, status, "
+                    "status_category, created, summary, parent, abandoned) VALUES "
+                    "(?, 'PROJ', 'Task', 'To Do', 'new', TIMESTAMP '2026-01-06 09:00', "
+                    "'tied', ?, FALSE)", [f"PROJ-9{i}", parent])
+    _, rows = _flow_rows(con, "per_epic")
+    labels = [r["epic"] for r in rows]
+    # PROJ-100 holds two fixture tickets and leads on count alone. The other seven
+    # hold one each, so nothing but the tiebreaker can order them.
+    assert labels == ["PROJ-100"] + sorted(parents), labels
+
+
 def test_an_epic_outside_the_report_falls_back_to_its_key():
     """Parents are routinely outside the fetched scope, and half a label is worse
     than a bare key."""
