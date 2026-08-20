@@ -35,20 +35,35 @@ Slug disappears as a question: derived from the project key the same way
 editable there for the one case that needs it (two databases for one project
 key).
 
-## Discovery, from two calls that already exist
+## Discovery, from one call that already exists
 
-Both are already implemented on the client and already called by `sync`, so
-this adds no new Jira surface:
+Already implemented on the client and already called by `sync`, so this adds
+no new Jira surface: `GET /project/{key}/statuses` via `Jira.project_statuses`
+tells us which statuses this project's workflow actually uses, and needs no
+admin rights.
 
-- `GET /project/{key}/statuses` via `Jira.project_statuses` tells us which
-  statuses this project's workflow actually uses. Needs no admin rights.
-- `GET /status` via `Jira.statuses` gives every status with its
-  `statusCategory.key`, one of `new`, `indeterminate`, `done`.
+An earlier version of this design also called `GET /status`, the
+instance-wide status list, and intersected the two by matching status *name*,
+on the belief that only the instance-wide call carried `statusCategory`. That
+belief was never checked against a real instance, and it was wrong on both
+counts. Measured against one:
 
-Intersecting them gives the project's statuses with their categories. Sampling
-tickets was the alternative and is worse on every axis: one request instead of
-a search plus a fetch per issue, authoritative rather than inferred, and it
-includes statuses no current ticket happens to occupy.
+- `/project/{key}/statuses` already carries `statusCategory` on every status
+  it returns, so the second call added nothing.
+- Status names are not unique on the instance: 323 statuses total, 25 names
+  used more than once, at least two of them spanning different categories. The
+  intersection built `{name: category}` from the instance-wide list, so the
+  last occurrence of a repeated name won, and which occurrence is last is not
+  something the code controls. On the probed workflow this already produced a
+  wrong answer for a real status: the project's own response put it in `new`,
+  the name-keyed lookup put it in `indeterminate`, and `status_order` sorted
+  it accordingly with nothing to flag the disagreement.
+
+So the two-call, intersect-by-name design is deleted rather than kept as an
+option. There is one call, and the category comes from the status the project
+itself reports. Sampling tickets was considered and rejected on the same
+grounds it always was: one request beats a search plus a fetch per issue,
+and the project's own answer is authoritative rather than inferred.
 
 Note `statusCategory` can be `null` in real responses; `test_urd.py` already
 pins that case. An uncategorised status sorts last and is called out on the
@@ -79,9 +94,9 @@ operator knows the guess is a starting point rather than a verdict.
 
 ## Degradation
 
-The statuses calls must never block setup. Both can 403 on a restricted
-project, and `_refresh_workflow_statuses` already treats that as a lost hint
-rather than a failed run; page 2 does the same. If discovery fails, page 2
+The statuses call must never block setup. It can 403 on a restricted project,
+and `_refresh_workflow_statuses` already treats that as a lost hint rather
+than a failed run; page 2 does the same. If discovery fails, page 2
 renders with empty fields, the reason, and the note that `derive` will propose
 values after the first sync. Setup still completes.
 
@@ -99,13 +114,16 @@ If discovery succeeds but returns nothing usable, that is the same path.
 
 - Page 1 validates before writing, as today, and creates no database when the
   credential is rejected. Existing tests cover this and must keep passing.
-- Discovery intersects the two calls: a status in the project's workflow but
-  absent from the global list, and one present globally but not in the
-  workflow, each land where the design says.
+- The category comes from the status the project's own call reports. A status
+  whose `statusCategory` is `null` there ends up uncategorised rather than
+  guessed at.
+- Two statuses sharing a name across issue types, with different categories
+  each, must not let one overwrite the other: the regression a name-keyed
+  lookup would reintroduce.
 - An uncategorised status sorts last and is flagged.
 - Each of the three guesses, including the case where the guess finds nothing
   and the field is left blank.
-- A 403 on either discovery call still reaches page 2 with a stated reason, and
+- A 403 on the discovery call still reaches page 2 with a stated reason, and
   confirming still writes the scope.
 - The slug derived from a project key matches what `seed_from_env` produces for
   the same key. One assertion, so the two cannot drift.
@@ -119,6 +137,10 @@ If discovery succeeds but returns nothing usable, that is the same path.
 2. **Does page 2 show the evidence?** The full status list with categories and
    which are in the workflow is useful and is a table the report already knows
    how to render. Recommendation: yes, collapsed under the fields.
-3. **Two calls or one?** `GET /status` is instance-wide and can be large on a
-   big instance. Recommendation: make both calls, since the intersection is the
-   point, and revisit only if the response size is a real problem.
+
+Decision 3 as originally framed, "two calls or one, given `GET /status` can be
+large on a big instance", is withdrawn rather than resolved: there is no
+instance-wide call left to be large. Measured against a real instance, that
+call would have returned 323 statuses, so the size concern was real, but the
+fix is that discovery never makes the call, not a size threshold for when to
+skip it.

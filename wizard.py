@@ -108,27 +108,30 @@ class Discovery(NamedTuple):
 
 
 def discover(proposal, token, opener=None):
-    """The project's statuses with their categories, from two calls.
+    """The project's statuses with their categories, from one call.
 
-    /project/{key}/statuses says which statuses this workflow uses but is not
-    relied on for categories; /status carries statusCategory for the whole
-    instance. Intersecting the two gives a list that is both scoped to the
-    project and categorised, without sampling tickets and without needing the
-    admin-only transition graph.
+    /project/{key}/statuses already carries statusCategory on every status it
+    returns, so there is nothing a second, instance-wide call would add. There
+    used to be one anyway, its result intersected with this one by matching
+    status *name*. That was wrong on a real instance: names are not unique
+    there, the same name can carry different categories under different issue
+    types, and a name-keyed map keeps whichever occurrence iterates last. This
+    reads the category straight off the status the project itself reports, so
+    there is nothing for a same-named status elsewhere to overwrite.
 
     Loops every comma separated project key, matching
     _refresh_workflow_statuses's own loop over the same field: a scope naming
     several projects otherwise gets told the workflow is only the first one's.
 
-    Never raises. Either call can 403 on a restricted project (SystemExit,
-    raised by Jira.get), or return a 200 that is not the shape expected: a
-    non-JSON body (an interposing proxy, a captive portal) makes json.loads
-    raise, and a differently shaped JSON body makes entry.get fail on a str.
-    Both are caught, not just SystemExit, which is not itself an Exception
-    subclass. A lost hint must not stop someone finishing setup.
+    Never raises. The call can 403 on a restricted project (SystemExit, raised
+    by Jira.get), or return a 200 that is not the shape expected: a non-JSON
+    body (an interposing proxy, a captive portal) makes json.loads raise, and
+    a differently shaped JSON body makes entry.get fail on a str. Both are
+    caught, not just SystemExit, which is not itself an Exception subclass. A
+    lost hint must not stop someone finishing setup.
     """
     jira = urd.Jira(proposal.site, proposal.email, token, opener=opener)
-    names = []
+    found = []
     try:
         for key in (k.strip() for k in proposal.project.split(",")):
             if not key:
@@ -136,19 +139,12 @@ def discover(proposal, token, opener=None):
             for issue_type in jira.project_statuses(key):
                 for status in issue_type.get("statuses", []):
                     name = status.get("name")
-                    if name and name not in names:
-                        names.append(name)
-        instance = jira.statuses()
+                    if name and name not in [s.name for s in found]:
+                        category = (status.get("statusCategory") or {}).get("key") or ""
+                        found.append(Status(name, category))
     except (SystemExit, Exception) as exc:
         return Discovery([], f"could not read the workflow's statuses: {exc}")
-
-    category = {}
-    for entry in instance:
-        name = entry.get("name")
-        if name:
-            category[name] = ((entry.get("statusCategory") or {}).get("key") or "")
-
-    return Discovery([Status(n, category.get(n, "")) for n in names])
+    return Discovery(found)
 
 
 def propose(statuses):

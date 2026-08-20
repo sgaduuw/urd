@@ -139,33 +139,29 @@ def test_token_reports_a_missing_security_binary_as_no_token():
         urd.subprocess.run = original_run
 
 
-_INSTANCE_STATUSES = [
-    {"name": "To Do", "statusCategory": {"key": "new"}},
-    {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
-    {"name": "Code Review", "statusCategory": {"key": "indeterminate"}},
-    {"name": "Blocked", "statusCategory": {"key": "indeterminate"}},
-    {"name": "Done", "statusCategory": {"key": "done"}},
-    {"name": "Won't Do", "statusCategory": {"key": "done"}},
-    {"name": "Retired", "statusCategory": {"key": "new"}},
-    # The real API does send this, and test_urd.py already pins the case.
-    {"name": "Odd", "statusCategory": None},
-]
-
 _WORKFLOW = [
     # Deliberately not already in category order (new, then done, then
     # uncategorised, then indeterminate): a fixture that happens to list
     # statuses in the order propose() would sort them into cannot tell a
     # sorted result from an unsorted one, which is exactly how "sorted(...)"
     # once quietly became "list(...)" without a single test noticing.
-    {"statuses": [{"name": "To Do"}, {"name": "Done"}, {"name": "Won't Do"},
-                  {"name": "Odd"}]},
-    {"statuses": [{"name": "In Progress"}, {"name": "Code Review"},
-                  {"name": "Blocked"}]},
+    {"statuses": [
+        {"name": "To Do", "statusCategory": {"key": "new"}},
+        {"name": "Done", "statusCategory": {"key": "done"}},
+        {"name": "Won't Do", "statusCategory": {"key": "done"}},
+        # The real API does send this, and test_urd.py already pins the case.
+        {"name": "Odd", "statusCategory": None},
+    ]},
+    {"statuses": [
+        {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+        {"name": "Code Review", "statusCategory": {"key": "indeterminate"}},
+        {"name": "Blocked", "statusCategory": {"key": "indeterminate"}},
+    ]},
 ]
 
 
-def _discovery_opener(statuses=None, workflow=None, fail=None):
-    """Answers the two discovery endpoints. `fail` names a URL fragment that
+def _discovery_opener(workflow=None, fail=None):
+    """Answers the one discovery endpoint. `fail` names a URL fragment that
     should return 403 instead, so the degradation path is exercised with the
     real client rather than a stub."""
     def opener(url, headers):
@@ -173,23 +169,14 @@ def _discovery_opener(statuses=None, workflow=None, fail=None):
             return 403, b'{"message": "no"}'
         if "/project/" in url:
             return 200, json.dumps(workflow if workflow is not None else _WORKFLOW).encode()
-        if url.rstrip("/").endswith("/status"):
-            payload = statuses if statuses is not None else _INSTANCE_STATUSES
-            return 200, json.dumps(payload).encode()
         raise AssertionError(f"unexpected request: {url}")
     return opener
 
 
-def test_discovery_keeps_only_the_project_s_own_statuses():
-    """Retired is in the instance list but not this project's workflow, so it
-    must not reach the proposal."""
-    found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
-    assert found.problem == ""
-    assert "Retired" not in [s.name for s in found.statuses]
-    assert "To Do" in [s.name for s in found.statuses]
-
-
-def test_discovery_attaches_the_category_from_the_instance_list():
+def test_discovery_reads_the_category_from_the_project_s_own_answer():
+    """The whole point of the single-call design: the category comes from the
+    statusCategory the project's own response carries, not from a separate,
+    name-keyed lookup against anything instance-wide."""
     found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
     by_name = {s.name: s.category for s in found.statuses}
     assert by_name["To Do"] == "new"
@@ -197,17 +184,32 @@ def test_discovery_attaches_the_category_from_the_instance_list():
     assert by_name["Done"] == "done"
 
 
-def test_a_status_the_instance_list_does_not_describe_has_no_category():
-    """statusCategory can be null, and a status in the workflow can be absent
-    from the instance list entirely. Both end up uncategorised rather than
-    guessed at."""
-    workflow = [{"statuses": [{"name": "To Do"}, {"name": "Odd"},
-                              {"name": "Unlisted"}]}]
+def test_a_null_status_category_in_the_project_response_has_no_category():
+    """statusCategory can be null in a real response; test_urd.py already
+    pins the same case for the instance-wide /status call this module no
+    longer makes."""
+    workflow = [{"statuses": [{"name": "To Do", "statusCategory": {"key": "new"}},
+                              {"name": "Odd", "statusCategory": None}]}]
     found = wizard.discover(_proposal(), "tok",
                             opener=_discovery_opener(workflow=workflow))
     by_name = {s.name: s.category for s in found.statuses}
     assert by_name["Odd"] == ""
-    assert by_name["Unlisted"] == ""
+
+
+def test_a_repeated_status_name_keeps_its_first_categorys_answer():
+    """The regression this whole fix is about. On a real instance the same
+    status name can appear under more than one issue type with a different
+    statusCategory each time. A name-keyed map such as {name: category} would
+    let the later occurrence overwrite the earlier one, and which one is later
+    is not something this code controls. discover must not build one, and the
+    dedup-by-name here must keep the first answer rather than the last."""
+    workflow = [
+        {"statuses": [{"name": "Blocked", "statusCategory": {"key": "new"}}]},
+        {"statuses": [{"name": "Blocked", "statusCategory": {"key": "indeterminate"}}]},
+    ]
+    found = wizard.discover(_proposal(), "tok",
+                            opener=_discovery_opener(workflow=workflow))
+    assert [s.category for s in found.statuses if s.name == "Blocked"] == ["new"]
 
 
 def test_discovery_reports_a_refusal_instead_of_raising():
@@ -226,8 +228,6 @@ def test_discover_survives_a_non_json_response():
     subclass, so both must be caught."""
     def opener(url, headers):
         if "/project/" in url:
-            return 200, json.dumps(_WORKFLOW).encode()
-        if url.rstrip("/").endswith("/status"):
             return 200, b"<html>not json</html>"
         raise AssertionError(f"unexpected request: {url}")
     found = wizard.discover(_proposal(), "tok", opener=opener)
@@ -241,11 +241,12 @@ def test_discovery_reads_every_project_key_not_just_the_first():
     the workflow is only that one project's."""
     def opener(url, headers):
         if "/project/PROJA/statuses" in url:
-            return 200, json.dumps([{"statuses": [{"name": "To Do"}]}]).encode()
+            return 200, json.dumps(
+                [{"statuses": [{"name": "To Do", "statusCategory": {"key": "new"}}]}]).encode()
         if "/project/PROJB/statuses" in url:
-            return 200, json.dumps([{"statuses": [{"name": "Blocked"}]}]).encode()
-        if url.rstrip("/").endswith("/status"):
-            return 200, json.dumps(_INSTANCE_STATUSES).encode()
+            return 200, json.dumps(
+                [{"statuses": [{"name": "Blocked",
+                               "statusCategory": {"key": "indeterminate"}}]}]).encode()
         raise AssertionError(f"unexpected request: {url}")
     found = wizard.discover(_proposal(project="PROJA,PROJB"), "tok", opener=opener)
     assert [s.name for s in found.statuses] == ["To Do", "Blocked"]
