@@ -55,7 +55,7 @@ def test_setup_validates_before_writing_anything():
     wizard_mod.validate = fake_validate
     try:
         response = test_helpers.client(registry).post("/setup", data={
-            "slug": "alpha", "site": "example.atlassian.net", "email": "a@b.c",
+            "slug": "alpha", "site": "example.invalid", "email": "a@b.c",
             "project": "PROJ", "component": "TEAM", "since": "2026-01-01",
             "status_order": "To Do,Done", "start_status": "To Do",
             "review_status": "", "abandoned_status": "", "confirm": "",
@@ -73,7 +73,7 @@ def test_a_validated_scope_is_shown_for_confirmation_before_it_is_written():
     _patched(monkey)
     try:
         body = test_helpers.client(registry).post("/setup", data={
-            "site": "example.atlassian.net", "email": "a@b.c",
+            "site": "example.invalid", "email": "a@b.c",
             "project": "PROJ", "component": "TEAM", "since": "2026-01-01",
         }).get_data(as_text=True)
     finally:
@@ -82,25 +82,6 @@ def test_a_validated_scope_is_shown_for_confirmation_before_it_is_written():
     assert "751" in body
     assert 'name="confirm"' in body
     assert registry.projects() == [], "nothing is written before confirm"
-
-
-def test_confirming_writes_the_scope_and_redirects():
-    registry = test_helpers.registry()
-    original = wizard_mod.validate
-    wizard_mod.validate = lambda p, t, opener=None: wizard_mod.Result(
-        True, who="A Person", issues=751)
-    try:
-        response = test_helpers.client(registry).post("/setup", data={
-            "slug": "alpha", "site": "example.atlassian.net", "email": "a@b.c",
-            "project": "PROJ", "component": "TEAM", "since": "2026-01-01",
-            "status_order": "To Do,Done", "start_status": "To Do",
-            "review_status": "", "abandoned_status": "", "confirm": "yes",
-        })
-    finally:
-        wizard_mod.validate = original
-    assert response.status_code == 302
-    assert "/alpha/" in response.headers["Location"]
-    assert registry.get("alpha").configured() is True
 
 
 def test_a_bad_slug_is_refused_with_a_message():
@@ -114,7 +95,7 @@ def test_a_bad_slug_is_refused_with_a_message():
         True, who="A Person", issues=1)
     try:
         body = test_helpers.client(registry).post("/setup", data={
-            "slug": "../escape", "site": "example.atlassian.net", "email": "a@b.c",
+            "slug": "../escape", "site": "example.invalid", "email": "a@b.c",
             "project": "PROJ", "component": "", "since": "2026-01-01",
             "status_order": "To Do,Done", "start_status": "To Do",
             "review_status": "", "abandoned_status": "", "confirm": "yes",
@@ -206,6 +187,7 @@ def test_confirming_writes_the_scope_including_the_discovered_workflow():
     finally:
         _restore(monkey)
     assert response.status_code == 302
+    assert "/proj/" in response.headers["Location"]
     project = registry.get("proj")
     assert project is not None
     assert urd.load_scope(project.con)["status_order"] == "To Do,In Progress,Done"
