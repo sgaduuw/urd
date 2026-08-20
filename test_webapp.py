@@ -675,6 +675,41 @@ def test_a_block_related_ioexception_does_not_collide_with_the_lock_phrase():
     assert "could not read block" in message, message
 
 
+def test_project_slug_lowercases_and_takes_the_first_key():
+    assert urd.project_slug("PROJ") == "proj"
+    assert urd.project_slug("PROJ,OTHER") == "proj"
+    assert urd.project_slug("  PROJ  ") == "proj"
+
+
+def test_project_slug_replaces_what_the_charset_refuses():
+    """The registry accepts [a-z0-9][a-z0-9-]* only, so anything else has to
+    become a hyphen rather than reaching the filesystem."""
+    assert urd.project_slug("MY PROJ") == "my-proj"
+    assert urd.project_slug("A_B") == "a-b"
+
+
+def test_project_slug_can_return_something_the_registry_rejects():
+    """Deliberately not validated here: seed_from_env already catches the
+    ValueError and the wizard shows it on the page, and two validators for one
+    rule is how they drift."""
+    assert urd.project_slug(",") == ""
+    assert urd.project_slug("!!!") == "---"
+
+
+def test_seed_from_env_and_the_wizard_derive_the_same_slug():
+    """One function, so the environment path and the form cannot disagree about
+    what a project key becomes on disk. This is the assertion that keeps them
+    together; without it the two could drift silently."""
+    volume = tempfile.mkdtemp()
+    registry = projects_mod.ProjectRegistry(volume)
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+                                 "URD_PROJECT": "PROJ,OTHER",
+                                 "URD_EMAIL": "a@b.c",
+                                 "URD_SINCE": "2026-01-01"})
+    seeded = [p.slug for p in registry.projects()]
+    assert seeded == [urd.project_slug("PROJ,OTHER")], seeded
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
