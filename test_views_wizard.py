@@ -138,7 +138,7 @@ def test_setup_still_adds_projects_once_one_exists():
 
 
 def test_the_setup_form_is_laid_out_as_stacked_fields():
-    """Without a rule for it a label is inline, so ten label-and-input pairs flow
+    """Without a rule for it a label is inline, so five label-and-input pairs flow
     as one wrapping paragraph with each label butting against the previous input,
     and the inputs keep the browser's white default on a dark page. This is the
     first screen anyone sees, so the layout is part of the page working."""

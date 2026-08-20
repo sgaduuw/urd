@@ -65,7 +65,8 @@ blank field.
 - **review status**: an `indeterminate` status whose name contains "review" or
   "QA", else blank. A guess.
 - **abandoned status**: `done`-category statuses whose names read as rejection
-  (won't do, rejected, cancelled, declined). A guess.
+  (won't do, wont do, will not do, rejected, cancelled, canceled, declined,
+  duplicate). A guess.
 
 **Ordering within a category cannot be derived here.** That needs the
 transition graph from `/workflow/search`, which requires admin. So a parking
