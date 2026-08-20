@@ -1274,6 +1274,19 @@ SEED_ENV_KEYS = ("URD_SITE", "URD_EMAIL", "URD_PROJECT", "URD_COMPONENT", "URD_S
                  "URD_STATUS_ORDER", "URD_START_STATUS", "URD_REVIEW_STATUS")
 
 
+def project_slug(project):
+    """The database filename and URL segment a project key becomes.
+
+    Shared with the setup form rather than duplicated: the slug is what the file
+    is called and what the URL says, so two derivations would mean the
+    environment path and the form disagreeing about where a project lives.
+
+    Not validated here. It can return a string ProjectRegistry.add refuses, and
+    that refusal is the one place the charset is enforced.
+    """
+    return re.sub(r"[^a-z0-9-]", "-", (project or "").split(",")[0].strip().lower())
+
+
 def seed_from_env(registry, env=None):
     """Create the first project from the environment, and only the first.
 
@@ -1288,7 +1301,7 @@ def seed_from_env(registry, env=None):
                                    env.get("URD_EMAIL"), env.get("URD_SINCE"))
     if not (site and project and email and since):
         return None
-    slug = re.sub(r"[^a-z0-9-]", "-", project.split(",")[0].strip().lower())
+    slug = project_slug(project)
     try:
         created = registry.add(slug)
     except ValueError:

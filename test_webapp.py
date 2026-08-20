@@ -127,7 +127,7 @@ def test_a_project_with_no_scope_gets_a_notice_to_finish_setup():
 def test_a_project_that_never_synced_gets_a_notice_with_refresh():
     registry = test_helpers.registry()
     project = registry.add("alpha")
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+    urd.save_scope(project.con, site="example.invalid", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01")
     body = webapp.project_page(project)
     assert "never synced" in body.lower()
@@ -144,7 +144,7 @@ def test_a_failed_refresh_shows_its_message_on_the_never_synced_notice():
     state instead of a later one."""
     registry = test_helpers.registry()
     project = registry.add("alpha")
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+    urd.save_scope(project.con, site="example.invalid", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01")
     project.job.state = "failed"
     project.job.message = "no API token"
@@ -178,6 +178,33 @@ def test_a_cross_site_post_is_refused():
     assert response.status_code == 403
 
 
+def test_a_same_site_post_is_refused():
+    """A page on a different localhost port is a different origin but the
+    same site: the browser sends same-site, not cross-site. site is an
+    operator-supplied form field, so letting this through is exactly the
+    forged /setup POST that would send URD_TOKEN to whatever host it names."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry).post(
+        f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "same-site"})
+    assert response.status_code == 403
+
+
+def test_a_missing_sec_fetch_site_header_is_refused():
+    """Some older browsers never send Sec-Fetch-Site. Refusing by default is
+    the safer choice for a single-user tool on loopback; the cost, paid
+    deliberately, is that such a browser cannot use any POST route here.
+
+    sec_fetch_site=None is what makes the header truly absent: every other
+    test's client defaults it to same-origin so that tests unrelated to this
+    guard do not have to know it exists."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry, sec_fetch_site=None).post(
+        f"/{project.slug}/refresh")
+    assert response.status_code == 403
+
+
 def test_an_ordinary_same_origin_post_still_works():
     """start_refresh is mocked, as its sibling in test_views_jobs.py does:
     unmocked, the default jira_factory calls urd.token() for real on a
@@ -188,7 +215,23 @@ def test_an_ordinary_same_origin_post_still_works():
     original = projects_mod.start_refresh
     projects_mod.start_refresh = lambda project, jira_factory=None: True
     try:
-        response = test_helpers.client(registry).post(f"/{project.slug}/refresh")
+        response = test_helpers.client(registry).post(
+            f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "same-origin"})
+    finally:
+        projects_mod.start_refresh = original
+    assert response.status_code == 302
+
+
+def test_a_none_sec_fetch_site_post_still_works():
+    """none is a direct navigation or a form the app itself served with no
+    referring document, the shape of the confirm POST at the end of setup."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    original = projects_mod.start_refresh
+    projects_mod.start_refresh = lambda project, jira_factory=None: True
+    try:
+        response = test_helpers.client(registry).post(
+            f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "none"})
     finally:
         projects_mod.start_refresh = original
     assert response.status_code == 302
@@ -551,7 +594,7 @@ def test_the_environment_seeds_only_the_first_project():
 
 def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})
     project = registry.get("proj")
@@ -561,7 +604,7 @@ def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
 
 def test_an_incomplete_environment_seeds_nothing():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net"})
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid"})
     assert registry.projects() == []
 
 
@@ -579,7 +622,7 @@ def test_seed_from_env_missing_project_seeds_nothing():
     """Isolates the project term: site, email and since are all set, so only
     project is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_EMAIL": "a@b.c", "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
 
@@ -588,7 +631,7 @@ def test_seed_from_env_missing_email_seeds_nothing():
     """Isolates the email term: site, project and since are all set, so only
     email is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
 
@@ -597,7 +640,7 @@ def test_seed_from_env_missing_since_seeds_nothing():
     """Isolates the since term: site, project and email are all set, so only
     since is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c"})
     assert registry.projects() == []
 
@@ -609,7 +652,7 @@ def test_a_punctuation_only_project_is_skipped_not_crashed():
     this function's own docstring anticipates: the server must still start,
     landing on /setup, rather than crash-loop on a traceback."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": ",", "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
@@ -673,6 +716,41 @@ def test_a_block_related_ioexception_does_not_collide_with_the_lock_phrase():
         urd.open_db = real_open_db
     assert "another urd is holding it" not in message, message
     assert "could not read block" in message, message
+
+
+def test_project_slug_lowercases_and_takes_the_first_key():
+    assert urd.project_slug("PROJ") == "proj"
+    assert urd.project_slug("PROJ,OTHER") == "proj"
+    assert urd.project_slug("  PROJ  ") == "proj"
+
+
+def test_project_slug_replaces_what_the_charset_refuses():
+    """The registry accepts [a-z0-9][a-z0-9-]* only, so anything else has to
+    become a hyphen rather than reaching the filesystem."""
+    assert urd.project_slug("MY PROJ") == "my-proj"
+    assert urd.project_slug("A_B") == "a-b"
+
+
+def test_project_slug_can_return_something_the_registry_rejects():
+    """Deliberately not validated here: seed_from_env already catches the
+    ValueError and the wizard shows it on the page, and two validators for one
+    rule is how they drift."""
+    assert urd.project_slug(",") == ""
+    assert urd.project_slug("!!!") == "---"
+
+
+def test_seed_from_env_and_the_wizard_derive_the_same_slug():
+    """One function, so the environment path and the form cannot disagree about
+    what a project key becomes on disk. This is the assertion that keeps them
+    together; without it the two could drift silently."""
+    volume = tempfile.mkdtemp()
+    registry = projects_mod.ProjectRegistry(volume)
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+                                 "URD_PROJECT": "PROJ,OTHER",
+                                 "URD_EMAIL": "a@b.c",
+                                 "URD_SINCE": "2026-01-01"})
+    seeded = [p.slug for p in registry.projects()]
+    assert seeded == [urd.project_slug("PROJ,OTHER")], seeded
 
 
 if __name__ == "__main__":
