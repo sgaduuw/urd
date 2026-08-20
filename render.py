@@ -194,7 +194,6 @@ svg.chart {
 .tick { fill: var(--muted); font-size: 11px; }
 .value-label { fill: var(--text-secondary); font-size: 11px; }
 .legend-label { fill: var(--text-secondary); font-size: 11px; }
-.facet-title { fill: var(--text-secondary); font-size: 10px; }
 .guide-label { fill: var(--muted); font-size: 11px; }
 .guide-line { stroke-width: 1; }
 
@@ -220,17 +219,6 @@ td.shaded span { position: relative; }
 
 p.empty { color: var(--muted); font-style: italic; }
 
-.facets { display: flex; flex-wrap: wrap; gap: 8px; }
-.facet { border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
-.facet-name {
-  color: var(--text-secondary);
-  font-size: 11px;
-  text-align: center;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 figure { margin: 0 0 28px; }
 figure h3 { font-size: 15px; margin: 0 0 6px; font-weight: 600; }
@@ -327,61 +315,16 @@ PLOT_SCRIPT = """
     if (!island) { return; }
     var spec;
     try { spec = JSON.parse(island.textContent); } catch (e) { return; }
-    /* One panel per group, every panel on the scales Python computed, so a quiet
-       panel never rescales into looking as busy as a loud one. */
-    if (spec.kind === 'small_multiples') {
-      var grid = document.createElement('div');
-      grid.className = 'facets';
-      box.appendChild(grid);
-      spec.facets.forEach(function (facet) {
-        var cell = document.createElement('div');
-        cell.className = 'facet';
-        var caption = document.createElement('div');
-        caption.className = 'facet-name';
-        /* Matches the SVG heading it replaces, total and all. */
-        caption.textContent = facet.title + ' \u00b7 ' + facet.total;
-        cell.appendChild(caption);
-        grid.appendChild(cell);
-        var colour = token('--s1', '#2a78d6');
-        new uPlot({
-          width: 150, height: 90,
-          /* The legend IS the numbers here: a 150px panel has no room for axes,
-             so without a readout an upgraded facet says even less than the SVG
-             it replaced, which at least prints its total in the heading. */
-          legend: { show: true },
-          cursor: { drag: { x: true, y: false } },
-          scales: { x: { time: true }, y: { range: [0, spec.yMax || 1] } },
-          axes: [{ show: false }, { show: false }],
-          series: [
-            { label: spec.xLabel },
-            { label: facet.title, stroke: colour, width: 2,
-              points: { show: true, size: 4, stroke: colour, fill: colour } }
-          ]
-        }, [spec.x, facet.data], cell);
-      });
-      var svgEl = box.querySelector('svg');
-      if (svgEl) { svgEl.style.display = 'none'; }
-      return;
-    }
     var scatter = spec.kind === 'scatter';
     var stacked = spec.kind === 'stacked';
     /* combo carries a type per series, so bar-ness is decided per series rather
        than per chart. uPlot reads series.paths individually, which is exactly what
        lets one series be a bar column and its neighbour a line. */
     var combo = spec.kind === 'combo';
-    var bars = spec.kind === 'bars';
-    var facets = spec.kind === 'small_multiples';
-    var labels = spec.labels || [];
-    function category(i) {
-      return (i == null || labels[i] === undefined) ? '' : labels[i];
-    }
-    var series = [{
-      label: spec.xLabel,
-      value: bars ? function (u, v) { return category(v); } : null
-    }];
+    var series = [{ label: spec.xLabel }];
     spec.series.forEach(function (s) {
       var colour = token('--s' + (s.slot || 1), '#2a78d6');
-      var asBar = bars || (combo && s.type === 'bars');
+      var asBar = combo && s.type === 'bars';
       series.push({
         label: s.label,
         stroke: colour,
@@ -390,9 +333,8 @@ PLOT_SCRIPT = """
            so any alpha lets every band underneath show through and each one
            renders as a blend of itself and all its predecessors. */
         fill: (stacked || asBar) ? colour : null,
-        /* Translucent only where bars sit behind lines, so the lines stay legible
-           through them. A bars-only chart keeps its solid fill. */
-        fillAlpha: (combo && asBar) ? 0.55 : 1,
+        /* Translucent so the lines stay legible through the bars behind them. */
+        fillAlpha: asBar ? 0.55 : 1,
         paths: asBar ? uPlot.paths.bars({ size: [0.7, 40] }) : null,
         points: { show: !stacked && !asBar, size: scatter ? 5 : 4,
                   stroke: colour, fill: colour },
@@ -412,14 +354,12 @@ PLOT_SCRIPT = """
       height: 240,
       cursor: { drag: { x: true, y: false } },
       scales: {
-        x: bars ? { time: false, range: [-0.5, spec.x.length - 0.5] } : { time: !!spec.time },
-        y: (stacked || bars) ? { range: [0, null] } : {}
+        x: { time: !!spec.time },
+        y: stacked ? { range: [0, null] } : {}
       },
       axes: [
         { stroke: token('--text-secondary', '#52514e'),
-          grid: { stroke: token('--grid', '#e1e0d9') },
-          /* The category name, not the index it is stored under. */
-          values: bars ? function (u, splits) { return splits.map(category); } : null },
+          grid: { stroke: token('--grid', '#e1e0d9') } },
         { stroke: token('--text-secondary', '#52514e'),
           grid: { stroke: token('--grid', '#e1e0d9') } }
       ],
@@ -590,23 +530,6 @@ def _fmt_num(v):
     if isinstance(v, float) and v.is_integer():
         v = int(v)
     return f"{v:,}" if isinstance(v, int) else f"{v:,.2f}"
-
-
-def _cat_sort_key(c):
-    """Sort key for `small_multiples`' shared x-category axis: numeric
-    values in numeric order (so integer week 10 doesn't sort as the
-    string "10", ahead of "9"), other values lexically, and `None` (a
-    NULL category from a LEFT JOIN) last, after every real value, rather
-    than a phantom leftmost time bucket. The two real-value buckets never
-    compare against each other directly (Python tuple comparison stops at
-    the first differing element, the bucket number, before reaching the
-    differently-typed third element), so this never raises on a facet
-    grid mixing numeric and string x-values.
-    """
-    if c is None:
-        return (1, 0, "")
-    n = _num(c)
-    return (0, 0, n) if n is not None else (0, 1, str(c))
 
 
 def _nice_ticks(lo, hi, count=4):
@@ -874,89 +797,6 @@ def _legend(names, y0, width, x0=46, row_h=18):
     return "".join(parts), len(rows) * row_h + 4
 
 
-def bars(rows, labels, series):
-    """Grouped bar chart: one categorical band per row (named by `labels`),
-    one bar per name in `series` within that band, each series in its own
-    PALETTE slot shared with every other chart. Bars always grow from a
-    zero baseline (`_y_gridlines(..., zero_floor=True)`), which is what
-    keeps bar length an honest read of magnitude even when every value in
-    the data happens to be positive.
-    """
-    if not rows:
-        return '<p class="empty">no data</p>'
-
-    base_h = 220
-    width = 480
-    legend, legend_h = _legend(series, base_h + 4, width) if len(series) > 1 else ("", 0)
-    height = base_h + legend_h
-    values = [n for row in rows for s in series for n in (_num(row.get(s)),) if n is not None]
-    pad_l, pad_r, pad_t, pad_b = _y_tick_pad(values, zero_floor=True), 14, 12, 26
-    plot_w = max(width - pad_l - pad_r, 1)
-    plot_h = max(base_h - pad_t - pad_b, 1)
-    left, bottom = pad_l, pad_t + plot_h
-
-    y_markup, sy = _y_gridlines(values, left, left + plot_w, pad_t, bottom, plot_h, zero_floor=True)
-
-    n = len(rows)
-    band_w = plot_w / n
-    gap = 2  # dataviz: 2px surface gap between adjacent bars
-    m = len(series)
-    bar_w = max(min((band_w - gap * (m + 1)) / m, 24), 1)  # 24px mark-spec cap
-
-    parts = [y_markup]
-    for i, row in enumerate(rows):
-        band_x = left + i * band_w
-        row_label = row.get(labels)
-        row_label = "" if row_label is None else str(row_label)
-        for j, s in enumerate(series):
-            v = _num(row.get(s))
-            if v is None:
-                # Missing/non-numeric, not zero: draw no mark for this bar,
-                # the same way lines/scatter/stacked/small_multiples treat a
-                # missing point. Drawing a fake zero-height bar with a
-                # "<title>0</title>" tooltip would claim a measured zero
-                # where there's actually no data for this series in this
-                # band, which is a different fact.
-                continue
-            y0, y1 = sy(0), sy(v)
-            top_y, h = (y1, y0 - y1) if v >= 0 else (y0, y1 - y0)
-            bx = band_x + gap + j * (bar_w + gap)
-            color = _slot(j)
-            # ponytail: rx rounds all four corners rather than just the data
-            # end (mark spec: "4px rounded data-end, square at the baseline").
-            # A few hundred small bars don't earn a custom rounded-top path;
-            # upgrade to one if pixel-exact corners are ever required.
-            parts.append(
-                f'<rect x="{bx:.1f}" y="{top_y:.1f}" width="{bar_w:.1f}" '
-                f'height="{max(h, 0):.1f}" rx="4" fill="{color}">'
-                # The row's own name leads, because the axis label under a narrow
-                # band is shortened or unreadable and this is then the only place
-                # the bar says who it is. The series name still follows it, so a
-                # grouped chart stays unambiguous.
-                f"<title>{esc(row_label + ', ' if row_label else '')}"
-                f"{esc(s)}: {esc(_fmt_num(v))}</title></rect>"
-            )
-            if h > 12:  # only label a bar tall enough for the text to fit
-                parts.append(
-                    f'<text x="{bx + bar_w / 2:.1f}" y="{top_y - 4:.1f}" class="value-label" '
-                    f'text-anchor="middle">{esc(_fmt_num(v))}</text>'
-                )
-        # A band 26px wide cannot hold a 19-character name. Seventeen people on a
-        # 480px axis overlapped into noise, and with five the outermost label left
-        # the frame entirely. Shorten to what the band holds, using the same
-        # 7px/character estimate as _legend and _y_tick_pad, and let the per-bar
-        # tooltip carry the full name. A roomy chart is left untouched.
-        fits = max(1, int(band_w / 7))
-        label = row_label if len(row_label) <= fits else row_label[: max(1, fits - 1)] + "…"
-        parts.append(
-            f'<text x="{band_x + band_w / 2:.1f}" y="{bottom + 16}" class="tick" '
-            f'text-anchor="middle">{esc(label)}</text>'
-        )
-
-    title = f'<title>{esc(", ".join(series))} by {esc(labels)}</title>'
-    return svg(width, height, title + "".join(parts) + legend)
-
-
 def hbars(rows, labels, series):
     """Horizontal grouped bars: one row per category, bars growing rightward.
 
@@ -1116,28 +956,6 @@ def lines(rows, x, series):
 
     title = f'<title>{esc(", ".join(series))} over {esc(x)}</title>'
     return svg(width, height, title + "".join(parts) + legend)
-
-
-def multiline(rows, x, band, value):
-    """One line per group, all on one chart, from long-format rows.
-
-    Pivots here rather than in SQL because the column list depends on who happens
-    to have closed a ticket, and a query cannot name columns it does not know.
-    Everything else, the legend, the palette, the endpoint labels and the frame
-    handling, is `lines`, which already does all of it.
-
-    A group missing an x gets None rather than 0, so its line breaks there
-    instead of drawing a straight stretch through a week it was absent for.
-
-    With more groups than PALETTE has slots, colours repeat: on 25 people, three
-    share each. The legend and the per-point readout are what tell those apart,
-    which is why this shape wants the interactive upgrade more than most.
-    """
-    bands = list(dict.fromkeys(r.get(band) for r in rows))
-    xs = list(dict.fromkeys(r.get(x) for r in rows))
-    at = {(r.get(x), r.get(band)): r.get(value) for r in rows}
-    wide = [{x: xv, **{b: at.get((xv, b)) for b in bands}} for xv in xs]
-    return lines(wide, x, [b for b in bands if b is not None])
 
 
 def combo(rows, x, series, bars=()):
@@ -1498,175 +1316,8 @@ def table(rows, headers, shade=None, sortable=False, link_base=None, links=()):
     )
 
 
-def small_multiples(groups, x, y, share_y=True, heading=None):
-    """Facet `y` over `x` into one small line chart per group, all sharing a
-    single y-scale AND a single x-category list, so both position and
-    magnitude compare honestly across facets. `groups` is a mapping, or a
-    sequence of (title, rows) pairs, of facet title to that facet's rows.
-
-    Sharing only the y-scale (an earlier version of this function did) still
-    misleads when facets don't all have rows for the same categories, e.g.
-    one person per week with no gap-filling: an independent x per facet
-    puts a different week under "column 1" in every panel, so the columns
-    can't be compared even though the y-axis now agrees. Categories are
-    collected across every facet up front, unlike the shared y-max: the
-    y-max is a single number, order-independent, but the category *list*
-    needs an actual order, and first-seen across concatenated facets is
-    just facet iteration order, not a real timeline (a facet missing a
-    middle category would jumble the shared axis, e.g. w1, w3, w2 instead
-    of w1, w2, w3 if the facet holding w2 happens to come second). Sorted
-    with `_cat_sort_key` instead (numeric values in numeric order, other
-    values lexically, so an integer week like 10 doesn't sort as if it
-    were the string "10" ahead of "9"); a `None` category (a NULL from a
-    LEFT JOIN) sorts last, after every real value, as a trailing "unknown"
-    bucket rather than a phantom leftmost one. A facet missing a category
-    breaks its line there rather than joining straight across the gap,
-    which would draw a silent stretch as though output had been steady
-    through it.
-    """
-    items = list(groups.items()) if hasattr(groups, "items") else list(groups)
-    if not items:
-        return '<p class="empty">no data</p>'
-
-    values = [
-        n for _, facet_rows in items for r in facet_rows
-        for n in (_num(r.get(y)),) if n is not None
-    ]
-    shared_max = max(values) if values else 0
-    if shared_max <= 0:
-        shared_max = 1
-
-    # share_y answers a different question either way, and no chart answers both.
-    # Shared: "who does more", where a quiet panel sits pinned to its baseline.
-    # Per-panel: "how is this person trending", where every panel uses its full
-    # height and two panels are no longer comparable by eye. The peak printed in
-    # each heading is what keeps the magnitude readable when they are not.
-    def facet_max(facet_rows):
-        if share_y:
-            return shared_max
-        own = [n for r in facet_rows for n in (_num(r.get(y)),) if n is not None]
-        return max([m for m in own if m > 0] or [1])
-
-    cats = {r.get(x) for _, facet_rows in items for r in facet_rows}
-    shared_cats = sorted(cats, key=_cat_sort_key)
-    n_cats = len(shared_cats)
-    cat_index = {c: i for i, c in enumerate(shared_cats)}
-
-    # 150x90 was too small to see a trend in, which is why these panels were
-    # abandoned for one merged chart. Two columns at 240x140 is large enough to
-    # read a shape and still fits a page beside its own legend-free heading.
-    cols = 2
-    fw, fh = 240, 140
-    pad = 12
-    plot_l, plot_r = pad, fw - pad
-    plot_t, plot_b = 22, fh - pad
-    rows_of_facets = math.ceil(len(items) / cols)
-    width, height = cols * fw, rows_of_facets * fh
-
-    def fx(cat):
-        i = cat_index.get(cat)
-        if i is None:
-            return None
-        if n_cats <= 1:
-            return plot_l + (plot_r - plot_l) / 2
-        return plot_l + i / (n_cats - 1) * (plot_r - plot_l)
-
-    def fy(v, ceiling):
-        return plot_b - (max(v, 0) / ceiling) * (plot_b - plot_t)
-
-    parts = []
-    for idx, (title, facet_rows) in enumerate(items):
-        col, row = idx % cols, idx // cols
-        ox, oy = col * fw, row * fh
-        ceiling = facet_max(facet_rows)
-        g = [f'<g transform="translate({ox},{oy})">']
-        # The panel's own total, because twenty-five sparklines with no numbers on
-        # them show who is busier without ever saying how busy anyone is. The
-        # shape answers "when", the total answers "how much", and the shared peak
-        # printed once below answers "compared with what".
-        # Summing y is right for a count and wrong for an average: on a rolling
-        # mean it prints a sum of means as though it were a number of tickets.
-        # `heading` names a column carrying the real figure instead, and max()
-        # reads it because such a column is constant across the panel.
-        if heading:
-            own = [v for v in (_num(r.get(heading)) for r in facet_rows) if v is not None]
-            facet_total = max(own) if own else 0
-        else:
-            facet_total = sum(
-                v for v in (_num(r.get(y)) for r in facet_rows) if v is not None)
-        # Not `heading`: that is the parameter, and reassigning it here made every
-        # panel after the first look up a column named "Alder \u00b7 7".
-        caption = ("" if title is None else str(title)) + f" \u00b7 {_fmt_num(facet_total)}"
-        g.append(
-            f'<text x="{fw / 2}" y="12" class="facet-title" text-anchor="middle">'
-            f"{esc(caption)}<title>{esc('' if title is None else title)}</title></text>"
-        )
-
-        if not facet_rows:
-            g.append(
-                f'<text x="{fw / 2}" y="{fh / 2}" class="tick" text-anchor="middle">'
-                f"no data</text>"
-            )
-        else:
-            facet_vals = {}
-            for r in facet_rows:
-                n = _num(r.get(y))
-                if n is not None:
-                    facet_vals[r.get(x)] = n
-
-            segments, current = [], []
-            for cat in shared_cats:
-                if cat in facet_vals:
-                    current.append((fx(cat), fy(facet_vals[cat], ceiling)))
-                elif current:
-                    segments.append(current)
-                    current = []
-            if current:
-                segments.append(current)
-
-            for seg in segments:
-                if len(seg) >= 2:
-                    d = " ".join(
-                        f'{"M" if i == 0 else "L"}{px:.1f},{py:.1f}'
-                        for i, (px, py) in enumerate(seg)
-                    )
-                    g.append(
-                        f'<path d="{d}" fill="none" stroke="var(--s1)" stroke-width="2" '
-                        f'stroke-linecap="round" stroke-linejoin="round" />'
-                    )
-                elif seg is not segments[-1]:
-                    # a single point surrounded by gaps has no line to draw,
-                    # but it's still real activity and must stay visible; the
-                    # last segment's own point gets the end-marker below
-                    # instead, so this isn't drawn twice at the same spot.
-                    px, py = seg[0]
-                    g.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2" fill="var(--s1)" />')
-            if segments:
-                lx, ly = segments[-1][-1]
-                g.append(
-                    f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="3" fill="var(--s1)" '
-                    f'stroke="var(--surface)" stroke-width="1.5" />'
-                )
-        g.append("</g>")
-        parts.append("".join(g))
-
-    # The panels are comparable only because they share a y-scale, and that is
-    # worth nothing to a reader who cannot see what the scale is. Stated once,
-    # below the grid, rather than repeated on twenty-five panels.
-    peak = max((v for v in (_num(r.get(y)) for _, rows_ in items for r in rows_)
-                if v is not None), default=0)
-    footer_y = height + 12
-    parts.append(
-        f'<text x="0" y="{footer_y}" class="tick">peak {esc(_fmt_num(peak))} '
-        f"{esc(y)} per {esc(x)}, shared by every panel</text>"
-    )
-    title = f'<title>{esc(y)} by {esc(x)}, one panel per group</title>'
-    return svg(width, height + 18, title + "".join(parts))
-
-
 FIGURE_KINDS = frozenset(
-    {"table", "matrix", "lines", "stacked", "scatter", "bars", "hbars",
-     "combo", "multiline", "small_multiples"}
+    {"table", "matrix", "lines", "stacked", "scatter", "hbars", "combo"}
 )
 
 
@@ -1688,8 +1339,6 @@ def plot_payload(chart, rows):
     still diff, and a reader hovering a point sees the figure the SVG drew.
     """
     o = chart.options
-    if chart.kind == "bars":
-        return _bars_payload(o, rows)
     if chart.kind == "combo":
         payload = _lines_payload(o, rows, x_key=o["x"])
         if payload is None:
@@ -1699,16 +1348,6 @@ def plot_payload(chart, rows):
             entry["type"] = "bars" if entry["label"] in as_bars else "line"
         payload["kind"] = "combo"
         return payload
-    if chart.kind == "small_multiples":
-        return _facets_payload(o, rows)
-    if chart.kind == "multiline":
-        # Same pivot the renderer does, so the upgrade and the SVG plot one shape.
-        bands = [b for b in dict.fromkeys(r.get(o["band"]) for r in rows) if b is not None]
-        xs = list(dict.fromkeys(r.get(o["x"]) for r in rows))
-        at = {(r.get(o["x"]), r.get(o["band"])): r.get(o["value"]) for r in rows}
-        rows = [{o["x"]: xv, **{b: at.get((xv, b)) for b in bands}} for xv in xs]
-        chart = chart._replace(kind="lines", options={**o, "series": bands})
-        o = chart.options
     x_key = o["x"]
     xs = [r.get(x_key) for r in rows]
     stamps = [_epoch(x) for x in xs]
@@ -1780,62 +1419,6 @@ def fold_bands(rows, x, band, value, limit=None):
     return folded
 
 
-def _facets_payload(o, rows):
-    """One panel per group, on axes shared across all of them.
-
-    Kept as facets rather than folded into one chart with many series: the point
-    of this chart is that it is not a leaderboard, and 25 overlaid lines would be
-    interactive and would be a different chart. Both scales are computed here and
-    handed to every panel, so a quiet person's panel does not rescale into looking
-    as busy as a loud one, which is the same guarantee the SVG makes.
-
-    A group with no value for a given x gets None, not zero: the line breaks
-    there instead of drawing a straight stretch implying steady output through a
-    week that never happened.
-    """
-    group_key, x_key, y_key = o["group"], o["x"], o["y"]
-    stamps = {r.get(x_key): _epoch(r.get(x_key)) for r in rows}
-    if any(v is None for v in stamps.values()):
-        return None
-    axis = sorted(stamps.values())
-    groups = list(dict.fromkeys(r.get(group_key) for r in rows))
-    at = {(r.get(group_key), stamps[r.get(x_key)]): _num(r.get(y_key)) for r in rows}
-    values = [v for v in at.values() if v is not None]
-    return {
-        "kind": "small_multiples",
-        "time": True,
-        "x": axis,
-        "xLabel": x_key,
-        "yLabel": y_key,
-        "yMax": max(values) if values else 0,
-        "facets": [{"title": "" if g is None else str(g),
-                    "total": sum(v for t in axis
-                                 if (v := at.get((g, t))) is not None),
-                    "data": [at.get((g, t)) for t in axis]} for g in groups],
-    }
-
-
-def _bars_payload(o, rows):
-    """Categorical bars for a library that places everything numerically.
-
-    x is the row index and the category names ride alongside in `labels`, because
-    uPlot has no notion of a category: without them an upgraded chart labels its
-    axis 0, 1, 2, which is worse than the three-character truncations it replaces.
-    The lookup happens in the browser, which is a lookup and not a computation.
-    """
-    label_key = o["labels"]
-    return {
-        "kind": "bars",
-        "time": False,
-        "x": list(range(len(rows))),
-        "labels": ["" if r.get(label_key) is None else str(r.get(label_key)) for r in rows],
-        "xLabel": label_key,
-        "series": [{"label": n, "slot": i % len(PALETTE) + 1,
-                    "data": [_num(r.get(n)) for r in rows]}
-                   for i, n in enumerate(o["series"])],
-    }
-
-
 def _stacked_payload(o, rows, x_key, axis, is_time):
     """Long-format rows into the cumulative series uPlot stacks with.
 
@@ -1891,23 +1474,10 @@ def figure(chart, rows, subtitle, con, link_base=None):
             p50, p85 = con.execute(o["guides_sql"]).fetchone()
             guides = [(name, v) for name, v in (("p50", p50), ("p85", p85)) if v is not None]
         body = scatter(rows, o["x"], o["y"], guides)
-    elif chart.kind == "bars":
-        body = bars(rows, o["labels"], o["series"])
     elif chart.kind == "hbars":
         body = hbars(rows, o["labels"], o["series"])
-    elif chart.kind == "multiline":
-        body = multiline(rows, o["x"], o["band"], o["value"])
     elif chart.kind == "combo":
         body = combo(rows, o["x"], o["series"], bars=o.get("bars", ()))
-    elif chart.kind == "small_multiples":
-        # The primitive takes facet title -> rows; a spec only names the column to
-        # facet on, so the grouping happens here rather than in every spec's SQL.
-        grouped = {}
-        for row in rows:
-            grouped.setdefault(row.get(o["group"]), []).append(row)
-        body = small_multiples(grouped, o["x"], o["y"],
-                               share_y=o.get("share_y", True),
-                               heading=o.get("heading"))
     else:
         raise ValueError(f"no renderer for chart kind {chart.kind!r}")
     if chart.options.get("interactive"):

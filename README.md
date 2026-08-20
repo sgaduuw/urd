@@ -205,11 +205,9 @@ about 90 lines of first-party wiring. Nothing is fetched, so a saved report open
 offline, unchanged, years later, and no third party learns who reads a report
 about internal work.
 
-Every chart is upgraded in the browser: lines, scatters, stacks, bars and small
-multiples all gain hover readouts and drag-to-zoom. On a stack, hovering reads the
-band's own value rather than the running total it sits on. On vertical bars the axis is
-categorical, so the names travel with the data and hover gives the whole name
-rather than the three characters the axis has room for.
+Every chart is upgraded in the browser: lines, scatters, stacks and the combined
+bar-and-line chart all gain hover readouts and drag-to-zoom. On a stack, hovering
+reads the band's own value rather than the running total it sits on.
 
 Charts whose categories are names use horizontal bars instead, and are not
 upgraded. They are also drawn wider than the rest, 720px against 480: the label
