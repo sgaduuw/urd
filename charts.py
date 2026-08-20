@@ -53,6 +53,7 @@ WINDOW_WEEKS = 26
 # a window while one does not is worse than no claim at all.
 WINDOW_EXEMPT = {
     "aging_wip": "always current, so the window would hide the oldest work it exists to find",
+    "carried_sprints": "a carried ticket is old by definition, so a window hides the worst of them",
 }
 
 
@@ -492,6 +493,43 @@ CHARTS = [
         """,
     ),
     Chart(
+        key="carried_sprints",
+        section="Retro",
+        title="Open tickets by sprints carried",
+        kind="table",
+        caption="Open tickets planned into more than one sprint, worst first, with "
+                "the date they were first committed. Carried into each sprint "
+                "counts how many; this names them. It does not know why: work "
+                "parked by agreement looks the same here as work quietly rolling.",
+        options={"headers": ["key", "summary", "status", "sprints", "since"],
+                 "shade": "sprints", "sortable": True, "links": ["key"]},
+        sql="""
+            SELECT i.key,
+                   -- Truncated in SQL for the same reason as aging_wip: the table
+                   -- renderer has no per-cell tooltip, and the key beside it links
+                   -- to the whole ticket.
+                   CASE WHEN length(i.summary) > 60
+                        THEN left(i.summary, 59) || '…' ELSE i.summary END AS summary,
+                   i.status,
+                   count(DISTINCT sp.sprint_id) AS sprints,
+                   -- The earliest window it was ever planned into, so the reader
+                   -- gets elapsed time as well as a count. Sprints run in parallel
+                   -- here, so a count of them is commitments, not fortnights.
+                   min(sp.start)::DATE AS since
+            FROM issues i
+            JOIN issue_sprints sp ON sp.key = i.key
+            -- A membership with no window is a board column, not a sprint: this
+            -- instance reports "Refined Backlog" through the same field, and
+            -- counting it adds a phantom sprint to every ticket parked there,
+            -- which is exactly the population being ranked.
+            WHERE i.status_category <> 'done' AND sp.start IS NOT NULL
+            GROUP BY 1, 2, 3
+            HAVING count(DISTINCT sp.sprint_id) > 1
+            ORDER BY sprints DESC, since
+            LIMIT 40
+        """,
+    ),
+    Chart(
         key="cycle_per_sprint",
         section="Retro",
         title="Cycle time per sprint",
@@ -527,6 +565,44 @@ CHARTS = [
                       (SELECT 1 FROM issue_sprints s WHERE s.key = c.key)),
                    (SELECT count(*) FROM cycle_times WHERE in_window(resolved))
         """,
+    ),
+    Chart(
+        key="points_per_sprint",
+        section="Retro",
+        title="Story points closed per sprint",
+        kind="hbars",
+        caption="Team totals, credited to the sprint that was running when the "
+                "ticket closed rather than to the sprint the ticket belonged to. "
+                "Sprint lengths differ here, so read these as totals and not as a "
+                "velocity to plan against.",
+        options={"labels": "sprint", "series": ["points"],
+                 # Closures, not tickets: a ticket that was reopened and closed
+                 # again is two closures, and "of N tickets" would be a false
+                 # sentence about the population this actually measures.
+                 "unit": "closures"},
+        sql="""
+            SELECT ms.sprint_name AS sprint, sum(i.story_points) AS points
+            FROM mutation_sprint ms
+            JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
+            JOIN issues i ON i.key = ms.key
+            -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
+            WHERE NOT c.abandoned AND i.story_points > 0 AND in_window(ms.ts)
+            GROUP BY 1, ms.sprint_start
+            ORDER BY ms.sprint_start DESC
+        """,
+        # Closures actually summed over closures that could be, matching
+        # points_vs_cycle: a closure with no estimate never reaches the chart.
+        coverage="""
+            SELECT (SELECT count(*) FROM mutation_sprint ms
+                    JOIN closures c ON c.key = ms.key AND c.ts = ms.ts
+                    JOIN issues i ON i.key = ms.key
+                    WHERE ms.kind = 'status' AND NOT c.abandoned
+                      AND i.story_points > 0 AND in_window(ms.ts)),
+                   (SELECT count(*) FROM mutation_sprint ms
+                    JOIN closures c ON c.key = ms.key AND c.ts = ms.ts
+                    WHERE ms.kind = 'status' AND NOT c.abandoned AND in_window(ms.ts))
+        """,
+        tier="points",
     ),
     Chart(
         key="points_vs_cycle",

@@ -3425,7 +3425,7 @@ def test_every_table_chart_is_sortable():
     so a table added later has to make the same decision deliberately: a genuinely
     short one may opt out, but it cannot forget."""
     tables = [c for c in chart_specs.CHARTS if c.kind in ("table", "matrix")]
-    assert len(tables) >= 2, tables
+    assert len(tables) >= 3, tables
     missing = [c.key for c in tables if not c.options.get("sortable")]
     assert not missing, f"table charts without sorting: {missing}"
 
@@ -4098,7 +4098,8 @@ def test_the_real_section_list_leads_in_the_declared_order():
 
 def test_retro_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
-    assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint", "points_vs_cycle"}
+    assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint",
+                    "points_vs_cycle", "carried_sprints", "points_per_sprint"}
 
 
 def test_a_mutation_lands_in_at_most_one_sprint():
@@ -4224,6 +4225,99 @@ def test_carry_over_counts_tickets_not_memberships():
     # order (id 7 "Sprint B" first, then id 3 "Sprint A"), so a query that leans on
     # either instead of `ordinal` gets a different answer here.
     assert {r["sprint"]: r["carried"] for r in rows} == {"Sprint A": 1}
+
+
+def test_carried_sprints_names_the_tickets_carry_over_only_counts():
+    """PROJ-3 is the fixtures' carried ticket: In Progress, in Sprint B and then
+    Sprint A. carry_over says one ticket was carried into Sprint A; this says
+    which one, and since when."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "carried_sprints")
+    assert [(r["key"], r["sprints"]) for r in rows] == [("PROJ-3", 2)]
+    # min(start) across its memberships, not the sprint it sits in now: the point
+    # of the column is how long this has been rolling.
+    assert str(rows[0]["since"]) == "2026-01-05"
+    assert rows[0]["status"] == "In Progress"
+
+
+def test_carried_sprints_leaves_out_a_ticket_that_only_ever_had_one_sprint():
+    """Without the floor this is the open-ticket list, not a carry list.
+
+    PROJ-3 is the fixtures' only OPEN ticket, so it is the only one the floor can
+    be tested on: PROJ-1 and PROJ-2 are both Done and the status filter excludes
+    them whatever their sprint count. Cutting PROJ-3 back to one sprint is what
+    makes a lowered floor show up here."""
+    con = _derived("reopened", "two_sprints")
+    con.execute("DELETE FROM issue_sprints_all WHERE key = 'PROJ-3' "
+                "AND sprint_name = 'Sprint A'")
+    assert con.execute("SELECT count(*) FROM issue_sprints WHERE key = 'PROJ-3'"
+                       ).fetchone()[0] == 1, "the cut did not land"
+    assert _flow_rows(con, "carried_sprints")[1] == []
+
+
+def test_carried_sprints_puts_the_worst_carried_ticket_first():
+    """"Worst first" is the whole premise: a retro reads the top of this list and
+    stops. One fixture ticket carries a sprint count, so a second open one is
+    built here rather than left untested, which is what an ordering test needs to
+    be able to fail at all."""
+    con = _derived("reopened", "two_sprints")
+    con.execute("INSERT INTO issues_all (key, summary, status, status_category, "
+                "abandoned) VALUES ('PROJ-9', 'Rolling for months', 'Backlog', "
+                "'new', FALSE)")
+    # Dated AFTER PROJ-3's first sprint (2026-01-05) on purpose, so sprint count
+    # and first-committed date disagree: ordering by the date alone answers
+    # PROJ-3 first, which is the mistake this test exists to catch.
+    for i, (sid, name, start) in enumerate((
+            (11, "Sprint C", "2026-02-01"), (12, "Sprint D", "2026-02-15"),
+            (13, "Sprint E", "2026-03-01")), start=1):
+        con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-9', ?, ?, 'closed', "
+                    "?::TIMESTAMP, ?::TIMESTAMP + INTERVAL 14 DAY, ?)",
+                    [sid, name, start, start, i])
+    rows = _flow_rows(con, "carried_sprints")[1]
+    assert [(r["key"], r["sprints"]) for r in rows] == [("PROJ-9", 3), ("PROJ-3", 2)]
+
+
+def test_carried_sprints_drops_a_ticket_once_it_is_done():
+    """Delivered-after-five-sprints is history, and this list exists to be acted
+    on. PROJ-3 is the only carried ticket, so closing it is the one thing that
+    can empty the chart."""
+    con = _derived("reopened", "two_sprints")
+    assert [r["key"] for r in _flow_rows(con, "carried_sprints")[1]] == ["PROJ-3"]
+    con.execute("UPDATE issues_all SET status_category = 'done' WHERE key = 'PROJ-3'")
+    assert _flow_rows(con, "carried_sprints")[1] == []
+
+
+def test_a_membership_with_no_window_is_not_counted_as_a_sprint():
+    """This instance reports "Refined Backlog" through the Sprint field with no
+    start or end. Counting it adds a phantom sprint to every ticket parked there,
+    which is precisely the population this chart ranks.
+
+    Asserted on PROJ-3's count rather than on some other ticket's absence: it is
+    the only open ticket, so absence would prove the status filter works and
+    nothing about this guard."""
+    con = _derived("reopened", "two_sprints")
+    con.execute(
+        "INSERT INTO issue_sprints_all VALUES ('PROJ-3', 99, 'Refined Backlog', "
+        "'active', NULL, NULL, 3)")
+    rows = {r["key"]: r["sprints"] for r in _flow_rows(con, "carried_sprints")[1]}
+    assert rows == {"PROJ-3": 2}, "a board column was counted as a sprint"
+
+
+def test_points_per_sprint_credits_the_sprint_that_was_running_at_close():
+    """PROJ-1 carries 5 points, belongs to Sprint B, and closes 2026-01-20, after
+    Sprint B ended and inside Sprint A. Crediting the ticket's own sprint answers
+    Sprint B, so the two models disagree here."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "points_per_sprint")
+    assert [(r["sprint"], r["points"]) for r in rows] == [("Sprint A", 5.0)]
+
+
+def test_points_per_sprint_ignores_an_open_ticket_with_an_estimate():
+    """PROJ-3 carries 3 points and has never closed. Summing estimates rather
+    than closures would report work that has not been delivered."""
+    con = _derived("reopened", "two_sprints")
+    _, rows = _flow_rows(con, "points_per_sprint")
+    assert sum(r["points"] for r in rows) == 5.0, rows
 
 
 def test_cycle_per_sprint_keeps_tickets_that_closed_after_their_sprint_ended():

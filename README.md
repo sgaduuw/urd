@@ -140,8 +140,10 @@ everything already held is left alone.
 **Retro**
 - Rework per sprint: transitions that moved a ticket backwards through the workflow, the single best retro chart and one no built-in report draws.
 - Carried into each sprint: tickets already in an earlier sprint. Persistent carry-over means the sprint is being planned optimistically.
+- Open tickets by sprints carried: which tickets those are, worst first, and since when. The chart above counts them; this one names them, and it does not know why: work parked by agreement looks the same as work quietly rolling.
 - Cycle time per sprint: median and 85th percentile days per sprint. Tightening is the thing to look for, not the absolute value.
 - Story points versus actual cycle time: whether the estimates carry information. A flat cloud means the points are ritual.
+- Story points closed per sprint: team totals, credited to the sprint that was running at close rather than to the sprint the ticket belonged to. Sprint lengths differ, so these are totals and not a velocity to plan against.
 
 ## Finding the status names
 
@@ -237,8 +239,8 @@ every value a reader can hover is already in the markup.
 Progress per epic is the chart that prompted it. At 141 epics, grouped bars came
 to 423 marks in 480px, about one pixel each.
 
-Both tables sort: aging work in progress (40 rows) and median days in status
-(44). Every one is past the point of
+All three tables sort: aging work in progress (40 rows), median days in status
+(44) and open tickets by sprints carried (40). Every one is past the point of
 scanning by eye. A table added later must opt in deliberately, which a test
 enforces: a genuinely short one may decline, but it cannot forget.
 
