@@ -152,9 +152,15 @@ _INSTANCE_STATUSES = [
 ]
 
 _WORKFLOW = [
-    {"statuses": [{"name": "To Do"}, {"name": "In Progress"}]},
-    {"statuses": [{"name": "Code Review"}, {"name": "Blocked"},
-                  {"name": "Done"}, {"name": "Won't Do"}, {"name": "Odd"}]},
+    # Deliberately not already in category order (new, then done, then
+    # uncategorised, then indeterminate): a fixture that happens to list
+    # statuses in the order propose() would sort them into cannot tell a
+    # sorted result from an unsorted one, which is exactly how "sorted(...)"
+    # once quietly became "list(...)" without a single test noticing.
+    {"statuses": [{"name": "To Do"}, {"name": "Done"}, {"name": "Won't Do"},
+                  {"name": "Odd"}]},
+    {"statuses": [{"name": "In Progress"}, {"name": "Code Review"},
+                  {"name": "Blocked"}]},
 ]
 
 
