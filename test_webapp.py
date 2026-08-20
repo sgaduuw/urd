@@ -127,7 +127,7 @@ def test_a_project_with_no_scope_gets_a_notice_to_finish_setup():
 def test_a_project_that_never_synced_gets_a_notice_with_refresh():
     registry = test_helpers.registry()
     project = registry.add("alpha")
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+    urd.save_scope(project.con, site="example.invalid", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01")
     body = webapp.project_page(project)
     assert "never synced" in body.lower()
@@ -144,7 +144,7 @@ def test_a_failed_refresh_shows_its_message_on_the_never_synced_notice():
     state instead of a later one."""
     registry = test_helpers.registry()
     project = registry.add("alpha")
-    urd.save_scope(project.con, site="example.atlassian.net", email="a@b.c",
+    urd.save_scope(project.con, site="example.invalid", email="a@b.c",
                    project="PROJ", earliest_since="2026-01-01")
     project.job.state = "failed"
     project.job.message = "no API token"
@@ -594,7 +594,7 @@ def test_the_environment_seeds_only_the_first_project():
 
 def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})
     project = registry.get("proj")
@@ -604,7 +604,7 @@ def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
 
 def test_an_incomplete_environment_seeds_nothing():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net"})
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid"})
     assert registry.projects() == []
 
 
@@ -622,7 +622,7 @@ def test_seed_from_env_missing_project_seeds_nothing():
     """Isolates the project term: site, email and since are all set, so only
     project is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_EMAIL": "a@b.c", "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
 
@@ -631,7 +631,7 @@ def test_seed_from_env_missing_email_seeds_nothing():
     """Isolates the email term: site, project and since are all set, so only
     email is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
 
@@ -640,7 +640,7 @@ def test_seed_from_env_missing_since_seeds_nothing():
     """Isolates the since term: site, project and email are all set, so only
     since is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c"})
     assert registry.projects() == []
 
@@ -652,7 +652,7 @@ def test_a_punctuation_only_project_is_skipped_not_crashed():
     this function's own docstring anticipates: the server must still start,
     landing on /setup, rather than crash-loop on a traceback."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.atlassian.net",
+    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
                                  "URD_PROJECT": ",", "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
