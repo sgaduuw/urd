@@ -116,14 +116,30 @@ def discover(proposal, token, opener=None):
     project and categorised, without sampling tickets and without needing the
     admin-only transition graph.
 
-    Never raises. Either call can 403 on a restricted project, and a lost hint
-    must not stop someone finishing setup.
+    Loops every comma separated project key, matching
+    _refresh_workflow_statuses's own loop over the same field: a scope naming
+    several projects otherwise gets told the workflow is only the first one's.
+
+    Never raises. Either call can 403 on a restricted project (SystemExit,
+    raised by Jira.get), or return a 200 that is not the shape expected: a
+    non-JSON body (an interposing proxy, a captive portal) makes json.loads
+    raise, and a differently shaped JSON body makes entry.get fail on a str.
+    Both are caught, not just SystemExit, which is not itself an Exception
+    subclass. A lost hint must not stop someone finishing setup.
     """
     jira = urd.Jira(proposal.site, proposal.email, token, opener=opener)
+    names = []
     try:
-        workflow = jira.project_statuses(proposal.project.split(",")[0].strip())
+        for key in (k.strip() for k in proposal.project.split(",")):
+            if not key:
+                continue
+            for issue_type in jira.project_statuses(key):
+                for status in issue_type.get("statuses", []):
+                    name = status.get("name")
+                    if name and name not in names:
+                        names.append(name)
         instance = jira.statuses()
-    except SystemExit as exc:
+    except (SystemExit, Exception) as exc:
         return Discovery([], f"could not read the workflow's statuses: {exc}")
 
     category = {}
@@ -132,12 +148,6 @@ def discover(proposal, token, opener=None):
         if name:
             category[name] = ((entry.get("statusCategory") or {}).get("key") or "")
 
-    names = []
-    for issue_type in workflow:
-        for status in issue_type.get("statuses", []):
-            name = status.get("name")
-            if name and name not in names:
-                names.append(name)
     return Discovery([Status(n, category.get(n, "")) for n in names])
 
 

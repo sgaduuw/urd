@@ -218,6 +218,39 @@ def test_discovery_reports_a_refusal_instead_of_raising():
     assert "403" in found.problem or "could not" in found.problem.lower()
 
 
+def test_discover_survives_a_non_json_response():
+    """An interposing proxy or captive portal can answer a 200 with an HTML
+    body; json.loads inside Jira.get then raises JSONDecodeError, which used
+    to escape past discover's SystemExit-only guard to the generic 500 and
+    discard everything typed on page one. SystemExit is not an Exception
+    subclass, so both must be caught."""
+    def opener(url, headers):
+        if "/project/" in url:
+            return 200, json.dumps(_WORKFLOW).encode()
+        if url.rstrip("/").endswith("/status"):
+            return 200, b"<html>not json</html>"
+        raise AssertionError(f"unexpected request: {url}")
+    found = wizard.discover(_proposal(), "tok", opener=opener)
+    assert found.statuses == []
+    assert "could not" in found.problem.lower()
+
+
+def test_discovery_reads_every_project_key_not_just_the_first():
+    """_refresh_workflow_statuses loops every comma separated project key;
+    discover used to read only the first, so a multi-project scope was told
+    the workflow is only that one project's."""
+    def opener(url, headers):
+        if "/project/PROJA/statuses" in url:
+            return 200, json.dumps([{"statuses": [{"name": "To Do"}]}]).encode()
+        if "/project/PROJB/statuses" in url:
+            return 200, json.dumps([{"statuses": [{"name": "Blocked"}]}]).encode()
+        if url.rstrip("/").endswith("/status"):
+            return 200, json.dumps(_INSTANCE_STATUSES).encode()
+        raise AssertionError(f"unexpected request: {url}")
+    found = wizard.discover(_proposal(project="PROJA,PROJB"), "tok", opener=opener)
+    assert [s.name for s in found.statuses] == ["To Do", "Blocked"]
+
+
 def test_the_proposed_order_is_category_order_with_uncategorised_last():
     found = wizard.discover(_proposal(), "tok", opener=_discovery_opener())
     order = wizard.propose(found.statuses)["status_order"].split(",")
