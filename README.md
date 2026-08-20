@@ -36,6 +36,57 @@ uv run --with duckdb python urd.py report
 open report.html
 ```
 
+## Serving it
+
+`urd serve` renders the report over HTTP instead of writing a file, with the report
+flags as controls and a Refresh button that syncs in the background:
+
+```
+uv run --with duckdb --with flask python urd.py serve --volume ./urd-data
+```
+
+One DuckDB file per Jira project, all in the volume, each with its own workflow
+configuration, component filter and report flags. `/` redirects to the first
+configured project; `/setup` adds another. Three projects mean three workflows, and
+`status_order` is a single table per database, which is why they are separate files
+rather than one.
+
+Nothing about the CLI changes. `urd report` still writes the self-contained file,
+and the server renders the same report with a controls form prepended to it.
+
+### In a container
+
+```
+URD_TOKEN=... docker compose up
+```
+
+`URD_TOKEN` is passed through from your environment and is never written to the
+database, a file, or a log. `URD_SITE`, `URD_EMAIL`, `URD_PROJECT`,
+`URD_COMPONENT`, `URD_SINCE`, `URD_STATUS_ORDER`, `URD_START_STATUS` and
+`URD_REVIEW_STATUS` seed the *first* project so a fresh volume comes up already
+synced and derived; a database that is already configured wins over them, so
+restarting with a stale compose file cannot rescope your data. Without the three
+status keys, the seeded project can sync but derive refuses for want of
+`--status-order`, landing on a page whose only action is Refresh, which repeats the
+same failure.
+
+### It has no authentication
+
+Anyone who can reach the port reads every ticket title and can trigger a sync. The
+Dockerfile's own `CMD` binds `0.0.0.0`; compose's published port is what keeps that
+off a network by default. The app also refuses any request whose `Host` header is
+not `127.0.0.1`, `localhost` or `[::1]` (`webapp.py`'s `_same_origin_only`), so
+widening the published port alone (`-p 8731:8731` instead of
+`-p 127.0.0.1:8731:8731`) is not enough on its own: every request still 403s until
+that allowlist is widened too, which is deliberately awkward rather than one flag
+away. Do not make either edit on a shared host until authentication exists.
+
+### The write lock
+
+While `urd serve` is running it holds the write lock on every database in its
+volume, so the CLI verbs cannot be used against them: DuckDB refuses a second
+process even read-only. Stop the server first.
+
 ## The three verbs
 
 `sync` fetches issues matching the persisted project, component and `since`

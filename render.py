@@ -460,6 +460,36 @@ def page(header, sections):
     )
 
 
+def notice(title, lines, actions=()):
+    """A whole page for a state that has no charts in it.
+
+    First-run and error states are pages a browser lands on, not fragments, so
+    they carry the doctype and the same stylesheet as the report. Without that
+    they arrive unstyled and look broken rather than informative.
+
+    `actions` is a sequence of (label, href, method). A POST becomes a real form,
+    because Refresh changes things and must not be reachable by a link a browser
+    may prefetch.
+    """
+    body = "".join(f"<p>{esc(line)}</p>" for line in lines)
+    buttons = []
+    for label, href, method in actions:
+        if method.lower() == "post":
+            buttons.append(
+                f'<form method="post" action="{esc(href)}">'
+                f"<button type=\"submit\">{esc(label)}</button></form>"
+            )
+        else:
+            buttons.append(f'<p><a href="{esc(href)}">{esc(label)}</a></p>')
+    return (
+        '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
+        f"<header><h1>{esc(title)}</h1></header>{body}{''.join(buttons)}"
+        "</body></html>\n"
+    )
+
+
 def svg(width, height, body, extra_class=""):
     """Wrap body in a viewBox'd <svg>.
 

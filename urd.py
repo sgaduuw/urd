@@ -10,6 +10,7 @@ import base64
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -45,13 +46,21 @@ def token(env=None):
     env = os.environ if env is None else env
     if env.get("URD_TOKEN"):
         return env["URD_TOKEN"]
-    found = subprocess.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if found.returncode != 0 or not found.stdout.strip():
+    try:
+        found = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        # check=False only stops a non-zero exit from raising; the binary not
+        # existing at all (every non-macOS host, including the container) is a
+        # separate failure subprocess.run raises regardless. Without this, the
+        # exact case the wizard exists to catch in seconds (URD_TOKEN unset) is
+        # a 500 on Linux instead of the same friendly message as below.
+        found = None
+    if found is None or found.returncode != 0 or not found.stdout.strip():
         raise SystemExit(
             "no API token. Either export URD_TOKEN, or store one once with:\n"
             f"  security add-generic-password -s {KEYCHAIN_SERVICE} -a <email> -w"
@@ -684,6 +693,12 @@ def derive_sprints(con):
     Upgrade path: detect and reject string elements, or stash both and fail the derive.
     """
     con.execute(SPRINTS_SCHEMA)
+    # Created unconditionally, like VIEWS_SCOPE_ISSUES in derive_issues: a database
+    # that has a scope but was never synced has no Sprint field to resolve, yet
+    # VIEWS_SPRINT_ATTRIBUTION reads this view regardless of whether any sprint
+    # data exists. Without this, report_html on a fresh, unsynced database fails
+    # with "issue_sprints does not exist" rather than rendering an empty report.
+    con.execute(VIEWS_SCOPE_SPRINTS)
     sprint_field = resolve_field(con, "Sprint")
     if not sprint_field:
         return 0
@@ -699,7 +714,6 @@ def derive_sprints(con):
             )
     if rows:
         con.executemany(f"INSERT INTO issue_sprints_all VALUES ({','.join(['?'] * 7)})", rows)
-    con.execute(VIEWS_SCOPE_SPRINTS)
     return len(rows)
 
 
@@ -1031,34 +1045,54 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
                 f"done-category status. Candidates: {', '.join(sorted(known))}"
             )
 
-    save_scope(con, status_order=status_order, start_status=start_status,
-               review_status=review_status, abandoned_status=abandoned_status)
-    con.execute("CREATE OR REPLACE TABLE abandoned_status (status VARCHAR PRIMARY KEY)")
-    if abandoned:
-        # Guarded: DuckDB's executemany rejects an empty parameter list outright
-        # rather than doing nothing, and no abandoned status is the default case.
-        con.executemany("INSERT INTO abandoned_status VALUES (?)", [(a,) for a in abandoned])
+    # Everything from here on is one transaction. derive_issues drops and
+    # recreates the `issues` view with the old column list, then this function
+    # adds `abandoned` to issues_all and recreates the view again; a reader on
+    # another cursor between those two points sees a view with no `abandoned`
+    # column while every chart that filters on it is still live. BEGIN/COMMIT
+    # makes the whole rebuild atomic, so a concurrent reader sees either the
+    # complete old schema or the complete new one, never the gap between them.
+    # A lock would serialize this against every reader instead of just hiding
+    # the gap from them, and item 1 removes the only lock this could have used
+    # anyway. sync is the long phase and stays outside this entirely, which is
+    # what keeps pages serving while it runs.
+    con.execute("BEGIN")
+    try:
+        save_scope(con, status_order=status_order, start_status=start_status,
+                   review_status=review_status, abandoned_status=abandoned_status)
+        con.execute("CREATE OR REPLACE TABLE abandoned_status (status VARCHAR PRIMARY KEY)")
+        if abandoned:
+            # Guarded: DuckDB's executemany rejects an empty parameter list
+            # outright rather than doing nothing, and no abandoned status is
+            # the default case.
+            con.executemany("INSERT INTO abandoned_status VALUES (?)",
+                            [(a,) for a in abandoned])
 
-    con.execute("CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
-    con.executemany(
-        "INSERT INTO status_order VALUES (?, ?)",
-        [(s, i) for i, s in enumerate(statuses)],
-    )
+        con.execute(
+            "CREATE OR REPLACE TABLE status_order (status VARCHAR PRIMARY KEY, pos INTEGER)")
+        con.executemany(
+            "INSERT INTO status_order VALUES (?, ?)",
+            [(s, i) for i, s in enumerate(statuses)],
+        )
 
-    _migrate_scope_views(con)
-    issues = derive_issues(con)
-    # Current-state twin of closures.abandoned, for the charts that ask
-    # `status_category = 'done'` rather than counting closure events. Added here
-    # rather than in ISSUES_SCHEMA so the insert keeps its positional column
-    # list; CREATE OR REPLACE drops it again on every derive anyway.
-    con.execute("ALTER TABLE issues_all ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
-    con.execute(
-        "UPDATE issues_all SET abandoned = status IN (SELECT status FROM abandoned_status)")
-    con.execute(VIEWS_SCOPE_ISSUES)
-    changes = derive_changes(con)
-    sprints = derive_sprints(con)
-    con.execute(VIEWS_METRICS)
-    con.execute(VIEWS_SPRINT_ATTRIBUTION)
+        _migrate_scope_views(con)
+        issues = derive_issues(con)
+        # Current-state twin of closures.abandoned, for the charts that ask
+        # `status_category = 'done'` rather than counting closure events. Added
+        # here rather than in ISSUES_SCHEMA so the insert keeps its positional
+        # column list; CREATE OR REPLACE drops it again on every derive anyway.
+        con.execute("ALTER TABLE issues_all ADD COLUMN IF NOT EXISTS abandoned BOOLEAN")
+        con.execute(
+            "UPDATE issues_all SET abandoned = status IN (SELECT status FROM abandoned_status)")
+        con.execute(VIEWS_SCOPE_ISSUES)
+        changes = derive_changes(con)
+        sprints = derive_sprints(con)
+        con.execute(VIEWS_METRICS)
+        con.execute(VIEWS_SPRINT_ATTRIBUTION)
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
 
     print(f"derived {issues} issues, {changes} changes, {sprints} sprint memberships")
     unknown = con.execute(
@@ -1075,7 +1109,13 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
         print(f"{field}: {rate:.0%} empty")
 
 
-def report(con, path="report.html", tiers=None):
+def report_html(con, tiers=None):
+    """The report as a string. `report` writes this to a file.
+
+    One rendering path, not two: the served page and the archived file are the
+    same bytes, so a chart cannot look different depending on how it was asked
+    for.
+    """
     scope = load_scope(con)
     header = {
         "project": scope["project"] or "unknown",
@@ -1089,8 +1129,12 @@ def report(con, path="report.html", tiers=None):
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
+    return render.page(header, render_sections(con, tiers))
+
+
+def report(con, path="report.html", tiers=None):
     with open(path, "w") as fh:
-        fh.write(render.page(header, render_sections(con, tiers)))
+        fh.write(report_html(con, tiers))
     print(f"wrote {path}")
     return 0
 
@@ -1168,7 +1212,7 @@ def render_sections(con, tiers=None):
     ]
 
 
-def main(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(prog="urd", description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DB_DEFAULT)
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -1211,8 +1255,88 @@ def main(argv=None):
     p_sql = sub.add_parser("sql", help="run a query against the database")
     p_sql.add_argument("query")
 
+    p_serve = sub.add_parser("serve", help="serve the report over HTTP")
+    # 127.0.0.1, not 0.0.0.0. The report is unauthenticated: anyone who reaches
+    # the port reads every ticket title and can start a sync. Exposing it has to
+    # be a deliberate flag rather than the default.
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8731)
+    p_serve.add_argument("--volume", default=os.environ.get("URD_VOLUME", "urd-data"))
+    return parser
+
+
+# Every key seed_from_env reads. compose.yaml must pass through exactly this
+# set, or a key it forgets can never be set from the environment at all; that
+# gap is what once shipped a container that could sync but never derive, since
+# derive refuses without status_order. test_container.py checks compose.yaml
+# against this same list, so the two cannot drift apart silently again.
+SEED_ENV_KEYS = ("URD_SITE", "URD_EMAIL", "URD_PROJECT", "URD_COMPONENT", "URD_SINCE",
+                 "URD_STATUS_ORDER", "URD_START_STATUS", "URD_REVIEW_STATUS")
+
+
+def seed_from_env(registry, env=None):
+    """Create the first project from the environment, and only the first.
+
+    A configured database wins over a disagreeing environment: restarting with a
+    stale compose file must not silently rescope someone's data. With any project
+    already present this does nothing at all.
+    """
+    env = os.environ if env is None else env
+    if registry.projects():
+        return None
+    site, project, email, since = (env.get("URD_SITE"), env.get("URD_PROJECT"),
+                                   env.get("URD_EMAIL"), env.get("URD_SINCE"))
+    if not (site and project and email and since):
+        return None
+    slug = re.sub(r"[^a-z0-9-]", "-", project.split(",")[0].strip().lower())
+    try:
+        created = registry.add(slug)
+    except ValueError:
+        # A value that survives the emptiness check above can still reduce to an
+        # unusable slug (",", "!!!"). A stale or hand-edited compose file is
+        # exactly the kind of input that does this, and starting with nothing
+        # seeded beats a crash loop: land on /setup instead, where a person can
+        # fix it by hand.
+        print(f"URD_PROJECT={project!r} does not make a usable project key "
+              f"(need [a-z0-9][a-z0-9-]*, got {slug!r}); not seeding, use /setup",
+              file=sys.stderr)
+        return None
+    save_scope(created.con, site=site, email=email, project=project,
+               component=env.get("URD_COMPONENT") or None, earliest_since=since,
+               status_order=env.get("URD_STATUS_ORDER") or None,
+               start_status=env.get("URD_START_STATUS") or None,
+               review_status=env.get("URD_REVIEW_STATUS") or None)
+    return created
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
-    con = open_db(args.db)
+
+    if args.verb == "serve":
+        import projects
+        import webapp
+        registry = projects.ProjectRegistry(args.volume)
+        seed_from_env(registry)
+        print(f"urd serving {len(registry.projects())} project(s) on "
+              f"http://{args.host}:{args.port}")
+        webapp.create_app(registry).run(host=args.host, port=args.port)
+        return 0
+
+    try:
+        con = open_db(args.db)
+    except duckdb.IOException as exc:
+        # IOException is DuckDB's general filesystem error, not a lock-specific
+        # one: a bad path raises it too. Only "Conflicting lock is held", which is
+        # what a running `urd serve` looks like from a second process, gets the
+        # friendly phrasing; anything else (a typo'd path, for instance) would be
+        # misdiagnosed as a server that isn't actually running. Match the full
+        # phrase, not "lock" alone: DuckDB's storage is organised in blocks, and
+        # "block" contains "lock" as a substring.
+        if "conflicting lock" in str(exc).lower():
+            sys.exit(f"cannot open {args.db}: another urd is holding it "
+                     f"(stop `urd serve` first)\n  {exc}")
+        sys.exit(f"cannot open {args.db}: {exc}")
 
     if args.verb == "sql":
         # ponytail: three lines instead of a dependency on the duckdb CLI. Upgrade
