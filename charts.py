@@ -98,7 +98,10 @@ CHARTS = [
             JOIN (SELECT key, max(entered) AS entered FROM status_durations GROUP BY key) d
                  ON d.key = i.key
             WHERE i.status_category <> 'done'
-            ORDER BY days DESC
+            -- key last, so the order is total. 43 day-values are shared here and
+            -- five tickets sit on the cutoff, so without it the fortieth row was
+            -- whichever of them the scan happened to reach first.
+            ORDER BY days DESC, i.key
             LIMIT 40
         """,
     ),
@@ -526,7 +529,10 @@ CHARTS = [
             WHERE i.status_category <> 'done' AND sp.start IS NOT NULL
             GROUP BY 1, 2, 3
             HAVING count(DISTINCT sp.sprint_id) > 1
-            ORDER BY sprints DESC, since
+            -- key last, so the order is total: 23 open tickets share both
+            -- sprints and since here, and without it the cap kept an arbitrary
+            -- subset of them and a different one on the next render.
+            ORDER BY sprints DESC, since, i.key
             LIMIT 40
         """,
     ),

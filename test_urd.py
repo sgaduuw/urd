@@ -4302,6 +4302,40 @@ def test_carried_sprints_puts_the_worst_carried_ticket_first():
     assert [(r["key"], r["sprints"]) for r in rows] == [("PROJ-9", 3), ("PROJ-3", 2)]
 
 
+def test_carried_sprints_and_the_aging_table_break_a_tie_on_the_key():
+    """Both cap at 40, so a non-total order does not just shuffle rows: it changes
+    which rows survive the cap. On live data 23 open tickets share a (sprints,
+    since) pair and five sit on the aging table's cutoff day, so the fortieth row
+    was whichever the scan reached first.
+
+    Eight tied rows per chart, because two passed the untied query by luck when
+    this was first written. Verified red without the tiebreakers."""
+    con = _derived("reopened", "two_sprints")
+    # Eight open tickets, each in the same two sprints, so sprints and since tie.
+    for i in range(8):
+        key = f"PROJ-8{7 - i}"   # inserted in descending key order
+        con.execute("INSERT INTO issues_all (key, project, type, status, "
+                    "status_category, created, summary, abandoned) VALUES "
+                    "(?, 'PROJ', 'Task', 'To Do', 'new', "
+                    "TIMESTAMP '2026-01-06 09:00', 'tied', FALSE)", [key])
+        for sid, name, start in ((7, "Sprint B", "2026-01-05"),
+                                 (3, "Sprint A", "2026-01-19")):
+            con.execute("INSERT INTO issue_sprints_all VALUES (?, ?, ?, 'closed', "
+                        "?::TIMESTAMP, ?::TIMESTAMP + INTERVAL 14 DAY, 1)",
+                        [key, sid, name, start, start])
+        # status_durations is a view over transitions, so the aging table reaches
+        # these only through a real status change. One each, all at the same
+        # instant, so max(entered) ties across all eight.
+        con.execute("INSERT INTO changes_all VALUES (?, TIMESTAMP '2026-01-20 09:00', "
+                    "'status', '1', 'To Do', '3', 'In Progress', 'acct-1', ?)",
+                    [key, 900 + i])
+    tied = sorted(f"PROJ-8{i}" for i in range(8))
+    carried = [r["key"] for r in _flow_rows(con, "carried_sprints")[1]]
+    assert carried == ["PROJ-3"] + tied, carried
+    aging = [r["key"] for r in _flow_rows(con, "aging_wip")[1] if r["key"] in tied]
+    assert aging == tied, aging
+
+
 def test_carried_sprints_drops_a_ticket_once_it_is_done():
     """Delivered-after-five-sprints is history, and this list exists to be acted
     on. PROJ-3 is the only carried ticket, so closing it is the one thing that
