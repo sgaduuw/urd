@@ -1,3 +1,5 @@
+import re
+
 import test_helpers
 import wizard as wizard_mod
 
@@ -109,6 +111,18 @@ def test_setup_still_adds_projects_once_one_exists():
     registry = test_helpers.registry()
     test_helpers.synced(registry)
     assert test_helpers.client(registry).get("/setup").status_code == 200
+
+
+def test_the_setup_form_is_laid_out_as_stacked_fields():
+    """Without a rule for it a label is inline, so ten label-and-input pairs flow
+    as one wrapping paragraph with each label butting against the previous input,
+    and the inputs keep the browser's white default on a dark page. This is the
+    first screen anyone sees, so the layout is part of the page working."""
+    body = test_helpers.client(test_helpers.registry()).get(
+        "/setup").get_data(as_text=True)
+    assert re.search(r"\blabel\s*\{[^}]*display:\s*block", body), "labels are inline"
+    assert re.search(r"label input\s*\{[^}]*background:\s*var\(--surface\)", body), \
+        "inputs are not themed"
 
 
 if __name__ == "__main__":
