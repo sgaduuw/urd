@@ -322,6 +322,25 @@ def test_confirming_a_slug_already_in_use_does_not_rescope_it():
     assert "already in use" in body
 
 
+def test_confirming_revalidates_the_scope():
+    """Page one's fields are hidden on page two, so revalidation on the confirm
+    POST is the only thing that re-proves them; every other test either posts
+    confirm="" or patches validate to succeed, so a validate call moved inside
+    the wrong branch would go unnoticed."""
+    registry = test_helpers.registry()
+    monkey = {}
+    _patched(monkey, validate=lambda p, t, opener=None: wizard_mod.Result(
+        False, problem="could not authenticate: 401"))
+    try:
+        test_helpers.client(registry).post("/setup", data={
+            **_SCOPE, "slug": "proj", "status_order": "To Do,Done",
+            "start_status": "To Do", "review_status": "",
+            "abandoned_status": "", "confirm": "yes"})
+    finally:
+        _restore(monkey)
+    assert registry.projects() == []
+
+
 def test_the_guessed_fields_are_marked_in_the_form():
     """The caveat naming start, review and abandoned status as guesses is easy
     to miss two paragraphs up; the label the operator is actually looking at
