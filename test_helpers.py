@@ -49,11 +49,26 @@ def registry(volume=None):
     return projects.ProjectRegistry(volume or tempfile.mkdtemp())
 
 
-def client(reg):
+def client(reg, sec_fetch_site="same-origin"):
+    """A test client for the given registry.
+
+    Defaults every request's Sec-Fetch-Site to same-origin, what a real
+    browser sends for a page this app served, since webapp.py's POST guard now
+    checks that header and the test client does not simulate it on its own.
+    Without this default, every existing POST test would have to know that
+    header exists just to keep working, for a guard it is not testing.
+
+    Pass sec_fetch_site=None for the one test simulating a browser old enough
+    to omit the header entirely; a single call still overrides per request via
+    headers=... to exercise a specific value such as cross-site.
+    """
     import webapp
     app = webapp.create_app(reg)
     app.config["TESTING"] = True
-    return app.test_client()
+    test_client = app.test_client()
+    if sec_fetch_site is not None:
+        test_client.environ_base = {"HTTP_SEC_FETCH_SITE": sec_fetch_site}
+    return test_client
 
 
 def synced(reg, slug="alpha"):

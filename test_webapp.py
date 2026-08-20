@@ -178,6 +178,33 @@ def test_a_cross_site_post_is_refused():
     assert response.status_code == 403
 
 
+def test_a_same_site_post_is_refused():
+    """A page on a different localhost port is a different origin but the
+    same site: the browser sends same-site, not cross-site. site is an
+    operator-supplied form field, so letting this through is exactly the
+    forged /setup POST that would send URD_TOKEN to whatever host it names."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry).post(
+        f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "same-site"})
+    assert response.status_code == 403
+
+
+def test_a_missing_sec_fetch_site_header_is_refused():
+    """Some older browsers never send Sec-Fetch-Site. Refusing by default is
+    the safer choice for a single-user tool on loopback; the cost, paid
+    deliberately, is that such a browser cannot use any POST route here.
+
+    sec_fetch_site=None is what makes the header truly absent: every other
+    test's client defaults it to same-origin so that tests unrelated to this
+    guard do not have to know it exists."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry, sec_fetch_site=None).post(
+        f"/{project.slug}/refresh")
+    assert response.status_code == 403
+
+
 def test_an_ordinary_same_origin_post_still_works():
     """start_refresh is mocked, as its sibling in test_views_jobs.py does:
     unmocked, the default jira_factory calls urd.token() for real on a
@@ -188,7 +215,23 @@ def test_an_ordinary_same_origin_post_still_works():
     original = projects_mod.start_refresh
     projects_mod.start_refresh = lambda project, jira_factory=None: True
     try:
-        response = test_helpers.client(registry).post(f"/{project.slug}/refresh")
+        response = test_helpers.client(registry).post(
+            f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "same-origin"})
+    finally:
+        projects_mod.start_refresh = original
+    assert response.status_code == 302
+
+
+def test_a_none_sec_fetch_site_post_still_works():
+    """none is a direct navigation or a form the app itself served with no
+    referring document, the shape of the confirm POST at the end of setup."""
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    original = projects_mod.start_refresh
+    projects_mod.start_refresh = lambda project, jira_factory=None: True
+    try:
+        response = test_helpers.client(registry).post(
+            f"/{project.slug}/refresh", headers={"Sec-Fetch-Site": "none"})
     finally:
         projects_mod.start_refresh = original
     assert response.status_code == 302

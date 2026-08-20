@@ -38,8 +38,19 @@ def create_app(registry):
     # not see since the browser still calls that same-origin.
     @app.before_request
     def _same_origin_only():
+        # same-origin is this app's own page; none is a direct navigation or a
+        # form the app itself served with no referring document. same-site is
+        # still a different origin, a different port on localhost being the
+        # case that matters here, so it is refused alongside cross-site
+        # rather than waved through with it.
+        #
+        # A browser old enough to omit Sec-Fetch-Site entirely is refused
+        # too. This is a single-user tool on loopback, so the safer default
+        # costs more than it usually would: such a browser cannot use any
+        # POST route in this app at all.
+        allowed = ("same-origin", "none")
         if (flask.request.method == "POST"
-                and flask.request.headers.get("Sec-Fetch-Site") == "cross-site"):
+                and flask.request.headers.get("Sec-Fetch-Site") not in allowed):
             flask.abort(403)
         # An IPv6 literal Host is bracketed ("[::1]:8731" or "[::1]"), so a
         # plain split(":")[0] returns "[" and the [::1] allowlist entry could
