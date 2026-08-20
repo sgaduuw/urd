@@ -505,16 +505,14 @@ CHARTS = [
                  "shade": "sprints", "sortable": True, "links": ["key"]},
         sql="""
             SELECT i.key,
-                   -- Truncated in SQL for the same reason as aging_wip: the table
-                   -- renderer has no per-cell tooltip, and the key beside it links
-                   -- to the whole ticket.
+                   -- Truncated here for aging_wip's reason: no per-cell tooltip.
                    CASE WHEN length(i.summary) > 60
                         THEN left(i.summary, 59) || '…' ELSE i.summary END AS summary,
                    i.status,
                    count(DISTINCT sp.sprint_id) AS sprints,
-                   -- The earliest window it was ever planned into, so the reader
-                   -- gets elapsed time as well as a count. Sprints run in parallel
-                   -- here, so a count of them is commitments, not fortnights.
+                   -- Sprints run in parallel here, so the count above is
+                   -- commitments rather than fortnights, and this carries elapsed
+                   -- time instead.
                    min(sp.start)::DATE AS since
             FROM issues i
             JOIN issue_sprints sp ON sp.key = i.key
@@ -593,14 +591,11 @@ CHARTS = [
         # Closures actually summed over closures that could be, matching
         # points_vs_cycle: a closure with no estimate never reaches the chart.
         coverage="""
-            SELECT (SELECT count(*) FROM mutation_sprint ms
-                    JOIN closures c ON c.key = ms.key AND c.ts = ms.ts
-                    JOIN issues i ON i.key = ms.key
-                    WHERE ms.kind = 'status' AND NOT c.abandoned
-                      AND i.story_points > 0 AND in_window(ms.ts)),
-                   (SELECT count(*) FROM mutation_sprint ms
-                    JOIN closures c ON c.key = ms.key AND c.ts = ms.ts
-                    WHERE ms.kind = 'status' AND NOT c.abandoned AND in_window(ms.ts))
+            SELECT count(*) FILTER (WHERE i.story_points > 0), count(*)
+            FROM mutation_sprint ms
+            JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
+            JOIN issues i ON i.key = ms.key
+            WHERE NOT c.abandoned AND in_window(ms.ts)
         """,
         tier="points",
     ),

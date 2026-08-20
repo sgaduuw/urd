@@ -4502,10 +4502,6 @@ def test_the_chart_list_matches_the_section_index():
         assert chart.section in chart_specs.SECTIONS, f"{chart.key}: {chart.section}"
 
 
-# The one chart allowed to name a person: it names the assignee of a single open
-# ticket, which is who to ask about it, not a comparison between people.
-NAMES_A_PERSON = {"aging_wip"}
-
 
 def test_no_chart_measures_an_individual():
     """The People section was deleted deliberately. Per-person throughput, points,
@@ -4518,7 +4514,10 @@ def test_no_chart_measures_an_individual():
     joining it is the thing to catch. Run against the specs as they were before
     the deletion this flags exactly the five that went."""
     for chart in chart_specs.CHARTS:
-        if chart.key in NAMES_A_PERSON:
+        # aging_wip is the one chart allowed to name a person: it names the
+        # assignee of a single open ticket, which is who to ask about it, not a
+        # comparison between people.
+        if chart.key == "aging_wip":
             continue
         assert not re.search(r"\b(?:FROM|JOIN)\s+people\b", chart.sql, re.I), chart.key
 
