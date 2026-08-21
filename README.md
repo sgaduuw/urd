@@ -132,11 +132,6 @@ everything already held is left alone.
 - Cycle time: one point per closed ticket. The 85th percentile is the number you can promise, the median is the one you'll be asked for.
 - Median days in status, by issue type: where the weeks actually go, review queues show up here first.
 
-**Reporting outward**
-- Delivered versus open, per version: one bar pair per version a ticket is tagged with.
-- Progress per epic: tickets done and still open, per parent. Parents outside the scope of this report appear by key alone.
-- Ticket type mix per month: how much of each month was planned work, a growing bug or incident band is the interesting case.
-
 **Retro**
 - Rework per sprint: transitions that moved a ticket backwards through the workflow, the single best retro chart and one no built-in report draws.
 - Carried into each sprint: tickets already in an earlier sprint. Persistent carry-over means the sprint is being planned optimistically.
@@ -144,6 +139,11 @@ everything already held is left alone.
 - Cycle time per sprint: median and 85th percentile days per sprint. Tightening is the thing to look for, not the absolute value.
 - Story points versus actual cycle time: whether the estimates carry information. A flat cloud means the points are ritual.
 - Story points closed per sprint: team totals, credited to the sprint that was running at close rather than to the sprint the ticket belonged to. Sprint lengths differ, so these are totals and not a velocity to plan against.
+
+**Reporting outward**
+- Delivered versus open, per version: one bar pair per version a ticket is tagged with.
+- Progress per epic: tickets done and still open, per parent. Parents outside the scope of this report appear by key alone.
+- Ticket type mix per month: how much of each month was planned work, a growing bug or incident band is the interesting case.
 
 ## Finding the status names
 

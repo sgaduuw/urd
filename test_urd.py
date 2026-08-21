@@ -4120,11 +4120,16 @@ def test_the_real_section_list_leads_in_the_declared_order():
     list means every task that populates a new section breaks this test and gets
     it "fixed" by pasting in the new answer, which is how a test stops being read.
     Comparing against a rebuild of render_sections' own filter would be worse
-    still, since reversing SECTIONS would reorder both sides and prove nothing."""
+    still, since reversing SECTIONS would reorder both sides and prove nothing.
+
+    Retro moved ahead of Reporting outward deliberately, so this expectation was
+    edited as the decision rather than to make the suite pass: the two sections
+    the team reads about itself now sit together, instead of with a stakeholder
+    section between them."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     titles = [title for title, _ in urd.render_sections(con)]
     assert len(titles) >= 2, "needs two populated sections to say anything about order"
-    assert titles[:2] == ["Flow health", "Reporting outward"]
+    assert titles[:2] == ["Flow health", "Retro"]
     assert set(titles) <= set(chart_specs.SECTIONS)
 
 
