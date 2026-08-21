@@ -42,7 +42,7 @@ def flags_from(request, project, con):
     project's stored default.
 
     `con` is the caller's own cursor, inside its own transaction: applying a
-    request's flags means writing them (window/epics/min_closed live in tables
+    request's flags means writing them (window and epics live in tables
     the chart SQL reads at query time, not as parameters report_html takes),
     and the transaction is what keeps that write from ever reaching another
     connection.
@@ -54,7 +54,6 @@ def flags_from(request, project, con):
     epics = [k.strip() for value in epics for k in value.split(",") if k.strip()]
     if not epics and "exclude_epic" not in request.args:
         epics = urd.stored_excluded_epics(con)
-    raw_floor = request.args.get("min_closed")
     tiers = urd.stored_thresholds(con)
 
     try:
@@ -67,15 +66,6 @@ def flags_from(request, project, con):
         urd.set_excluded_epics(con, epics)
     except SystemExit as exc:
         problems.append(str(exc))
-
-    floor = urd.stored_min_closed(con)
-    if raw_floor is not None:
-        try:
-            floor = int(raw_floor)
-            urd.set_min_closed(con, floor)
-        except (SystemExit, ValueError) as exc:
-            problems.append(f"--min-closed: {exc}")
-            urd.set_min_closed(con, urd.stored_min_closed(con))
 
     try:
         tiers = urd.parse_thresholds(request.args.getlist("threshold"), base=tiers)
@@ -94,7 +84,7 @@ def flags_from(request, project, con):
     if message:
         problems.append(message)
 
-    return {"since": since, "epics": epics, "min_closed": floor,
+    return {"since": since, "epics": epics,
             "tiers": tiers, "problems": problems}
 
 
@@ -109,8 +99,6 @@ def _controls(project, flags, others):
         f'<form method="get" action="/{render.esc(project.slug)}/" class="controls">'
         f'<label>since <input name="since" value="{render.esc(flags["since"] or "")}"'
         f' placeholder="YYYY-MM-DD"></label>'
-        f'<label>min closed <input name="min_closed" type="number" min="1"'
-        f' value="{flags["min_closed"]}"></label>'
         f'<label>exclude epic <input name="exclude_epic"'
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
         f'<label>threshold <input name="threshold" placeholder="default=0.5"></label>'
@@ -158,7 +146,7 @@ def project(slug):
                 # No report to decorate: project_page's own notice already
                 # offers whatever action applies (finish setup, refresh), and
                 # splicing the controls form on top would add a second
-                # Refresh button and a since/min-closed/exclude box that does
+                # Refresh button and a since/exclude box that does
                 # nothing without a report under it.
                 return webapp.project_page(found, con=con)
             flags = flags_from(flask.request, found, con)

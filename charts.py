@@ -8,7 +8,7 @@ is the difference between a chart that is missing and one that is quietly wrong.
 """
 from typing import NamedTuple
 
-SECTIONS = ("Flow health", "Reporting outward", "Retro", "People")
+SECTIONS = ("Flow health", "Reporting outward", "Retro")
 
 # Optional-field charts are held to a lower bar than always-available ones: a
 # field most tickets skip is still worth showing with a caveat, where an
@@ -53,6 +53,7 @@ WINDOW_WEEKS = 26
 # a window while one does not is worse than no claim at all.
 WINDOW_EXEMPT = {
     "aging_wip": "always current, so the window would hide the oldest work it exists to find",
+    "carried_sprints": "a carried ticket is old by definition, so a window hides the worst of them",
 }
 
 
@@ -97,7 +98,10 @@ CHARTS = [
             JOIN (SELECT key, max(entered) AS entered FROM status_durations GROUP BY key) d
                  ON d.key = i.key
             WHERE i.status_category <> 'done'
-            ORDER BY days DESC
+            -- key last, so the order is total. 43 day-values are shared here and
+            -- five tickets sit on the cutoff, so without it the fortieth row was
+            -- whichever of them the scan happened to reach first.
+            ORDER BY days DESC, i.key
             LIMIT 40
         """,
     ),
@@ -414,7 +418,10 @@ CHARTS = [
             WHERE i.parent IS NOT NULL AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             -- Ordered before limiting, so the cap keeps the epics worth keeping.
-            ORDER BY count(*) DESC
+            -- Tie-broken on the label, which GROUP BY 1 makes unique, so the order
+            -- is total: on count alone, epics with equal totals came back in an
+            -- arbitrary order and two renders of one database did not diff.
+            ORDER BY count(*) DESC, 1
             LIMIT 40
         """,
     ),
@@ -492,6 +499,44 @@ CHARTS = [
         """,
     ),
     Chart(
+        key="carried_sprints",
+        section="Retro",
+        title="Open tickets by sprints carried",
+        kind="table",
+        caption="Open tickets planned into more than one sprint, worst first, with "
+                "the date they were first committed. Carried into each sprint "
+                "counts how many; this names them. It does not know why: work "
+                "parked by agreement looks the same here as work quietly rolling.",
+        options={"headers": ["key", "summary", "status", "sprints", "since"],
+                 "shade": "sprints", "sortable": True, "links": ["key"]},
+        sql="""
+            SELECT i.key,
+                   -- Truncated here for aging_wip's reason: no per-cell tooltip.
+                   CASE WHEN length(i.summary) > 60
+                        THEN left(i.summary, 59) || '…' ELSE i.summary END AS summary,
+                   i.status,
+                   count(DISTINCT sp.sprint_id) AS sprints,
+                   -- Sprints run in parallel here, so the count above is
+                   -- commitments rather than fortnights, and this carries elapsed
+                   -- time instead.
+                   min(sp.start)::DATE AS since
+            FROM issues i
+            JOIN issue_sprints sp ON sp.key = i.key
+            -- A membership with no window is a board column, not a sprint: this
+            -- instance reports "Refined Backlog" through the same field, and
+            -- counting it adds a phantom sprint to every ticket parked there,
+            -- which is exactly the population being ranked.
+            WHERE i.status_category <> 'done' AND sp.start IS NOT NULL
+            GROUP BY 1, 2, 3
+            HAVING count(DISTINCT sp.sprint_id) > 1
+            -- key last, so the order is total: 23 open tickets share both
+            -- sprints and since here, and without it the cap kept an arbitrary
+            -- subset of them and a different one on the next render.
+            ORDER BY sprints DESC, since, i.key
+            LIMIT 40
+        """,
+    ),
+    Chart(
         key="cycle_per_sprint",
         section="Retro",
         title="Cycle time per sprint",
@@ -529,6 +574,41 @@ CHARTS = [
         """,
     ),
     Chart(
+        key="points_per_sprint",
+        section="Retro",
+        title="Story points closed per sprint",
+        kind="hbars",
+        caption="Team totals, credited to the sprint that was running when the "
+                "ticket closed rather than to the sprint the ticket belonged to. "
+                "Sprint lengths differ here, so read these as totals and not as a "
+                "velocity to plan against.",
+        options={"labels": "sprint", "series": ["points"],
+                 # Closures, not tickets: a ticket that was reopened and closed
+                 # again is two closures, and "of N tickets" would be a false
+                 # sentence about the population this actually measures.
+                 "unit": "closures"},
+        sql="""
+            SELECT ms.sprint_name AS sprint, sum(i.story_points) AS points
+            FROM mutation_sprint ms
+            JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
+            JOIN issues i ON i.key = ms.key
+            -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
+            WHERE NOT c.abandoned AND i.story_points > 0 AND in_window(ms.ts)
+            GROUP BY 1, ms.sprint_start
+            ORDER BY ms.sprint_start DESC
+        """,
+        # Closures actually summed over closures that could be, matching
+        # points_vs_cycle: a closure with no estimate never reaches the chart.
+        coverage="""
+            SELECT count(*) FILTER (WHERE i.story_points > 0), count(*)
+            FROM mutation_sprint ms
+            JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
+            JOIN issues i ON i.key = ms.key
+            WHERE NOT c.abandoned AND in_window(ms.ts)
+        """,
+        tier="points",
+    ),
+    Chart(
         key="points_vs_cycle",
         section="Retro",
         title="Story points versus actual cycle time",
@@ -556,210 +636,6 @@ CHARTS = [
             SELECT (SELECT count(*) FROM issues i JOIN cycle_times c ON c.key = i.key
                     WHERE i.story_points > 0 AND in_window(c.resolved)),
                    (SELECT count(*) FROM cycle_times WHERE in_window(resolved))
-        """,
-        tier="points",
-    ),
-    Chart(
-        key="throughput_per_person",
-        section="People",
-        title="Tickets closed per week, per person",
-        kind="multiline",
-        caption="One line each, on one set of axes. Click a name in the legend to "
-                "isolate it, and drag across the chart to zoom. People with fewer "
-                "closures than --min-closed in the period are left out. A flat "
-                "stretch is "
-                "a real run of weeks at zero, not missing data. With more people "
-                "than the palette has colours, the legend rather than the colour "
-                "is what tells two lines apart. Attributed to the assignee at "
-                "close.",
-        # One chart rather than 25 panels. The panels were legible individually and
-        # hopeless for the comparison people actually want, which is who is
-        # carrying what over the same weeks. With more people than the palette has
-        # colours, three share each: the legend and the hover readout are what
-        # separate them, which is why this shape needs the upgrade more than most.
-        options={"band": "person", "x": "week", "y": "closed", "value": "closed",
-                 "interactive": True},
-        # ::DATE for consistency with the other time-bucketed charts. Not for the
-        # midnight-label guard: small multiples emit facet titles and no tick
-        # labels, so that guard never reaches this chart.
-        # Zero-filled across the whole grid of people and weeks. A week in which
-        # someone closed nothing is zero closures, not an unknown, and encoding it
-        # as a missing row made the two renderings disagree: the SVG joined
-        # straight across it, implying output that never happened, while uPlot
-        # broke the line and scattered each person into dozens of fragments that
-        # read as several different people.
-        sql="""
-            WITH closed AS (
-                SELECT COALESCE(p.display_name, 'Unassigned') AS person,
-                       date_trunc('week', c.ts)::DATE AS week,
-                       count(*) AS n
-                FROM closures c
-                JOIN issues i ON i.key = c.key
-                LEFT JOIN people p ON p.account_id = i.assignee_id
-                WHERE NOT c.abandoned AND in_window(c.ts)
-                GROUP BY 1, 2
-            ),
-            -- Generated rather than taken from `closed`, so a week nobody closed
-            -- anything in is still a week on the axis instead of vanishing.
-            weeks AS (
-                SELECT unnest(generate_series(
-                    (SELECT min(week) FROM closed),
-                    (SELECT max(week) FROM closed), INTERVAL 1 WEEK))::DATE AS week
-            ),
-            -- The floor is counted over the window, not all history: someone busy
-            -- last year and silent all quarter is exactly who it exists to drop.
-            people AS (
-                SELECT person FROM closed GROUP BY 1
-                HAVING sum(n) >= CAST(COALESCE((SELECT min_closed FROM sync_state),
-                                               '3') AS INTEGER)
-            ),
-            grid AS (SELECT people.person, weeks.week FROM people CROSS JOIN weeks)
-            SELECT grid.person, grid.week, COALESCE(closed.n, 0) AS closed
-            FROM grid
-            LEFT JOIN closed
-                   ON closed.person = grid.person AND closed.week = grid.week
-            ORDER BY 1, 2
-        """,
-    ),
-    Chart(
-        key="throughput_trend_per_person",
-        section="People",
-        # No apostrophe: esc() turns one into &#x27;, and the end-to-end test looks
-        # for the raw title in the page.
-        title="Per person trend, four week average",
-        kind="small_multiples",
-        caption="One panel each, four week rolling average, and every panel scaled "
-                "to its own data so a quiet person's shape is visible rather than "
-                "flattened against a busy one's. That is the trade: two panels here "
-                "cannot be compared by eye, and the chart above is where the "
-                "comparison lives. Each heading carries the person's own total.",
-        options={"group": "person", "x": "week", "y": "closed_trend",
-                 "share_y": False, "heading": "closed_total"},
-        # Same zero-filled grid and same floor as the merged chart, so the two
-        # always show the same set of people. Smoothed per person: weekly
-        # per-person counts are mostly 0, 1 or 2, and the shape only appears once
-        # the noise is averaged out.
-        sql="""
-            WITH closed AS (
-                SELECT COALESCE(p.display_name, 'Unassigned') AS person,
-                       date_trunc('week', c.ts)::DATE AS week,
-                       count(*) AS n
-                FROM closures c
-                JOIN issues i ON i.key = c.key
-                LEFT JOIN people p ON p.account_id = i.assignee_id
-                WHERE NOT c.abandoned AND in_window(c.ts)
-                GROUP BY 1, 2
-            ),
-            weeks AS (
-                SELECT unnest(generate_series(
-                    (SELECT min(week) FROM closed),
-                    (SELECT max(week) FROM closed), INTERVAL 1 WEEK))::DATE AS week
-            ),
-            people AS (
-                SELECT person FROM closed GROUP BY 1
-                HAVING sum(n) >= CAST(COALESCE((SELECT min_closed FROM sync_state),
-                                               '3') AS INTEGER)
-            ),
-            grid AS (SELECT people.person, weeks.week FROM people CROSS JOIN weeks),
-            filled AS (
-                SELECT grid.person, grid.week, COALESCE(closed.n, 0) AS n
-                FROM grid
-                LEFT JOIN closed
-                       ON closed.person = grid.person AND closed.week = grid.week
-            )
-            SELECT person, week,
-                   round(avg(n) OVER (
-                       PARTITION BY person ORDER BY week
-                       ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-                   ), 2) AS closed_trend,
-                   -- The real count, for the heading: summing the rolling mean
-                   -- would print a sum of averages as a number of tickets.
-                   sum(n) OVER (PARTITION BY person) AS closed_total
-            FROM filled
-            ORDER BY 1, 2
-        """,
-    ),
-    Chart(
-        key="review_load",
-        section="People",
-        title="Review load",
-        kind="hbars",
-        caption="Who moves work out of the review status, counting a rejection "
-                "back to in-progress as well as an approval. This is the "
-                "invisible contribution: no built-in report exposes it.",
-        options={"labels": "reviewer", "series": ["reviews"]},
-        sql="""
-            SELECT COALESCE(p.display_name, 'Automation') AS reviewer,
-                   count(*) AS reviews
-            FROM transitions t
-            LEFT JOIN people p ON p.account_id = t.author_id
-            WHERE t.from_status = (SELECT review_status FROM sync_state)
-              AND in_window(t.ts)
-            GROUP BY 1
-            ORDER BY reviews DESC
-        """,
-    ),
-    Chart(
-        key="handoffs",
-        section="People",
-        title="Handoffs",
-        kind="matrix",
-        caption="Who starts work that someone else finishes. Read down the rows "
-                "for what a person hands on, across for what they pick up.",
-        options={"headers": ["started_by", "finished_by", "tickets"], "shade": "tickets",
-                 "sortable": True},
-        sql="""
-            WITH started AS (   -- assignee display name at the first move into the start status
-                SELECT t.key,
-                       arg_min(COALESCE(a.to_str, r.display_name), t.ts) AS started_by
-                FROM transitions t
-                JOIN issues i ON i.key = t.key
-                LEFT JOIN people r ON r.account_id = i.reporter_id
-                LEFT JOIN changes a
-                       ON a.key = t.key AND a.field = 'assignee' AND a.ts <= t.ts
-                WHERE t.to_status = (SELECT start_status FROM sync_state)
-                  AND in_window(t.ts)
-                GROUP BY t.key
-            ),
-            finished AS (
-                SELECT c.key, COALESCE(p.display_name, 'Unassigned') AS finished_by
-                FROM closures c
-                JOIN issues i ON i.key = c.key
-                LEFT JOIN people p ON p.account_id = i.assignee_id
-            )
-            SELECT s.started_by, f.finished_by, count(*) AS tickets
-            FROM started s JOIN finished f USING (key)
-            WHERE s.started_by IS DISTINCT FROM f.finished_by
-            GROUP BY 1, 2
-            ORDER BY tickets DESC
-        """,
-    ),
-    Chart(
-        key="points_per_person",
-        section="People",
-        title="Story points closed per person",
-        kind="hbars",
-        caption="Only meaningful if the field is filled consistently, which the "
-                "coverage figure tells you.",
-        options={"labels": "person", "series": ["points"]},
-        sql="""
-            SELECT COALESCE(p.display_name, 'Unassigned') AS person,
-                   sum(i.story_points) AS points
-            FROM issues i
-            LEFT JOIN people p ON p.account_id = i.assignee_id
-            -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
-            WHERE i.status_category = 'done' AND NOT i.abandoned
-              AND i.story_points > 0 AND (in_window(i.created) OR in_window(i.resolved))
-            GROUP BY 1
-            ORDER BY points DESC
-        """,
-        coverage="""
-            SELECT (SELECT count(*) FROM issues
-                    WHERE story_points > 0 AND status_category = 'done' AND NOT abandoned
-                      AND (in_window(created) OR in_window(resolved))),
-                   (SELECT count(*) FROM issues
-                    WHERE status_category = 'done' AND NOT abandoned
-                      AND (in_window(created) OR in_window(resolved)))
         """,
         tier="points",
     ),

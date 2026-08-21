@@ -140,14 +140,10 @@ everything already held is left alone.
 **Retro**
 - Rework per sprint: transitions that moved a ticket backwards through the workflow, the single best retro chart and one no built-in report draws.
 - Carried into each sprint: tickets already in an earlier sprint. Persistent carry-over means the sprint is being planned optimistically.
+- Open tickets by sprints carried: which tickets those are, worst first, and since when. The chart above counts them; this one names them, and it does not know why: work parked by agreement looks the same as work quietly rolling.
 - Cycle time per sprint: median and 85th percentile days per sprint. Tightening is the thing to look for, not the absolute value.
 - Story points versus actual cycle time: whether the estimates carry information. A flat cloud means the points are ritual.
-
-**People**
-- Tickets closed per week, per person: one small chart each, deliberately, so the same data doesn't invite a reading a ranked bar chart doesn't support. Attributed to the assignee at close.
-- Review load: who moves work out of the review status, counting a rejection back to in-progress the same as an approval. No built-in report exposes this.
-- Handoffs: who starts work that someone else finishes. Read down the rows for what a person hands on, across for what they pick up.
-- Story points closed per person: only meaningful if the field is filled consistently, which the coverage figure tells you.
+- Story points closed per sprint: team totals, credited to the sprint that was running at close rather than to the sprint the ticket belonged to. Sprint lengths differ, so these are totals and not a velocity to plan against.
 
 ## Finding the status names
 
@@ -211,11 +207,9 @@ about 90 lines of first-party wiring. Nothing is fetched, so a saved report open
 offline, unchanged, years later, and no third party learns who reads a report
 about internal work.
 
-Every chart is upgraded in the browser: lines, scatters, stacks, bars and small
-multiples all gain hover readouts and drag-to-zoom. On a stack, hovering reads the
-band's own value rather than the running total it sits on. On vertical bars the axis is
-categorical, so the names travel with the data and hover gives the whole name
-rather than the three characters the axis has room for.
+Every chart is upgraded in the browser: lines, scatters, stacks and the combined
+bar-and-line chart all gain hover readouts and drag-to-zoom. On a stack, hovering
+reads the band's own value rather than the running total it sits on.
 
 Charts whose categories are names use horizontal bars instead, and are not
 upgraded. They are also drawn wider than the rest, 720px against 480: the label
@@ -225,20 +219,7 @@ one is written in full and every value is printed at the end of its bar: there i
 nothing left for zoom to reveal. Hovering still names the bar, through the SVG's
 own tooltip and no script at all. These charts grow taller as rows are added
 rather than thinning, on the principle that a page scrolls and a one-pixel bar
-means nothing. Tickets closed per person is one chart with one line each: click a name in the
-legend to isolate it, drag to zoom. `--min-closed N` sets how many closures inside
-the window a person needs before they get a line, defaulting to three: fewer than
-that draws a flat line at zero with one blip and spends one of eight palette slots
-on it. With more people than the palette has
-colours, three share each, so the legend and the readout are what tell two lines
-apart rather than the colour.
-
-There is a second per-person chart for individual trends: one panel each, four
-week rolling average, and every panel scaled to its own data so a quiet person's
-shape is visible instead of flattened against a busy one's. Two panels there
-cannot be compared by eye, which is the trade, and the merged chart above is where
-the comparison lives. Each heading carries the person's real closure count rather
-than a sum of the averages being plotted.
+means nothing.
 
 A stack with more bands than the palette has colours folds its smallest into one
 `Other`, because two identically coloured bands touching each other cannot be
@@ -258,8 +239,8 @@ every value a reader can hover is already in the markup.
 Progress per epic is the chart that prompted it. At 141 epics, grouped bars came
 to 423 marks in 480px, about one pixel each.
 
-All four tables sort: aging work in progress (40 rows), median days in status
-(44), handoffs (66) and progress per epic (141). Every one is past the point of
+All three tables sort: aging work in progress (40 rows), median days in status
+(44) and open tickets by sprints carried (40). Every one is past the point of
 scanning by eye. A table added later must opt in deliberately, which a test
 enforces: a genuinely short one may decline, but it cannot forget.
 

@@ -2301,15 +2301,6 @@ def test_esc_does_not_blank_a_real_boolean_or_zero():
     assert render.esc(0.0) == "0.0"
 
 
-def test_bars_emits_one_rect_per_value_and_scales_to_the_maximum():
-    out = render.bars(
-        [{"label": "a", "done": 2, "open": 0}, {"label": "b", "done": 4, "open": 1}],
-        labels="label", series=["done", "open"],
-    )
-    assert out.count("<rect") == 4
-    assert "<svg" in out and "</svg>" in out
-
-
 def test_lines_survives_a_single_point_without_dividing_by_zero():
     out = render.lines([{"wk": "2026-01-05", "created": 3}], x="wk", series=["created"])
     assert "<svg" in out
@@ -2441,16 +2432,6 @@ _DANGEROUS_NAME = 'n <i> & "m"'  # a column-name argument (labels=/x=/band=/y=)
 _DANGEROUS_NAME2 = 'q <u> & "z"'  # a second one, for primitives with two
 
 
-def test_bars_escapes_every_interpolated_field():
-    # _DANGEROUS_NAME is the `labels` column-name arg (used in the title);
-    # the row stores the actual tick-label VALUE under that same key, also
-    # dangerous, so both the argument and the value it names are covered.
-    rows = [{_DANGEROUS_NAME: _DANGEROUS, "n1": 2, _DANGEROUS: 1}]
-    out = render.bars(rows, labels=_DANGEROUS_NAME, series=["n1", _DANGEROUS])
-    assert "<b>" not in out
-    assert "<i>" not in out
-
-
 def test_lines_escapes_every_interpolated_field():
     rows = [
         {_DANGEROUS_NAME: _DANGEROUS, "n1": 3, _DANGEROUS: 2},
@@ -2486,59 +2467,26 @@ def test_table_escapes_every_interpolated_field():
     assert "<b>" not in out
 
 
-def test_small_multiples_escapes_every_interpolated_field():
-    groups = {_DANGEROUS: [{_DANGEROUS: "w1", _DANGEROUS_NAME: 3}]}
-    out = render.small_multiples(groups, x=_DANGEROUS, y=_DANGEROUS_NAME)
-    assert "<b>" not in out
-    assert "<i>" not in out
-
-
 def test_every_svg_chart_has_role_title_and_viewbox_scaling():
     """role="img" plus a leading <title> gives the chart its accessible
     name; preserveAspectRatio is what lets it scale down instead of
     cropping in a narrow window. Checked across every primitive that
     returns an <svg>, not just one."""
     samples = [
-        render.bars([{"label": "a", "n": 1}], labels="label", series=["n"]),
         render.lines([{"wk": "2026-01-05", "n": 1}], x="wk", series=["n"]),
         render.stacked(
             [{"wk": "2026-01-05", "status": "Done", "n": 1}], x="wk", band="status", value="n",
         ),
         render.scatter([{"x": 1, "y": 2}], x="x", y="y"),
-        render.small_multiples({"g": [{"wk": "2026-01-05", "n": 1}]}, x="wk", y="n"),
+        render.hbars([{"label": "a", "n": 1}], labels="label", series=["n"]),
+        render.combo([{"wk": "2026-01-05", "n": 1, "m": 2}], x="wk",
+                     series=["n", "m"], bars=("n",)),
     ]
     for out in samples:
         assert 'role="img"' in out
         assert "preserveAspectRatio" in out
         after_open = out.split(">", 1)[1]
         assert after_open.startswith("<title>")
-
-
-def test_bars_bar_height_is_proportional_to_value_not_fixed():
-    """The brief's own test is named ..._and_scales_to_the_maximum but only
-    counts rects; a primitive that drew every bar at a fixed height would
-    still pass it."""
-    out = render.bars(
-        [{"label": "a", "n": 2}, {"label": "b", "n": 4}], labels="label", series=["n"],
-    )
-    heights = sorted(float(h) for h in re.findall(r'height="([\d.]+)"', out))
-    assert heights[0] > 0
-    assert heights[1] > heights[0] * 1.5  # value doubles; height must not be flat
-
-
-def test_bars_grow_from_zero_even_when_values_are_all_far_from_it():
-    """Without the zero floor, a domain of [100, 102] leaves sy(0) (the
-    baseline every bar measures from) extrapolating far outside that
-    domain instead of landing on the true baseline, so a bar wildly
-    overflows the chart's own viewBox rather than merely looking flat."""
-    rows = [{"label": "a", "n": 100}, {"label": "b", "n": 102}]
-    out = render.bars(rows, labels="label", series=["n"])
-    vb_h = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', out).group(1))
-    rect_re = r'<rect x="[\d.]+" y="(-?[\d.]+)" width="[\d.]+" height="([\d.]+)"'
-    for y, h in re.findall(rect_re, out):
-        y, h = float(y), float(h)
-        assert y >= -1
-        assert y + h <= vb_h + 1
 
 
 def test_stacked_colours_bands_by_first_seen_order():
@@ -2721,9 +2669,7 @@ def test_every_primitive_keeps_marks_within_the_viewbox_zero_tolerance():
     zero tolerance and both axes (the version this replaces used +/-5px
     and y only, which is why it did not catch the stacked total-label
     regression in the same round it was added)."""
-    bars_rows = [{"label": "a", "n": 1}, {"label": "b", "n": 100}]
     samples = {
-        "bars": render.bars(bars_rows, labels="label", series=["n"]),
         "lines": render.lines(
             [{"wk": "2026-01-05", "n": 1}, {"wk": "2026-01-12", "n": 100}], x="wk", series=["n"],
         ),
@@ -2735,8 +2681,12 @@ def test_every_primitive_keeps_marks_within_the_viewbox_zero_tolerance():
         "scatter": render.scatter(
             [{"x": 1, "y": 2}, {"x": 2, "y": 8}], x="x", y="y", guides=[("p50", 5.0)],
         ),
-        "small_multiples": render.small_multiples(
-            {"g": [{"wk": "2026-01-05", "n": 3}]}, x="wk", y="n",
+        "hbars": render.hbars(
+            [{"label": "a", "n": 1}, {"label": "b", "n": 100}], labels="label", series=["n"],
+        ),
+        "combo": render.combo(
+            [{"wk": "2026-01-05", "n": 1, "m": 100}, {"wk": "2026-01-12", "n": 90, "m": 4}],
+            x="wk", series=["n", "m"], bars=("n",),
         ),
     }
     for name, out in samples.items():
@@ -2758,74 +2708,15 @@ def test_stacked_total_label_stays_in_frame_across_band_counts_zero_tolerance():
         _assert_content_within_viewbox(out, f"{n_bands} bands")
 
 
-def test_small_multiples_handles_null_and_mixed_type_x_without_crashing():
-    """Replacing first-seen order with sorted() introduced a comparison
-    where there was none: a NULL week from a LEFT JOIN, or facets whose x
-    values are different types, both raised TypeError. bars/lines/stacked
-    render a None category without complaint; this must too."""
-    groups = {"A": [{"wk": None, "n": 1}, {"wk": "w2", "n": 2}], "B": [{"n": 5}]}
-    out = render.small_multiples(groups, x="wk", y="n")
-    assert "<svg" in out
-
-    mixed = {"A": [{"wk": 1, "n": 1}], "B": [{"wk": "w2", "n": 2}]}
-    out2 = render.small_multiples(mixed, x="wk", y="n")
-    assert "<svg" in out2
-
-
-def test_small_multiples_sorts_integer_categories_numerically_not_lexically():
-    """key=(c is None, str(c)) sorted integer weeks {2, 9, 10, 11} as the
-    strings "10", "11", "2", "9". A facet that visits every category (in
-    any order, since it's iterated in shared-category order regardless)
-    always traces a monotonically-increasing pixel path by construction,
-    which cannot tell a correct sort from a wrong one: it's checking that
-    points are visited in shared_cats' own order, not that shared_cats
-    itself is in the right order. Two single-point facets (so each
-    renders in isolation, at the position its own value's rank in the
-    shared axis gives it) expose the real property: week 2 must land
-    left of week 11, not the reverse."""
-    groups = {
-        "full": [{"wk": w, "n": w} for w in (2, 9, 10, 11)],  # populates the shared axis
-        "low": [{"wk": 2, "n": 1}],
-        "high": [{"wk": 11, "n": 1}],
-    }
-    out = render.small_multiples(groups, x="wk", y="n")
-    # local cx within each facet's own <g> (not the translated screen
-    # position, which the 3-column grid layout dominates and which says
-    # nothing about the value/category ordering this test is checking)
-    gs = re.findall(r'<g transform="translate\([\d.]+,[\d.]+\)">(.*?)</g>', out, re.DOTALL)
-    local_x = {}
-    for body in gs:
-        # The bare group name, from the nested <title>: the visible heading now
-        # carries the panel total after it.
-        title = re.search(r"<title>([^<]*)</title>", body).group(1)
-        cx = re.search(r'<circle cx="([\d.]+)"', body).group(1)
-        local_x[title] = float(cx)
-    assert local_x["low"] < local_x["high"]
-
-
-def test_bars_skips_a_missing_value_instead_of_drawing_a_zero():
-    """A missing/non-numeric value is not the same fact as a measured
-    zero. Drawing a zero-height bar with a "<title>series: 0</title>"
-    tooltip claims data that isn't there; the other five primitives all
-    draw no mark for a missing point, and bars must match them."""
-    rows = [{"label": "a", "present": 5}]
-    out = render.bars(rows, labels="label", series=["present", "missing"])
-    assert out.count("<rect") == 1
-    assert "missing: 0" not in out
-
-
 def test_none_category_renders_as_empty_text_not_the_literal_none():
-    """table() already turns a None cell into empty text; bars, stacked
-    and small_multiples used to render the literal word "None" for a NULL
-    category (a LEFT JOIN with no match, or an ungrouped bucket)."""
-    out = render.bars([{"label": None, "n": 3}], labels="label", series=["n"])
-    assert ">None<" not in out
-
+    """table() already turns a None cell into empty text; the band and label
+    charts used to render the literal word "None" for a NULL category (a LEFT
+    JOIN with no match, or an ungrouped bucket)."""
     out = render.stacked([{"wk": "w1", "status": None, "n": 3}], x="wk", band="status", value="n")
     assert ">None<" not in out
     assert "<title>None:" not in out
 
-    out = render.small_multiples({None: [{"wk": "w1", "n": 3}]}, x="wk", y="n")
+    out = render.hbars([{"label": None, "n": 3}], labels="label", series=["n"])
     assert ">None<" not in out
 
 
@@ -2840,10 +2731,9 @@ def test_stacked_none_x_value_renders_as_empty_tick_text():
 
 
 def test_legend_none_name_renders_as_empty_text_not_the_literal_none():
-    """The prior test's stacked/small_multiples scenarios only ever had
-    one distinct band/group, so _legend (which needs 2+ names to render
-    at all) was never called with a None name; its own None-guard was a
-    dead arm."""
+    """The prior test's stacked scenario only ever had one distinct band, so
+    _legend (which needs 2+ names to render at all) was never called with a
+    None name; its own None-guard was a dead arm."""
     rows = [{"wk": "w1", "status": None, "n": 3}, {"wk": "w1", "status": "Done", "n": 2}]
     out = render.stacked(rows, x="wk", band="status", value="n")
     assert "legend-label" in out  # confirms the legend actually rendered
@@ -2897,14 +2787,10 @@ def test_y_tick_pad_widens_only_when_a_label_actually_needs_it():
     assert render._y_tick_pad([5, 1234567], zero_floor=False) > 46
 
 
-def test_bars_and_stacked_y_axis_widens_for_a_wide_value_too():
-    """Not just lines/scatter (via axes()): bars and stacked compute their
-    own left padding the same way, and both used to right-align a
-    7-digit tick label at the same fixed x=40 regardless of width."""
-    bars_rows = [{"label": "a", "n": 5}, {"label": "b", "n": 1234567}]
-    out = render.bars(bars_rows, labels="label", series=["n"])
-    _assert_content_within_viewbox(out, "bars 7-digit y")
-
+def test_stacked_y_axis_widens_for_a_wide_value_too():
+    """Not just lines/scatter (via axes()): stacked computes its own left
+    padding the same way, and used to right-align a 7-digit tick label at the
+    same fixed x=40 regardless of width."""
     stacked_rows = [{"wk": "w1", "status": "A", "n": 1234567}]
     out2 = render.stacked(stacked_rows, x="wk", band="status", value="n")
     _assert_content_within_viewbox(out2, "stacked 7-digit y")
@@ -3062,54 +2948,6 @@ def test_legend_wraps_instead_of_running_past_the_viewbox():
     assert len(ys) > 1  # wrapped onto more than one row
 
 
-def test_small_multiples_shares_one_y_scale_across_facets():
-    """Each facet auto-scaling to its own max independently is exactly how
-    small multiples mislead; the same value in two facets with different
-    maxima must land at the same pixel height."""
-    facets = {
-        "low-max": [{"wk": "w1", "n": 2}],
-        "high-max": [{"wk": "w1", "n": 2}, {"wk": "w2", "n": 20}],
-    }
-    out = render.small_multiples(facets, x="wk", y="n")
-    groups = re.findall(r'<g transform="translate\([\d.]+,[\d.]+\)">(.*?)</g>', out, re.DOTALL)
-    ys = set()
-    for body in groups:
-        # first point of the facet: a path start (2+ points), an isolated-
-        # point dot (r=2), or the end-marker (r=3) when that's the only point
-        m = re.search(
-            r'(?:<path d="M[\d.]+,([\d.]+))|(?:<circle cx="[\d.]+" cy="([\d.]+)" r="[23]")', body,
-        )
-        ys.add(m.group(1) or m.group(2))
-    assert len(ys) == 1  # the n=2 point renders at the same y in both facets
-
-
-def test_small_multiples_shares_one_x_domain_and_breaks_at_gaps():
-    """An independent x per facet puts a different category under "column 1"
-    in every panel (Task 13 facets by person and week; a person with no
-    output some week has no row for it), so the shared y-scale buys nothing.
-    A silent joining line across the gap would also read a real gap as
-    steady output."""
-    facets = {
-        "sparse": [{"wk": "w1", "n": 1}, {"wk": "w3", "n": 3}],  # w2 missing
-        "full": [{"wk": "w1", "n": 1}, {"wk": "w2", "n": 2}, {"wk": "w3", "n": 3}],
-    }
-    out = render.small_multiples(facets, x="wk", y="n")
-    # only the facet with no gap draws a connected path across all 3 points
-    assert out.count("<path") == 1
-    paths = re.findall(r'<path d="([^"]+)"', out)
-    assert paths[0].count("L") == 2  # 3 points, 2 line segments, in the full facet
-
-
-def test_bars_accepts_decimal_values_like_a_float():
-    """DuckDB returns decimal.Decimal from ROUND()/SUM() over a decimal
-    column; an earlier version of this module raised TypeError here."""
-    rows = [{"label": "a", "n": decimal.Decimal("2")}, {"label": "b", "n": decimal.Decimal("4")}]
-    out = render.bars(rows, labels="label", series=["n"])
-    assert out.count("<rect") == 2
-    heights = [float(h) for h in re.findall(r'height="([\d.]+)"', out)]
-    assert max(heights) > min(heights) * 1.5
-
-
 def test_lines_accepts_decimal_values_like_a_float():
     """An earlier version silently dropped every point for a Decimal
     series, rendering axes and a title but zero paths and zero circles,
@@ -3151,49 +2989,6 @@ def test_table_shading_accepts_decimal_values_like_a_float():
     out = render.table(rows, headers=["from", "to", "n"], shade="n")
     assert 'fill-opacity="1.00"' in out
     assert 'fill-opacity="0.50"' in out
-
-
-def test_small_multiples_accepts_decimal_values_like_a_float():
-    out = render.small_multiples(
-        {"g": [{"wk": "2026-01-05", "n": decimal.Decimal("3")}]}, x="wk", y="n",
-    )
-    assert "<path" in out or "<circle" in out
-
-
-def test_bars_empty_data_renders_a_note():
-    assert "no data" in render.bars([], labels="label", series=["done"]).lower()
-
-
-def _people_rows(n):
-    return [{"person": f"Firstname Surname {i}", "points": 100 - i} for i in range(n)]
-
-
-def test_a_bar_tooltip_names_the_row_it_belongs_to():
-    """Story points per person put seventeen full names on a 480px axis, where a
-    band is 26px and a name needs about 133. The axis label cannot carry the
-    identity at that width, so the tooltip has to."""
-    out = render.bars(_people_rows(3), labels="person", series=["points"])
-    tips = re.findall(r"<title>([^<]*)</title>", out)
-    assert any("Firstname Surname 0" in t and "100" in t for t in tips), tips
-
-
-def test_bar_x_labels_are_shortened_to_what_their_band_can_hold():
-    """Seventeen overlapping names are noise, not a label. Shortened they still
-    order and distinguish the bars, and the tooltip carries the full name."""
-    out = render.bars(_people_rows(17), labels="person", series=["points"])
-    ticks = re.findall(r'class="tick"[^>]*>([^<]*)</text>', out)
-    names = [t for t in ticks if "Firstname"[:2] in t or "…" in t]
-    assert names, f"no shortened person labels found in {ticks}"
-    assert all(len(t) <= 8 for t in names), f"labels still too wide: {names}"
-    # A roomy chart must not be shortened at all.
-    wide = render.bars(_people_rows(2), labels="person", series=["points"])
-    assert "Firstname Surname 0" in wide, "a two-bar chart should keep its full labels"
-
-
-def test_bars_stay_in_frame_with_many_named_categories():
-    for n in (2, 5, 12, 17, 30):
-        _assert_content_within_viewbox(
-            render.bars(_people_rows(n), labels="person", series=["points"]), f"bars n={n}")
 
 
 def test_axes_thins_category_labels_so_interior_ones_stay_in_frame():
@@ -3318,8 +3113,8 @@ def test_hbars_is_wider_than_the_other_charts():
     assert 'class="chart chart-wide"' in out, out[:200]
     assert ".chart-wide" in render.CSS, "the wider class must actually be styled"
     # A vertical chart is unchanged: it has no gutter to pay for.
-    assert 'class="chart"' in render.bars(_people_bars(6), labels="person",
-                                         series=["points"])
+    assert 'class="chart"' in render.lines([{"wk": "2026-01-05", "n": 1}],
+                                          x="wk", series=["n"])
 
 
 def test_hbars_leaves_room_for_the_longest_name():
@@ -3391,10 +3186,6 @@ def test_scatter_empty_data_renders_a_note():
 
 def test_table_empty_data_renders_a_note():
     assert "no data" in render.table([], headers=["a", "b"]).lower()
-
-
-def test_small_multiples_empty_data_renders_a_note():
-    assert "no data" in render.small_multiples({}, x="wk", y="n").lower()
 
 
 def _flow_rows(con, key):
@@ -3555,17 +3346,6 @@ def test_the_net_bars_reconcile_with_the_lines_beside_them():
         expected = (row["new_trend"] or 0) - (row["done_trend"] or 0) \
             - (row["dropped_trend"] or 0)
         assert abs(row["net_trend"] - expected) < 0.05, row
-
-
-def test_a_bar_chart_draws_negative_values_below_the_baseline():
-    """The whole point of using bars here: catching up has to look different from
-    falling behind, not just smaller."""
-    out = render.bars([{"k": "a", "v": 5}, {"k": "b", "v": -5}], labels="k", series=["v"])
-    rects = re.findall(r'<rect[^>]*(?<![a-z])y="([-\d.]+)"[^>]*height="([\d.]+)"', out)
-    assert len(rects) == 2, rects
-    tops = [float(y) for y, _ in rects]
-    assert tops[0] < tops[1], f"the negative bar should start lower: {rects}"
-    _assert_content_within_viewbox(out, "signed bars")
 
 
 def test_the_trend_chart_smooths_both_series_over_four_weeks():
@@ -4013,223 +3793,6 @@ def test_the_data_island_carries_the_numbers_the_svg_was_drawn_from():
     assert payload["time"] is True, "a weekly axis should be a time axis"
 
 
-def test_multiline_pivots_long_rows_into_one_series_per_group():
-    """One chart, one line per person, from the same long-format rows the facets
-    used. Pivoting here rather than in SQL keeps the query free of a column list
-    that depends on who happens to have closed a ticket."""
-    rows = [{"w": 1, "who": "Alder", "n": 3}, {"w": 1, "who": "Birch", "n": 1},
-            {"w": 2, "who": "Alder", "n": 4}, {"w": 2, "who": "Birch", "n": 2}]
-    out = render.multiline(rows, x="w", band="who", value="n")
-    assert "Alder" in out and "Birch" in out
-    assert out.count("<path") >= 2, "one line per person"
-    _assert_content_within_viewbox(out, "multiline")
-
-
-def test_multiline_joins_across_a_missing_value():
-    """What this renderer actually does, replacing a test whose name claimed a gap
-    it never checked. `lines` skips a null and joins the neighbours, so the pivot
-    must not hand it nulls for facts that are really zero: that is the caller's
-    job, and the per-person chart does it in SQL."""
-    rows = [{"w": 1, "who": "Alder", "n": 3}, {"w": 3, "who": "Alder", "n": 4},
-            {"w": 1, "who": "Birch", "n": 1}, {"w": 2, "who": "Birch", "n": 2},
-            {"w": 3, "who": "Birch", "n": 1}]
-    out = render.multiline(rows, x="w", band="who", value="n")
-    _assert_content_within_viewbox(out, "multiline gap")
-    paths = re.findall(r'<path d="([^"]+)"', out)
-    assert len(paths) == 2, paths
-    # Alder has no week 2 and still gets one unbroken subpath, which is why a null
-    # here would silently draw output that did not happen.
-    assert all(path.count("M") == 1 for path in paths), paths
-
-
-def test_the_per_person_chart_drops_barely_active_people():
-    """Three closures in eleven weeks draws a flat line at zero with one blip, and
-    spends a palette slot on it. The floor is read at query time so it can be set
-    per run rather than compiled in."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    everyone = {r["person"] for r in _flow_rows(con, "throughput_per_person")[1]}
-    assert everyone, "fixtures produce nobody at all"
-    urd.set_min_closed(con, 99)
-    assert _flow_rows(con, "throughput_per_person")[1] == [], "the floor did nothing"
-    urd.set_min_closed(con, 1)
-
-
-def test_the_floor_counts_closures_inside_the_window_only():
-    """Otherwise someone busy last year but silent all quarter keeps a line, which
-    is the opposite of what the floor is for."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    _, whole = _flow_rows(con, "throughput_per_person")
-    assert whole
-    urd.set_report_window(con, "2030-01-01")
-    assert _flow_rows(con, "throughput_per_person")[1] == []
-    urd.set_report_window(con, None)
-
-
-def test_a_zero_floor_is_rejected_rather_than_ignored():
-    """0 is falsy, so `args.min_closed or stored` handed it straight back to the
-    stored default and the validation never ran. The operator saw a clean report
-    and no complaint about a value that means nothing."""
-    db = _tmpdb()
-    con = urd.open_db(db)
-    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
-                   earliest_since="2026-01-01")
-    con.close()
-    try:
-        urd.main(["--db", db, "report", "--min-closed", "0"])
-    except SystemExit as exc:
-        assert "min-closed" in str(exc), exc
-    else:
-        raise AssertionError("--min-closed 0 was accepted")
-
-
-def test_the_min_closed_floor_is_remembered_and_validated():
-    con = _derived("reopened", "two_sprints")
-    urd.set_min_closed(con, 3)
-    assert urd.stored_min_closed(con) == 3
-    for bad in ("many", -1, 0.5):
-        try:
-            urd.set_min_closed(con, bad)
-        except SystemExit:
-            continue
-        raise AssertionError(f"{bad!r} was accepted as a floor")
-    urd.set_min_closed(con, 1)
-
-
-def test_the_per_person_chart_has_a_value_for_every_week():
-    """A week in which someone closed nothing is zero closures, not an unknown.
-    Encoding it as null made the two renderings of this chart disagree: the SVG
-    joined straight across, implying steady output, while uPlot broke the line and
-    scattered each person into dozens of fragments that read as several people."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    people = {r["person"] for r in rows}
-    weeks = {r["week"] for r in rows}
-    assert len(rows) == len(people) * len(weeks), (len(rows), len(people), len(weeks))
-    assert all(r["closed"] is not None for r in rows)
-    assert any(r["closed"] == 0 for r in rows), "no zero weeks at all: nothing to fill"
-    payload = render.plot_payload(chart, rows)
-    for series in payload["series"]:
-        assert None not in series["data"], series["label"]
-
-
-def test_multiline_stays_in_frame_with_more_people_than_the_palette():
-    """Twenty-five people against eight colours. The chart has to survive that,
-    even though the legend and the hover are what tell two same-coloured lines
-    apart."""
-    rows = [{"w": w, "who": f"Person {i:02d}", "n": (i + w) % 7}
-            for w in range(1, 30) for i in range(25)]
-    out = render.multiline(rows, x="w", band="who", value="n")
-    _assert_content_within_viewbox(out, "multiline 25")
-
-
-def test_a_facet_heading_can_name_the_column_it_reports():
-    """The heading summed y, which is right for a count and wrong for an average:
-    on the trend chart it printed a sum of rolling means as though it were a
-    number of tickets, fractions and all."""
-    # Two panels, not one: a single-panel version of this test passed while the
-    # display string was shadowing the `heading` parameter, so every panel after
-    # the first looked up a column named "Alder · 4".
-    groups = {"Alder": [{"w": 1, "avg": 1.5, "total": 9}, {"w": 2, "avg": 2.5, "total": 9}],
-              "Birch": [{"w": 1, "avg": 0.5, "total": 4}, {"w": 2, "avg": 1.5, "total": 4}]}
-    summed = render.small_multiples(groups, x="w", y="avg")
-    named = render.small_multiples(groups, x="w", y="avg", heading="total")
-    assert "Alder \u00b7 4" in summed and "Birch \u00b7 2" in summed, summed[:500]
-    assert "Alder \u00b7 9" in named and "Birch \u00b7 4" in named, named[:500]
-
-
-def test_facets_can_scale_each_panel_to_its_own_data():
-    """Shared scale answers "who does more"; per-panel scale answers "how is this
-    person trending", and no single chart does both. The merged line chart already
-    answers the first, so the facets are the place to answer the second."""
-    groups = {"Loud": [{"w": i, "n": 100 + i} for i in range(4)],
-              "Quiet": [{"w": i, "n": i % 3} for i in range(4)]}
-    shared = render.small_multiples(groups, x="w", y="n")
-    own = render.small_multiples(groups, x="w", y="n", share_y=False)
-    # On a shared scale the quiet panel is pinned to the baseline; on its own it
-    # uses the full height, which is the whole point.
-    def spread(svg, name):
-        """Vertical extent of the drawn line inside one panel.
-
-        Read from the path's own coordinates: circles are only drawn for isolated
-        points and the endpoint, so a four-point panel has exactly one and every
-        spread came out zero.
-        """
-        body = next(g for g in re.findall(r'<g transform[^>]*>(.*?)</g>', svg, re.S)
-                    if name in g)
-        path = re.search(r'<path d="([^"]+)"', body)
-        assert path, body
-        ys = [float(pair.split(",")[1]) for pair in re.findall(r"[\d.]+,[\d.]+", path.group(1))]
-        return max(ys) - min(ys)
-    assert spread(own, "Quiet") > spread(shared, "Quiet") * 2, (
-        spread(own, "Quiet"), spread(shared, "Quiet"))
-    _assert_content_within_viewbox(own, "facets own scale")
-
-
-def test_facet_panels_are_large_enough_to_read():
-    """150x90 was too small to see a trend in, which is why these were dropped for
-    a single merged chart in the first place."""
-    groups = {f"Person {i}": [{"w": w, "n": w} for w in range(10)] for i in range(4)}
-    out = render.small_multiples(groups, x="w", y="n")
-    width, height = (float(v) for v in re.search(
-        r'viewBox="0 0 ([\d.]+) ([\d.]+)"', out).groups())
-    per_panel = width / 2
-    assert per_panel >= 220, f"panels are {per_panel}px wide"
-    assert height / 2 >= 130, f"panels are {height / 2}px tall"
-    _assert_content_within_viewbox(out, "big facets")
-
-
-def test_the_per_person_trend_chart_smooths_each_person_separately():
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_trend_per_person")
-    assert chart.kind == "small_multiples"
-    assert chart.options.get("share_y") is False
-    people = {r["person"] for r in rows}
-    weeks = {r["week"] for r in rows}
-    assert len(rows) == len(people) * len(weeks), "the grid is not filled"
-    assert all(r["closed_trend"] is not None for r in rows)
-
-
-def test_each_small_multiple_states_its_own_total():
-    """Twenty-five sparklines with no numbers on them are a shape, not a chart:
-    a reader can see who is busier without learning how busy anyone is."""
-    groups = {"Alder": [{"w": 1, "n": 3}, {"w": 2, "n": 4}],
-              "Birch": [{"w": 1, "n": 1}, {"w": 2, "n": 1}]}
-    out = render.small_multiples(groups, x="w", y="n")
-    # The heading is followed by a nested <title> holding the bare name, so the
-    # text does not run up to </text> any more.
-    titles = re.findall(r'class="facet-title"[^>]*>([^<]*)<title>', out)
-    assert titles == ["Alder \u00b7 7", "Birch \u00b7 2"], titles
-
-
-def test_a_small_multiple_states_the_scale_its_panels_share():
-    """The panels are comparable only because they share a y-scale, and that is
-    worth nothing to a reader who cannot see what the scale is."""
-    groups = {"Alder": [{"w": 1, "n": 3}, {"w": 2, "n": 9}],
-              "Birch": [{"w": 1, "n": 1}]}
-    out = render.small_multiples(groups, x="w", y="n")
-    # A bare "9" appears in path coordinates, so this asks for the labelled form.
-    assert re.search(r'>peak 9\b', out), "the shared peak must be stated in words"
-
-
-def test_the_per_person_chart_is_one_chart_with_one_line_each():
-    """It was 25 panels and is now one chart, which reverses a spec decision. The
-    rule that survived is the one that mattered: no ranking. This asserts the
-    shape, so a silent slide back to a sorted bar chart of people fails here."""
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    assert chart.kind == "multiline"
-    payload = render.plot_payload(chart, rows)
-    assert payload["kind"] == "lines"
-    people = [p for p in dict.fromkeys(r["person"] for r in rows) if p is not None]
-    assert [s["label"] for s in payload["series"]] == people
-    assert len(payload["x"]) == len({r["week"] for r in rows})
-
-
 def test_a_stacked_island_carries_cumulative_sums_computed_in_python():
     """uPlot stacks by drawing cumulative series and letting later ones paint over
     earlier. Those sums are the numbers on screen, so they are computed here, not
@@ -4312,8 +3875,8 @@ def test_interactivity_is_declared_on_plot_kinds_only():
     Interactivity is a fix for density, not a badge every chart collects."""
     for chart in chart_specs.CHARTS:
         if chart.options.get("interactive"):
-            assert chart.kind in ("lines", "scatter", "stacked", "bars", "combo",
-                                  "multiline", "small_multiples"), f"{chart.key}: {chart.kind}"
+            assert chart.kind in ("lines", "scatter", "stacked",
+                                  "combo"), f"{chart.key}: {chart.kind}"
 
 
 def test_a_stacked_band_is_filled_opaquely():
@@ -4324,8 +3887,8 @@ def test_a_stacked_band_is_filled_opaquely():
 
     Source-level, because the alternative is a browser. It reads the one line that
     decides the fill rather than the whole script."""
-    # Both "fill:" and "stacked": several lines mention a fill, and the first of
-    # them is a points config belonging to the facet panels.
+    # Both "fill:" and "stacked": three lines mention a fill, and the other two
+    # are fillAlpha and the points config.
     candidates = [ln for ln in render.PLOT_SCRIPT.splitlines()
                   if "fill:" in ln and "stacked" in ln]
     assert len(candidates) == 1, candidates
@@ -4449,6 +4012,31 @@ def test_the_epic_chart_labels_carry_the_title_as_well_as_the_key():
     assert any("PROJ-100" in x and "Rebuild the widget pipeline" in x for x in labels), labels
 
 
+def test_per_epic_breaks_a_tie_so_two_renders_of_one_database_agree():
+    """The cap was `ORDER BY count(*) DESC LIMIT 40`, so epics on equal counts came
+    back in an arbitrary order: which of them survived the cap, and in what order,
+    varied between runs on identical data. Two renders of one database are meant to
+    diff, which the README states as a design property, and they did not.
+
+    Eight tied epics rather than two. Two passed the unfixed query on the first
+    try, because DuckDB happened to return that pair in order; eight produced six
+    distinct orderings over thirty runs of one process, none of them sorted. The
+    parents are inserted alphabetically backwards on top of that, so insertion
+    order cannot be mistaken for a working tiebreaker."""
+    con = _derived("reopened", "two_sprints")
+    parents = [f"PROJ-{n}" for n in range(800, 100, -100)]
+    for i, parent in enumerate(parents):
+        con.execute("INSERT INTO issues_all (key, project, type, status, "
+                    "status_category, created, summary, parent, abandoned) VALUES "
+                    "(?, 'PROJ', 'Task', 'To Do', 'new', TIMESTAMP '2026-01-06 09:00', "
+                    "'tied', ?, FALSE)", [f"PROJ-9{i}", parent])
+    _, rows = _flow_rows(con, "per_epic")
+    labels = [r["epic"] for r in rows]
+    # PROJ-100 holds two fixture tickets and leads on count alone. The other seven
+    # hold one each, so nothing but the tiebreaker can order them.
+    assert labels == ["PROJ-100"] + sorted(parents), labels
+
+
 def test_an_epic_outside_the_report_falls_back_to_its_key():
     """Parents are routinely outside the fetched scope, and half a label is worse
     than a bare key."""
@@ -4515,15 +4103,6 @@ def test_dropped_work_never_counts_as_delivered_in_any_chart():
     _, flow = _flow_rows(con, "created_vs_closed")
     assert sum(r["delivered"] for r in flow) == 0
     assert sum(r["dropped"] for r in flow) == 1
-    _, thr = _flow_rows(con, "throughput_per_person")
-    assert thr == [], "dropped work still counted as throughput"
-
-
-def test_bars_is_renderable_now_that_charts_ask_for_it():
-    """Task 10 left `bars` out of FIGURE_KINDS on purpose, so the first spec that
-    needs it fails in the suite rather than as a blank space in the report."""
-    assert "bars" in render.FIGURE_KINDS
-    assert {c.kind for c in chart_specs.CHARTS} <= render.FIGURE_KINDS
 
 
 def test_the_real_section_list_leads_in_the_declared_order():
@@ -4544,7 +4123,8 @@ def test_the_real_section_list_leads_in_the_declared_order():
 
 def test_retro_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
-    assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint", "points_vs_cycle"}
+    assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint",
+                    "points_vs_cycle", "carried_sprints", "points_per_sprint"}
 
 
 def test_a_mutation_lands_in_at_most_one_sprint():
@@ -4670,6 +4250,133 @@ def test_carry_over_counts_tickets_not_memberships():
     # order (id 7 "Sprint B" first, then id 3 "Sprint A"), so a query that leans on
     # either instead of `ordinal` gets a different answer here.
     assert {r["sprint"]: r["carried"] for r in rows} == {"Sprint A": 1}
+
+
+def test_carried_sprints_names_the_tickets_carry_over_only_counts():
+    """PROJ-3 is the fixtures' carried ticket: In Progress, in Sprint B and then
+    Sprint A. carry_over says one ticket was carried into Sprint A; this says
+    which one, and since when."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "carried_sprints")
+    assert [(r["key"], r["sprints"]) for r in rows] == [("PROJ-3", 2)]
+    # min(start) across its memberships, not the sprint it sits in now: the point
+    # of the column is how long this has been rolling.
+    assert str(rows[0]["since"]) == "2026-01-05"
+    assert rows[0]["status"] == "In Progress"
+
+
+def test_carried_sprints_leaves_out_a_ticket_that_only_ever_had_one_sprint():
+    """Without the floor this is the open-ticket list, not a carry list.
+
+    PROJ-3 is the fixtures' only OPEN ticket, so it is the only one the floor can
+    be tested on: PROJ-1 and PROJ-2 are both Done and the status filter excludes
+    them whatever their sprint count. Cutting PROJ-3 back to one sprint is what
+    makes a lowered floor show up here."""
+    con = _derived("reopened", "two_sprints")
+    con.execute("DELETE FROM issue_sprints_all WHERE key = 'PROJ-3' "
+                "AND sprint_name = 'Sprint A'")
+    assert con.execute("SELECT count(*) FROM issue_sprints WHERE key = 'PROJ-3'"
+                       ).fetchone()[0] == 1, "the cut did not land"
+    assert _flow_rows(con, "carried_sprints")[1] == []
+
+
+def test_carried_sprints_puts_the_worst_carried_ticket_first():
+    """"Worst first" is the whole premise: a retro reads the top of this list and
+    stops. One fixture ticket carries a sprint count, so a second open one is
+    built here rather than left untested, which is what an ordering test needs to
+    be able to fail at all."""
+    con = _derived("reopened", "two_sprints")
+    con.execute("INSERT INTO issues_all (key, summary, status, status_category, "
+                "abandoned) VALUES ('PROJ-9', 'Rolling for months', 'Backlog', "
+                "'new', FALSE)")
+    # Dated AFTER PROJ-3's first sprint (2026-01-05) on purpose, so sprint count
+    # and first-committed date disagree: ordering by the date alone answers
+    # PROJ-3 first, which is the mistake this test exists to catch.
+    for i, (sid, name, start) in enumerate((
+            (11, "Sprint C", "2026-02-01"), (12, "Sprint D", "2026-02-15"),
+            (13, "Sprint E", "2026-03-01")), start=1):
+        con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-9', ?, ?, 'closed', "
+                    "?::TIMESTAMP, ?::TIMESTAMP + INTERVAL 14 DAY, ?)",
+                    [sid, name, start, start, i])
+    rows = _flow_rows(con, "carried_sprints")[1]
+    assert [(r["key"], r["sprints"]) for r in rows] == [("PROJ-9", 3), ("PROJ-3", 2)]
+
+
+def test_carried_sprints_and_the_aging_table_break_a_tie_on_the_key():
+    """Both cap at 40, so a non-total order does not just shuffle rows: it changes
+    which rows survive the cap. On live data 23 open tickets share a (sprints,
+    since) pair and five sit on the aging table's cutoff day, so the fortieth row
+    was whichever the scan reached first.
+
+    Eight tied rows per chart, because two passed the untied query by luck when
+    this was first written. Verified red without the tiebreakers."""
+    con = _derived("reopened", "two_sprints")
+    # Eight open tickets, each in the same two sprints, so sprints and since tie.
+    for i in range(8):
+        key = f"PROJ-8{7 - i}"   # inserted in descending key order
+        con.execute("INSERT INTO issues_all (key, project, type, status, "
+                    "status_category, created, summary, abandoned) VALUES "
+                    "(?, 'PROJ', 'Task', 'To Do', 'new', "
+                    "TIMESTAMP '2026-01-06 09:00', 'tied', FALSE)", [key])
+        for sid, name, start in ((7, "Sprint B", "2026-01-05"),
+                                 (3, "Sprint A", "2026-01-19")):
+            con.execute("INSERT INTO issue_sprints_all VALUES (?, ?, ?, 'closed', "
+                        "?::TIMESTAMP, ?::TIMESTAMP + INTERVAL 14 DAY, 1)",
+                        [key, sid, name, start, start])
+        # status_durations is a view over transitions, so the aging table reaches
+        # these only through a real status change. One each, all at the same
+        # instant, so max(entered) ties across all eight.
+        con.execute("INSERT INTO changes_all VALUES (?, TIMESTAMP '2026-01-20 09:00', "
+                    "'status', '1', 'To Do', '3', 'In Progress', 'acct-1', ?)",
+                    [key, 900 + i])
+    tied = sorted(f"PROJ-8{i}" for i in range(8))
+    carried = [r["key"] for r in _flow_rows(con, "carried_sprints")[1]]
+    assert carried == ["PROJ-3"] + tied, carried
+    aging = [r["key"] for r in _flow_rows(con, "aging_wip")[1] if r["key"] in tied]
+    assert aging == tied, aging
+
+
+def test_carried_sprints_drops_a_ticket_once_it_is_done():
+    """Delivered-after-five-sprints is history, and this list exists to be acted
+    on. PROJ-3 is the only carried ticket, so closing it is the one thing that
+    can empty the chart."""
+    con = _derived("reopened", "two_sprints")
+    assert [r["key"] for r in _flow_rows(con, "carried_sprints")[1]] == ["PROJ-3"]
+    con.execute("UPDATE issues_all SET status_category = 'done' WHERE key = 'PROJ-3'")
+    assert _flow_rows(con, "carried_sprints")[1] == []
+
+
+def test_a_membership_with_no_window_is_not_counted_as_a_sprint():
+    """This instance reports "Refined Backlog" through the Sprint field with no
+    start or end. Counting it adds a phantom sprint to every ticket parked there,
+    which is precisely the population this chart ranks.
+
+    Asserted on PROJ-3's count rather than on some other ticket's absence: it is
+    the only open ticket, so absence would prove the status filter works and
+    nothing about this guard."""
+    con = _derived("reopened", "two_sprints")
+    con.execute(
+        "INSERT INTO issue_sprints_all VALUES ('PROJ-3', 99, 'Refined Backlog', "
+        "'active', NULL, NULL, 3)")
+    rows = {r["key"]: r["sprints"] for r in _flow_rows(con, "carried_sprints")[1]}
+    assert rows == {"PROJ-3": 2}, "a board column was counted as a sprint"
+
+
+def test_points_per_sprint_credits_the_sprint_that_was_running_at_close():
+    """PROJ-1 carries 5 points, belongs to Sprint B, and closes 2026-01-20, after
+    Sprint B ended and inside Sprint A. Crediting the ticket's own sprint answers
+    Sprint B, so the two models disagree here."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _, rows = _flow_rows(con, "points_per_sprint")
+    assert [(r["sprint"], r["points"]) for r in rows] == [("Sprint A", 5.0)]
+
+
+def test_points_per_sprint_ignores_an_open_ticket_with_an_estimate():
+    """PROJ-3 carries 3 points and has never closed. Summing estimates rather
+    than closures would report work that has not been delivered."""
+    con = _derived("reopened", "two_sprints")
+    _, rows = _flow_rows(con, "points_per_sprint")
+    assert sum(r["points"] for r in rows) == 5.0, rows
 
 
 def test_cycle_per_sprint_keeps_tickets_that_closed_after_their_sprint_ended():
@@ -4849,57 +4556,29 @@ def test_the_chart_list_matches_the_section_index():
     section and no two share a key, which stays true however many there are."""
     keys = [c.key for c in chart_specs.CHARTS]
     assert len(keys) == len(set(keys)), "duplicate chart key"
-    assert len(keys) >= 16
+    assert len(keys) >= 15
     for chart in chart_specs.CHARTS:
         assert chart.section in chart_specs.SECTIONS, f"{chart.key}: {chart.section}"
 
 
-def test_people_charts_are_all_present():
-    keys = {c.key for c in chart_specs.CHARTS if c.section == "People"}
-    assert keys == {"throughput_per_person", "throughput_trend_per_person",
-                    "review_load", "handoffs", "points_per_person"}
 
+def test_no_chart_measures_an_individual():
+    """The People section was deleted deliberately. Per-person throughput, points,
+    review load and handoffs all read as a scoreboard, whatever the caption says,
+    and the tool is meant to be shared with the people it would have ranked.
 
-def test_review_load_counts_every_move_out_of_review_including_rejections():
-    """Birch moves PROJ-1 out of Review twice: back to In Progress on 01-09, then
-    to Done on 01-20. Both are review decisions. Alder only ever moves work in."""
-    con = _derived("reopened")
-    _, rows = _flow_rows(con, "review_load")
-    counts = {r["reviewer"]: r["reviews"] for r in rows}
-    assert counts == {"Birch": 2}
-
-
-def test_handoffs_pair_the_starting_assignee_with_the_closing_one():
-    con = _derived("reopened")
-    _, rows = _flow_rows(con, "handoffs")
-    assert [(r["started_by"], r["finished_by"], r["tickets"]) for r in rows] == [
-        ("Alder", "Birch", 1)]
-
-
-def test_the_per_person_chart_is_not_a_ranking():
-    """The spec rule that survived merging 25 panels into one chart. A time series
-    of 25 people is dense, not ordered, and nobody reads a position off it; a
-    sorted bar chart of the same numbers would be a leaderboard and is still out."""
-    chart, _ = _flow_rows(_derived("reopened"), "throughput_per_person")
-    assert chart.kind == "multiline"
-    assert chart.kind not in ("bars", "hbars"), "people must not be ranked"
-    assert "ORDER BY" not in chart.sql.upper().split("GROUP BY")[-1].replace(
-        "ORDER BY 1, 2", ""), chart.sql
-
-
-def test_the_per_person_chart_draws_a_line_for_everyone():
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    # The fixtures close one ticket per person, so the default floor of three
-    # would empty this chart. The floor has its own tests; this one is about lines.
-    urd.set_min_closed(con, 1)
-    chart, rows = _flow_rows(con, "throughput_per_person")
-    people = {r[chart.options["band"]] for r in rows}
-    assert len(people) >= 2, "fixture has too few people to tell lines apart"
-    out = render.figure(chart, rows, "sub", con)
-    for person in people:
-        assert person in out, f"no line for {person}"
-    for chunk in re.findall(r"<svg\b.*?</svg>", out, re.S):
-        _assert_content_within_viewbox(chunk, "throughput")
+    Asserted rather than remembered because the original specs still sit in
+    docs/superpowers/plans/2026-08-13-urd.md and a paste from there would put
+    them back silently. `people` is the only table holding a human identity, so
+    joining it is the thing to catch. Run against the specs as they were before
+    the deletion this flags exactly the five that went."""
+    for chart in chart_specs.CHARTS:
+        # aging_wip is the one chart allowed to name a person: it names the
+        # assignee of a single open ticket, which is who to ask about it, not a
+        # comparison between people.
+        if chart.key == "aging_wip":
+            continue
+        assert not re.search(r"\b(?:FROM|JOIN)\s+people\b", chart.sql, re.I), chart.key
 
 
 def test_the_whole_report_renders_end_to_end():
