@@ -8,7 +8,13 @@ is the difference between a chart that is missing and one that is quietly wrong.
 """
 from typing import NamedTuple
 
-SECTIONS = ("Flow health", "Reporting outward", "Retro")
+# Audience order, and it is the reason for the sequence rather than a listing
+# convention: Flow health and Retro are both the team reading about itself,
+# now and about the last sprint, and Reporting outward is what gets shown to
+# someone else. Outward sat in the middle and put a stakeholder detour between
+# the two internal sections. Ending on it also ends the page on the part most
+# likely to be exported.
+SECTIONS = ("Flow health", "Retro", "Reporting outward")
 
 # Optional-field charts are held to a lower bar than always-available ones: a
 # field most tickets skip is still worth showing with a caveat, where an
