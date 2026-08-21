@@ -22,17 +22,20 @@ SECTIONS = ("Flow health", "Reporting outward", "Retro")
 # carries the coverage figure either way, so a reader always sees what the chart
 # is drawn from.
 POINTS_TIER = 0.35
-# 0.5 rather than the original 0.7, on the same evidence and for the same reason
-# as POINTS_THRESHOLD. The first live run put the three affected charts at 60%,
-# 64% and 52%, so 0.7 hid all three on data that was perfectly worth reading, and
-# it had been chosen before any real data existed.
+# 0.40, moved from 0.5 on 2026-08-21: carry_over measured 395 of 809 tickets on
+# the live instance (49%) and was stripped. Partial sprint membership makes that
+# chart understate carry-over rather than distort it, which is a floor on the
+# number it reports and not a reason to withhold it. Before that, 0.5 rather than
+# the original 0.7 on the same reasoning: the first live run put three affected
+# charts at 60%, 64% and 52%, so 0.7 hid all three on data worth reading.
 #
-# This is close to the floor of what the mechanism is still worth having. Below
-# about a third, a strip stops being a judgement and becomes a way of never
-# saying no, at which point the caption's coverage figure is doing all the work
-# and the threshold may as well go. Move it again only against a measurement,
-# never to make one more chart appear.
-DEFAULT_TIER = 0.5
+# Both moves were prompted by a chart being hidden, which is this number's
+# standing failure mode: the honest question is whether a chart misleads at that
+# coverage, not whether it is missing. Ask it in that order. Below about a third
+# a strip stops being a judgement and becomes a way of never saying no, at which
+# point the caption's coverage figure is doing all the work and the threshold may
+# as well go.
+DEFAULT_TIER = 0.40
 
 # A chart names a TIER rather than carrying a number, so both knobs can be
 # retuned from the command line without editing code. Both values above were

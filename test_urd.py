@@ -3517,30 +3517,37 @@ def test_thresholds_round_trip_through_the_database():
 
 def test_a_chart_sitting_exactly_on_its_threshold_draws():
     """skipped_progress resolves without ever entering start_status, so cycle time
-    covers 1 of 2, which is exactly the default tier once it dropped to 0.5.
+    covers exactly 1 of 2.
 
     run_chart strips on `share < threshold`, so the threshold is the minimum
     coverage required rather than a bar to clear, and a chart landing precisely on
-    it draws. Worth pinning rather than deleting: coverage figures land on round
-    boundaries often, and this exact chart crossed one when the default moved."""
+    it draws.
+
+    The threshold is passed in at the chart's own measured coverage rather than
+    read from THRESHOLDS, which this test used to do: it asserted the fixture
+    still sat on the shipped default, so every move of that default either broke
+    the test or, worse, left it asserting that a comfortably covered chart draws.
+    The boundary is the property; where the default happens to sit is not."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
     numerator, denominator = con.execute(chart.coverage).fetchone()
     assert (numerator, denominator) == (1, 2)
-    limit = chart_specs.THRESHOLDS[chart.tier]
-    assert numerator / denominator == limit, "fixture no longer sits on the boundary"
-    out = urd.run_chart(con, chart)
+    exact = {**chart_specs.THRESHOLDS, chart.tier: numerator / denominator}
+    out = urd.run_chart(con, chart, exact)
     assert "<svg" in out, "a chart exactly at its threshold should draw"
     assert "1 of 2 tickets" in out, "coverage still belongs in the caption when it draws"
 
 
 def test_a_chart_just_below_its_threshold_strips():
     """The other side of the same boundary, on the same chart, so the two cannot
-    drift apart: one nudge downward and it must refuse to draw."""
+    drift apart: one nudge upward past its coverage and it must refuse to draw.
+
+    Nudged from the measured coverage, not from the shipped default, for the
+    reason the test above gives."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart = next(c for c in chart_specs.CHARTS if c.key == "cycle_scatter")
-    nudged = dict(chart_specs.THRESHOLDS)
-    nudged[chart.tier] += 0.01
+    numerator, denominator = con.execute(chart.coverage).fetchone()
+    nudged = {**chart_specs.THRESHOLDS, chart.tier: numerator / denominator + 0.01}
     out = urd.run_chart(con, chart, nudged)
     assert "<svg" not in out
     assert "1 of 2" in out

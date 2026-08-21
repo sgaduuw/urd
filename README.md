@@ -342,19 +342,25 @@ A chart names a *tier* rather than a number. There are two, and both can be
 set per run and are then remembered:
 
 ```
-uv run --with duckdb python urd.py report --threshold default=0.5 --threshold points=0.35
+uv run --with duckdb python urd.py report --threshold default=0.40 --threshold points=0.35
 ```
 
 `default` covers most charts; `points` covers the two built on Story Points,
 which is genuinely optional. A mistyped tier is an error rather than a
 silently ignored flag.
 
-These are judgements about how little data is still worth plotting, not
-properties of the data, and the shipped values were set just under what one
-real project measures. Lower them against a measurement, such as a chart that
-draws something misleading, rather than to make one more chart appear: below
-roughly a third the strip stops being a judgement and the caption's coverage
-figure is doing all the work.
+The shipped values are `default=0.40` and `points=0.35`, both set just under
+what one real project measures. They are judgements about how little data is
+still worth plotting, not properties of the data. Ask whether the chart
+misleads at that coverage before asking whether it is missing: every move of
+these numbers so far has been prompted by a hidden chart, which is the failure
+mode they have. Below roughly a third the strip stops being a judgement and the
+caption's coverage figure is doing all the work.
+
+A run remembers the thresholds it resolved, so **changing the shipped default in
+`charts.py` does not move a database that has already produced a report**: the
+stored value wins. Pass `--threshold` once against each database, or use the
+threshold box on the served page.
 
 ## Adding a chart
 
