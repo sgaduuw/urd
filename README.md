@@ -357,10 +357,18 @@ these numbers so far has been prompted by a hidden chart, which is the failure
 mode they have. Below roughly a third the strip stops being a judgement and the
 caption's coverage figure is doing all the work.
 
-A run remembers the thresholds it resolved, so **changing the shipped default in
-`charts.py` does not move a database that has already produced a report**: the
-stored value wins. Pass `--threshold` once against each database, or use the
-threshold box on the served page.
+A `report` run on the command line remembers the thresholds it resolved, so
+**changing the shipped default in `charts.py` does not move a database that has
+already run `report`**: the stored value wins, and `--threshold` has to be passed
+once against that database.
+
+A database that has only ever been served has nothing stored and follows the
+shipped default, so rebuilding a served instance is enough to move it.
+
+The threshold box on the served page, like the since and exclude-epic boxes
+beside it, applies to that one request and stores nothing. All three write into
+the request's own transaction, which is what keeps two browser tabs from
+fighting over each other's view.
 
 ## Adding a chart
 

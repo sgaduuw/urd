@@ -101,7 +101,7 @@ def _controls(project, flags, others):
         f' placeholder="YYYY-MM-DD"></label>'
         f'<label>exclude epic <input name="exclude_epic"'
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
-        f'<label>threshold <input name="threshold" placeholder="default=0.5"></label>'
+        f'<label>threshold <input name="threshold" placeholder="default=0.40"></label>'
         f'<button type="submit">Apply</button></form>'
         f'<form method="post" action="/{render.esc(project.slug)}/refresh">'
         f'<button type="submit">Refresh</button></form>'
