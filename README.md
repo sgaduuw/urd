@@ -12,7 +12,8 @@ Store the API token once, in the macOS keychain:
 security add-generic-password -s urd -a <email> -w
 ```
 
-(`URD_TOKEN` in the environment works too, and skips the keychain entirely.)
+(`URD_TOKEN` in the environment works too, and skips the keychain entirely. On
+Linux and Windows it is the only option: the keychain is macOS-only.)
 
 First run needs the full scope:
 
@@ -57,7 +58,7 @@ and the server renders the same report with a controls form prepended to it.
 ### In a container
 
 ```
-URD_TOKEN=... docker compose up
+URD_TOKEN=... docker compose up      # podman compose up works unchanged
 ```
 
 `URD_TOKEN` is passed through from your environment and is never written to the
@@ -69,6 +70,10 @@ restarting with a stale compose file cannot rescope your data. Without the three
 status keys, the seeded project can sync but derive refuses for want of
 `--status-order`, landing on a page whose only action is Refresh, which repeats the
 same failure.
+
+`podman-compose config` prints `URD_TOKEN: null` where `docker-compose config`
+prints the value. The token is not being dropped: a bare key is resolved from
+your environment when the container starts, not when the file is rendered.
 
 ### It has no authentication
 
