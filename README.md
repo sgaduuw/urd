@@ -48,9 +48,7 @@ uv run --with duckdb --with flask python urd.py serve --volume ./urd-data
 
 One DuckDB file per Jira project, all in the volume, each with its own workflow
 configuration, component filter and report flags. `/` redirects to the first
-configured project; `/setup` adds another. Three projects mean three workflows, and
-`status_order` is a single table per database, which is why they are separate files
-rather than one.
+configured project; `/setup` adds another.
 
 Nothing about the CLI changes. `urd report` still writes the self-contained file,
 and the server renders the same report with a controls form prepended to it.
@@ -67,9 +65,8 @@ database, a file, or a log. `URD_SITE`, `URD_EMAIL`, `URD_PROJECT`,
 `URD_REVIEW_STATUS` seed the *first* project so a fresh volume comes up already
 synced and derived; a database that is already configured wins over them, so
 restarting with a stale compose file cannot rescope your data. Without the three
-status keys, the seeded project can sync but derive refuses for want of
-`--status-order`, landing on a page whose only action is Refresh, which repeats the
-same failure.
+status keys the seeded project syncs, but derive refuses for want of
+`--status-order` and lands on a page whose only action is Refresh.
 
 `podman-compose config` prints `URD_TOKEN: null` where `docker-compose config`
 prints the value. The token is not being dropped: a bare key is resolved from
@@ -82,9 +79,9 @@ Dockerfile's own `CMD` binds `0.0.0.0`; compose's published port is what keeps t
 off a network by default. The app also refuses any request whose `Host` header is
 not `127.0.0.1`, `localhost` or `[::1]` (`webapp.py`'s `_same_origin_only`), so
 widening the published port alone (`-p 8731:8731` instead of
-`-p 127.0.0.1:8731:8731`) is not enough on its own: every request still 403s until
-that allowlist is widened too, which is deliberately awkward rather than one flag
-away. Do not make either edit on a shared host until authentication exists.
+`-p 127.0.0.1:8731:8731`) is not enough: every request still 403s until that
+allowlist is widened too. Do not make either edit on a shared host until
+authentication exists.
 
 ### The write lock
 
@@ -107,7 +104,7 @@ metric's definition, or the workflow's status order, costs a `derive` run,
 never a refetch.
 
 `report` reads the derived views and writes `report.html`: one file, inline
-SVG, no JavaScript, no external references. Open it directly in a browser.
+SVG, no external references. Open it directly in a browser.
 
 ## Widening the window
 
@@ -123,14 +120,13 @@ everything already held is left alone.
 ## The charts
 
 **Flow health**
-- Aging work in progress: open tickets by days in their current status, the chart that changes what you do today, with each ticket's title beside its key.
+- Aging work in progress: open tickets by days in their current status, with each ticket's title beside its key.
 - Created versus closed per week: where created and delivered diverge, the
   backlog is growing. Dropped work is a third line, counted separately.
 - New versus done, four week trend: the same counts smoothed, with net weekly
   change as bars on the same axis. Above zero the backlog grew that week.
-
-- Open tickets over time: what the gap between the two adds up to, counted from
-  the status history rather than created minus closed.
+- Open tickets over time: counted from the status history rather than created
+  minus closed.
 - New, delivered and dropped per sprint: every mutation attributed to the sprint
   that was running when it happened, rather than to a calendar week.
 - Cumulative flow: tickets per status, sampled once a week. A widening band is a queue.
@@ -138,12 +134,12 @@ everything already held is left alone.
 - Median days in status, by issue type: where the weeks actually go, review queues show up here first.
 
 **Retro**
-- Rework per sprint: transitions that moved a ticket backwards through the workflow, the single best retro chart and one no built-in report draws.
+- Rework per sprint: transitions that moved a ticket backwards through the workflow.
 - Carried into each sprint: tickets already in an earlier sprint. Persistent carry-over means the sprint is being planned optimistically.
-- Open tickets by sprints carried: which tickets those are, worst first, and since when. The chart above counts them; this one names them, and it does not know why: work parked by agreement looks the same as work quietly rolling.
+- Open tickets by sprints carried: which tickets those are, worst first, and since when. It does not know why: work parked by agreement looks the same as work quietly rolling.
 - Cycle time per sprint: median and 85th percentile days per sprint. Tightening is the thing to look for, not the absolute value.
 - Story points versus actual cycle time: whether the estimates carry information. A flat cloud means the points are ritual.
-- Story points closed per sprint: team totals, credited to the sprint that was running at close rather than to the sprint the ticket belonged to. Sprint lengths differ, so these are totals and not a velocity to plan against.
+- Story points closed per sprint: credited to the sprint that was running at close. Sprint lengths differ, so these are totals and not a velocity to plan against.
 
 **Reporting outward**
 - Delivered versus open, per version: one bar pair per version a ticket is tagged with.
@@ -168,23 +164,16 @@ statuses found in the fetched data:
 The same listing replaces the first-run error, because otherwise `derive` asks
 for an order over statuses it is the only thing able to enumerate.
 
-The "in workflow" column comes from the project's own status list, fetched by
-`sync`. A status marked `retired` appears in the history but not in the project's
-current workflow, usually because it was removed or arrived with a ticket moved
-in from elsewhere. Those are left out of the suggested `--status-order` while
-staying in the listing, since they are still real history. If that call is
-unavailable, every status is treated as current and the listing behaves as it
-did before.
+A status marked `retired` appears in the history but not in the project's current
+workflow, usually because it was removed or arrived with a ticket moved in from
+elsewhere. Those are left out of the suggested `--status-order` while staying in
+the listing, since they are still real history.
 
-The order is by status category, then by the median days from ticket creation to
-each ticket's *first* arrival at that status. First arrival, not every arrival:
-a status re-entered after rework is reached late, and counting every visit sorts
-it before the status that feeds it.
-
-It is still a heuristic worth editing rather than trusting. A parking status such
-as Blocked or On Hold sits mid-flow but is not a workflow position at all, so it
-sorts earlier than it belongs and is usually better left out entirely. Statuses left out of `--status-order` are excluded from
-rework detection entirely, which is the right home for parking states.
+The suggested order is a heuristic worth editing rather than trusting. A parking
+status such as Blocked or On Hold sits mid-flow but is not a workflow position at
+all, so it sorts earlier than it belongs and is usually better left out entirely:
+statuses left out of `--status-order` are excluded from rework detection, which is
+the right home for parking states.
 
 ## Delivered, dropped, open
 
@@ -196,58 +185,26 @@ delivered work everywhere at once:
 uv run --with duckdb python urd.py derive --abandoned-status "Won't do,Duplicate"
 ```
 
-Unset, nothing is treated as dropped, which is the previous behaviour: no
-status name is universal, so urd will not guess one. A name that is not a
-done-category status is rejected, because silently removing work from the
-delivered line while leaving it open elsewhere is worse than a typo.
-
-The flag drives `closures.abandoned` (per closure event) and `issues.abandoned`
-(current state). Both exist because a ticket can close more than once, and a
-current-state field cannot say which of those events was which.
+Unset, nothing is treated as dropped: no status name is universal, so urd will
+not guess one. A name that is not a done-category status is rejected.
 
 ## Interactivity
 
 `report.html` carries its JavaScript inline: uPlot 1.6.31 from `vendor/`, plus
 about 90 lines of first-party wiring. Nothing is fetched, so a saved report opens
-offline, unchanged, years later, and no third party learns who reads a report
-about internal work.
+offline, unchanged, years later.
 
-Every chart is upgraded in the browser: lines, scatters, stacks and the combined
-bar-and-line chart all gain hover readouts and drag-to-zoom. On a stack, hovering
-reads the band's own value rather than the running total it sits on.
+Line, scatter, stack and combined charts gain hover readouts and drag-to-zoom; on
+a stack, hovering reads the band's own value rather than the running total it sits
+on. Charts whose categories are names are horizontal bars instead, drawn wider,
+with every label and value written out, and are not upgraded. Three tables sort by
+any column, click or Enter on the header.
 
-Charts whose categories are names use horizontal bars instead, and are not
-upgraded. They are also drawn wider than the rest, 720px against 480: the label
-gutter and the bars compete for the same width, and on the epic chart the labels
-alone wanted 612px of a 480px frame. A name gets a whole line there rather than the width of a bar, so every
-one is written in full and every value is printed at the end of its bar: there is
-nothing left for zoom to reveal. Hovering still names the bar, through the SVG's
-own tooltip and no script at all. These charts grow taller as rows are added
-rather than thinning, on the principle that a page scrolls and a one-pixel bar
-means nothing.
-
-A stack with more bands than the palette has colours folds its smallest into one
-`Other`, because two identically coloured bands touching each other cannot be
-told apart. The largest keep their identity, nothing is dropped, and every column
-still totals what it did.
-
-Tables with a `sortable` option sort by any column, click or Enter on the header,
-numerically when the column is numeric.
-
-All of it is additive. Every chart is rendered as SVG by Python and is present in
-the file; the interactive version replaces that SVG at runtime, never in the
-markup. A page opened with JavaScript disabled, or printed, loses hovering,
-zooming and sorting, and nothing else. Nothing is computed in the browser that Python
-could have computed, which is what keeps two reports of one database diffable:
-every value a reader can hover is already in the markup.
-
-Progress per epic is the chart that prompted it. At 141 epics, grouped bars came
-to 423 marks in 480px, about one pixel each.
-
-All three tables sort: aging work in progress (40 rows), median days in status
-(44) and open tickets by sprints carried (40). Every one is past the point of
-scanning by eye. A table added later must opt in deliberately, which a test
-enforces: a genuinely short one may decline, but it cannot forget.
+All of it is additive: every chart is rendered as SVG by Python and is present in
+the file. A page opened with JavaScript disabled, or printed, loses hovering,
+zooming and sorting, and nothing else. Nothing is computed in the browser that
+Python could have computed, which is what keeps two reports of one database
+diffable.
 
 ## Ticket links
 
@@ -256,12 +213,9 @@ built from the site recorded by `sync`, so a report against a different instance
 links to that instance. With no site recorded yet, keys render as plain text
 rather than as half a URL.
 
-This does not weaken the self-contained guarantee. The page still renders offline
-and identically; a link is fetched only when a human clicks it, unlike `src`,
-`@import`, `url()` or a stylesheet `href`, which the browser fetches on open with
-no choice. The test that enforces this strips anchors and then applies every
-pattern to what remains, and a companion test checks that the strip has not
-blinded it.
+This does not weaken the self-contained guarantee: a link is fetched only when a
+human clicks it, unlike `src`, `@import`, `url()` or a stylesheet `href`, which the
+browser fetches on open with no choice.
 
 ## Leaving epics out
 
@@ -276,16 +230,6 @@ Repeatable, remembered between runs, and `--exclude-epic ""` clears the list. Th
 epic and every ticket parented to it disappear from every chart, and the header
 names what was left out, because a report with an epic removed and one without
 look identical and say different things about every total.
-
-The filter lives in the `issues`, `changes` and `issue_sprints` views rather than
-in each query, so a chart added later inherits it and no chart can forget it. The
-base tables keep an `_all` suffix and nothing outside `derive` touches them.
-Filtering `issues` alone would be worse than not filtering: closures and durations
-come from `changes`, so an excluded ticket would vanish from every ticket-based
-chart while still driving every event-based one.
-
-A database built before this existed has those three as tables, and `derive`
-converts them on the next run.
 
 ## Reporting on a period
 
@@ -307,31 +251,22 @@ window, not how far along the whole thing is.
 
 One chart is exempt. **Aging work in progress** is always current, because a
 window drops any ticket created before it, which is exactly the oldest work the
-chart exists to find: a six-month window hid every open ticket over 580 days old.
-Exemptions live in `WINDOW_EXEMPT` in `charts.py` and the header reads them, so a
-report never claims a coverage it does not have. A test checks the two agree in
-both directions, so a chart cannot quietly stop obeying the flag, and an
-exemption cannot outlive the chart it names.
+chart exists to find. Exemptions live in `WINDOW_EXEMPT` in `charts.py` and the
+header reads them, so a report never claims a coverage it does not have.
 
 ## Attributing work to sprints
 
 Most charts bucket by calendar week. One buckets by sprint, attributing each
 ticket mutation to the sprint that was *running* when it happened rather than to
-the ticket's own sprint membership. Two steps, and nothing is guessed:
+the ticket's own sprint membership. Nothing is guessed:
 
 1. If the ticket belongs to exactly one sprint running at that moment, that one.
 2. Otherwise, if exactly one sprint was running, that one.
 3. Otherwise unattributed.
 
-Step 1 exists because parallel boards run sprints over the same fortnight: on one
-real project it settles 56% of the otherwise ambiguous cases. Step 3 exists
-because two sprints running with the ticket in neither has no answer, and picking
-one would put work in a sprint it had nothing to do with.
-
 About two thirds attribute, so that chart carries a coverage figure counted in
 mutations rather than tickets. Sprint lengths vary from three to twenty days on
-real data, so its bars are sprint totals and not rates; dividing by length would
-invent a precision the boundaries do not have.
+real data, so its bars are sprint totals and not rates.
 
 ## Coverage figures
 
@@ -340,8 +275,6 @@ and denominator, e.g. tickets with a cycle time over tickets resolved at all.
 At or above the chart's threshold, the caption gains an "(N of M tickets)"
 note. Below it, `run_chart` (`urd.py`) skips the chart entirely and renders
 `coverage_strip` (`render.py`) instead: one sentence stating the shortfall.
-That is the difference between a chart resting on data most tickets don't
-carry and one that is honestly absent.
 
 A chart names a *tier* rather than a number. There are two, and both can be
 set per run and are then remembered:
@@ -351,24 +284,15 @@ uv run --with duckdb python urd.py report --threshold default=0.40 --threshold p
 ```
 
 `default` covers most charts; `points` covers the two built on Story Points,
-which is genuinely optional. A mistyped tier is an error rather than a
-silently ignored flag.
-
-The shipped values are `default=0.40` and `points=0.35`, both set just under
-what one real project measures. They are judgements about how little data is
-still worth plotting, not properties of the data. Ask whether the chart
-misleads at that coverage before asking whether it is missing: every move of
-these numbers so far has been prompted by a hidden chart, which is the failure
-mode they have. Below roughly a third the strip stops being a judgement and the
-caption's coverage figure is doing all the work.
+which is genuinely optional. A mistyped tier is an error rather than a silently
+ignored flag. The shipped values are the ones above: judgements about how little
+data is still worth plotting, not properties of the data.
 
 A `report` run on the command line remembers the thresholds it resolved, so
 **changing the shipped default in `charts.py` does not move a database that has
 already run `report`**: the stored value wins, and `--threshold` has to be passed
-once against that database.
-
-A database that has only ever been served has nothing stored and follows the
-shipped default, so rebuilding a served instance is enough to move it.
+once against that database. A database that has only ever been served has nothing
+stored and follows the shipped default.
 
 The threshold box on the served page, like the since and exclude-epic boxes
 beside it, applies to that one request and stores nothing. All three write into
@@ -378,14 +302,11 @@ fighting over each other's view.
 ## Adding a chart
 
 Append one `Chart` entry to `charts.py`: title, kind, SQL, caption, and
-optionally a coverage query and a `tier`. Run the tests. Done. Nothing in
-`urd.py` or `render.py` needs to change, unless the chart names a `kind` no
-renderer handles yet, which the test suite fails on rather than leaving as a
-blank space in the report.
-
-A `kind` no renderer in `render.py` handles does not render as a blank space
-in the browser: the test suite asserts every chart's `kind` is one
-`render.FIGURE_KINDS` covers, and that assertion fails first.
+optionally a coverage query and a `tier`. Run the tests. Nothing in `urd.py`
+or `render.py` needs to change, unless the chart names a `kind` no renderer
+handles yet: the test suite asserts every chart's `kind` is one
+`render.FIGURE_KINDS` covers, and that assertion fails first rather than
+leaving a blank space in the report.
 
 ## Requirements
 
