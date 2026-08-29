@@ -237,6 +237,30 @@ def test_each_project_in_a_comma_separated_scope_is_asked():
     assert jira.asked_projects == ["PROJ", "OTHER"]
 
 
+class _RejectedTokenJira:
+    """Jira as it answers a caller whose token it will not accept. Only /myself
+    says 401: /field and /search/jql both answer 200, the latter with an empty
+    page, so every other call in sync looks like a project with no issues.
+    """
+
+    def get(self, path, params=None):
+        raise SystemExit(f"GET {path} returned 401: b'Client must be authenticated'")
+
+
+def test_a_rejected_token_stops_the_sync_instead_of_stamping_a_success():
+    """A live refresh once reported success on a revoked token and saved
+    last_sync_at, because the search it ran came back 200 and empty."""
+    con = _scoped_db()
+    try:
+        urd.sync(con, _RejectedTokenJira())
+        raise AssertionError("Expected SystemExit for a rejected token")
+    except SystemExit as e:
+        # The path, not just the status: /myself is the only endpoint that
+        # answers 401, so a check pointed at any other one proves nothing.
+        assert "/myself" in str(e) and "401" in str(e), f"Error should name /myself and 401: {e}"
+    assert urd.load_scope(con)["last_sync_at"] is None, "a failed sync must not stamp a success"
+
+
 def test_a_status_the_project_workflow_no_longer_has_is_marked_not_dropped():
     """Six of fifteen statuses on the real project are historical or arrived with
     tickets moved in from elsewhere. They are still real history, so they stay in

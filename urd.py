@@ -394,6 +394,15 @@ def sync(con, jira):
     if not scope["project"] or not scope["earliest_since"]:
         raise SystemExit("first run needs --site, --email, --project and --since")
 
+    # /myself is the only call here that a rejected token fails. An unauthenticated
+    # caller still gets 200 from /field and a 200 with an empty page from
+    # /search/jql, so without this a revoked token syncs nothing, stamps
+    # last_sync_at and prints "synced, no errors". getattr for the reason
+    # _refresh_workflow_statuses uses it: the test doubles implement only the
+    # calls they exercise.
+    if getattr(jira, "get", None):
+        jira.get("/myself")
+
     # Before anything is fetched, not after: the field list is built from the
     # `fields` table, so resolving it afterwards left a first run asking for the
     # built-ins only, forever.
