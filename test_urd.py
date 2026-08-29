@@ -1283,6 +1283,59 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
     assert [r[0] for r in errors] == ["PROJ-2"]
 
 
+class _ScopeJira:
+    """Search returns exactly the keys it is given. Deleted, moved to another
+    project, or stripped of the component all look identical from here: the key
+    simply stops coming back.
+    """
+
+    def __init__(self, remote):
+        self.remote = list(remote)
+
+    def search(self, jql):
+        yield from self.remote
+
+    def issue(self, key, fields):
+        return {"key": key, "fields": {"updated": dict(self.remote)[key]}}
+
+    def fields(self):
+        return []
+
+    def statuses(self):
+        return []
+
+
+def _cache(con, key, updated):
+    con.execute("INSERT INTO raw_issues VALUES (?, ?, ?, ?)", [key, updated, urd._now(), "{}"])
+
+
+def _cached_keys(con):
+    return [r[0] for r in con.execute("SELECT key FROM raw_issues ORDER BY key").fetchall()]
+
+
+def test_an_issue_that_left_the_scope_is_dropped_from_the_cache():
+    """Nothing ever deleted from raw_issues, so a ticket that left the project
+    kept its last known copy forever and derive, which rebuilds itself from this
+    table, went on reporting it."""
+    con = _scoped_db()
+    _cache(con, "PROJ-1", "2026-05-01T10:00:00.000+0000")
+    _cache(con, "PROJ-2", "2026-05-02T10:00:00.000+0000")
+    urd.sync(con, _ScopeJira([("PROJ-1", "2026-05-01T10:00:00.000+0000")]))
+    assert _cached_keys(con) == ["PROJ-1"], "the key that left the scope survived"
+
+
+def test_narrowing_the_window_keeps_the_cache_it_no_longer_asks_about():
+    """The search covers earliest_since forward only, so an older key's absence
+    proves nothing. Pruning on absence alone would make moving --since forward
+    destroy history that widening it again refetches one request at a time."""
+    con = urd.open_db(_tmpdb())
+    urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
+                   earliest_since="2026-06-01")
+    _cache(con, "PROJ-1", "2026-02-01T10:00:00.000+0000")
+    urd.sync(con, _ScopeJira([]))
+    assert _cached_keys(con) == ["PROJ-1"], "cache older than the window was destroyed"
+
+
 def test_urd_email_is_used_when_no_flag_is_given():
     """Precedence is flag, then environment, then stored scope. This has to go
     through main(), or the test just re-computes the expression it is checking."""
