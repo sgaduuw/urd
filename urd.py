@@ -406,6 +406,19 @@ def sync(con, jira):
     # reported forever. `remote` is the authoritative list of what is in scope.
     con.execute("DELETE FROM sync_errors WHERE NOT list_contains(?::VARCHAR[], key)",
                 [[key for key, _ in remote]])
+    # The same authority applied to the cache itself, or a ticket that is deleted,
+    # moved to another project or stripped of the component keeps its last known
+    # copy forever and derive, which CREATE OR REPLACEs itself from this table,
+    # goes on reporting it. Restricted to the search window because the search
+    # never asked about anything older: an older key's absence proves nothing, and
+    # pruning on it would make moving --since forward destroy the history that
+    # widening it again refetches one request at a time.
+    gone = con.execute(
+        "DELETE FROM raw_issues WHERE NOT list_contains(?::VARCHAR[], key) AND updated >= ?",
+        [[key for key, _ in remote], scope["earliest_since"]],
+    ).fetchone()[0]
+    if gone:
+        print(f"{gone} left the scope, dropped from the cache")
     stored = dict(con.execute("SELECT key, updated FROM raw_issues").fetchall())
     if scope["fetched_fields"] != fields:
         # `updated` has not moved, so the usual rule would fetch nothing and every
