@@ -27,9 +27,16 @@ _WORKFLOW_FIELDS = ("slug", "status_order", "start_status", "review_status",
 _GUESSED_FIELDS = ("start_status", "review_status", "abandoned_status")
 
 
+# Said on the form because an empty box does not say what leaving it empty
+# means. A blank component mirrors the whole project, which is what anyone
+# wanting to pick the slice on the report page should leave it as.
+_OPTIONAL_FIELDS = ("component",)
+
+
 def _inputs(names, values, guesses=()):
     return "".join(
         f'<label>{render.esc(name.replace("_", " "))}'
+        f'{" (optional)" if name in _OPTIONAL_FIELDS else ""}'
         f'{" (guess)" if name in guesses else ""} '
         f'<input name="{name}" value="{render.esc(values.get(name, ""))}"></label>'
         for name in names
