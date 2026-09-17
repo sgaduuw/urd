@@ -3573,6 +3573,57 @@ def test_an_unknown_threshold_tier_is_rejected_rather_than_ignored():
         raise AssertionError("a mistyped tier was accepted")
 
 
+def _closed_scored(con, key, points, cycle_days, started="2026-01-06 09:00"):
+    """A closed ticket carrying an estimate and a cycle time, which needs three
+    rows: cycle_times is a view that reads the resolution date off the issue and
+    the start from a status change into In Progress."""
+    con.execute("INSERT INTO issues_all (key, project, type, status, status_category, "
+                "summary, created, resolved, story_points, abandoned) VALUES "
+                "(?, 'PROJ', 'Task', 'Done', 'done', 'seeded', ?::TIMESTAMP, "
+                "?::TIMESTAMP + INTERVAL (?) MINUTE, ?, FALSE)",
+                [key, started, started, int(cycle_days * 1440), points])
+    con.execute("INSERT INTO changes_all VALUES (?, ?::TIMESTAMP, 'status', "
+                "NULL, 'To Do', NULL, 'In Progress', 'acct-1', 1)", [key, started])
+
+
+def test_sprints_vs_points_counts_each_sprint_once():
+    """A ticket re-added to a sprint it already sat in gets a second membership
+    row. Counting rows rather than distinct sprint ids reports a stay it never
+    had, and the bar for that estimate grows for a reason nobody can see.
+    Verified red with count(*): it answers 3."""
+    con = _derived("reopened")
+    # PROJ-1 is closed, scored 5, and already sits in one sprint. Put it in a
+    # second, then duplicate that membership.
+    for sid, name, ordinal in ((3, "Sprint A", 2), (3, "Sprint A", 3)):
+        con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-1', ?, ?, 'closed', "
+                    "TIMESTAMP '2026-01-19 09:00', TIMESTAMP '2026-02-02 09:00', ?)",
+                    [sid, name, ordinal])
+    rows = _flow_rows(con, "sprints_vs_points")[1]
+    assert [(r["points"], r["sprints"]) for r in rows] == [("5 pt (n=1)", 2.0)]
+
+
+def test_sprints_vs_points_leaves_out_tickets_that_are_still_open():
+    """An open ticket has no final sprint count, so including it drags every bar
+    toward the number of sprints it happens to have reached so far. PROJ-3 is
+    open, scored 3, and sits in two sprints, so it would show up as its own bar."""
+    con = _derived("reopened", "two_sprints")
+    rows = _flow_rows(con, "sprints_vs_points")[1]
+    assert [r["points"] for r in rows] == ["5 pt (n=1)"], "an open ticket reached the chart"
+
+
+def test_points_vs_cycle_leaves_the_slowest_five_percent_off():
+    """One ticket open for 655 days put every other ticket on the x axis. The
+    clip is a percentile of the plotted rows, not a fixed ceiling, so it has to
+    follow the data rather than a number written into the query."""
+    con = _derived("reopened")
+    for i in range(20):
+        _closed_scored(con, f"PROJ-2{i:02d}", 3, 1)
+    _closed_scored(con, "PROJ-999", 3, 5000)
+    plotted = [r["cycle_days"] for r in _flow_rows(con, "points_vs_cycle")[1]]
+    assert 5000 not in plotted, "the outlier was plotted and flattened the rest"
+    assert len(plotted) == 20, f"the clip took more than the tail: {sorted(plotted)}"
+
+
 def test_a_threshold_that_is_not_a_share_is_rejected():
     for bad in ("points=high", "points=1.5", "points=-0.2", "points", "=0.4"):
         try:
@@ -4213,7 +4264,8 @@ def test_the_real_section_list_leads_in_the_declared_order():
 def test_retro_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
     assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint",
-                    "points_vs_cycle", "carried_sprints", "points_per_sprint"}
+                    "points_vs_cycle", "carried_sprints", "points_per_sprint",
+                    "sprints_vs_points"}
 
 
 def test_a_mutation_lands_in_at_most_one_sprint():
