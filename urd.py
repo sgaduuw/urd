@@ -920,6 +920,60 @@ CREATE OR REPLACE VIEW issue_sprints AS
 SELECT * FROM issue_sprints_all WHERE key NOT IN (SELECT key FROM excluded_tickets);
 """
 
+# Which tickets were in a sprint when it started, as opposed to added while it ran.
+# Read off the Sprint changelog rather than the Sprint field, for two reasons the
+# field cannot cover: it holds no timestamps, and a ticket moved out of a sprint is
+# dropped from it entirely, which is exactly the population a commitment count needs.
+#
+# Matched on the changelog's ids, never its names. Sprints get renamed: 8713 was
+# "Metal Q3 - S7" when three of its tickets joined and is "META Q3 - S7" now, so
+# name matching missed them. Ids also settle the two sprints sharing the name
+# "MetalCore M7 S1", and remove any worry about a comma inside a sprint name.
+#
+# Validated against Jira's own sprint report, which reports the issues added after a
+# sprint started, over five sprints on the live project: 116 of 118 commitments agree,
+# with no false positives.
+#
+# ponytail: the two it misses are tickets whose FIRST logged Sprint change is a
+# removal after the sprint began, so nothing at or before the start says they were in
+# it. Reconstructing that from the change's from_id looks right and measured worse,
+# turning 2 misses into 6 wrong answers, because a first change long after the sprint
+# describes a much later state. Upgrade path is Jira's sprint report endpoint, which
+# knows this directly. The cost is a 1.7% undercount of commitment.
+SPRINT_COMMITMENT_SQL = """
+WITH sprint_changes AS (
+    SELECT key, ts, history_id,
+           str_split(coalesce(to_id, ''), ', ') AS to_ids,
+           str_split(coalesce(from_id, ''), ', ') AS from_ids
+    FROM changes WHERE field = 'Sprint'
+),
+candidates AS (
+    SELECT DISTINCT w.sprint_id, w.start, sc.key
+    FROM sprint_windows w JOIN sprint_changes sc
+      ON list_contains(sc.to_ids, CAST(w.sprint_id AS VARCHAR))
+      OR list_contains(sc.from_ids, CAST(w.sprint_id AS VARCHAR))
+    UNION
+    SELECT DISTINCT w.sprint_id, w.start, m.key
+    FROM sprint_windows w JOIN issue_sprints m ON m.sprint_id = w.sprint_id
+)
+SELECT c.sprint_id, c.key,
+       coalesce(
+         (SELECT list_contains(sc.to_ids, CAST(c.sprint_id AS VARCHAR))
+          FROM sprint_changes sc WHERE sc.key = c.key AND sc.ts <= c.start
+          ORDER BY sc.ts DESC, sc.history_id DESC LIMIT 1),
+         -- No Sprint change at all: the sprint was set when the ticket was created,
+         -- which logs nothing. Current membership plus a creation date before the
+         -- start is then the only evidence there is. Restricted to tickets with no
+         -- changes whatsoever, because one logged AFTER the start already says the
+         -- ticket was added while the sprint ran.
+         NOT EXISTS (SELECT 1 FROM sprint_changes sc2 WHERE sc2.key = c.key)
+           AND i.created < c.start
+           AND EXISTS (SELECT 1 FROM issue_sprints m
+                       WHERE m.key = c.key AND m.sprint_id = c.sprint_id),
+         FALSE) AS committed
+FROM candidates c JOIN issues i ON i.key = c.key
+"""
+
 VIEWS_SPRINT_ATTRIBUTION = f"""
 CREATE OR REPLACE VIEW sprint_windows AS
 -- DISTINCT because issue_sprints holds one row per membership, not per sprint.
@@ -934,6 +988,8 @@ UNION ALL
 SELECT key, ts, field AS kind FROM changes;
 
 CREATE OR REPLACE VIEW mutation_sprint AS {MUTATION_SPRINT_SQL};
+
+CREATE OR REPLACE VIEW sprint_commitment AS {SPRINT_COMMITMENT_SQL};
 """
 
 VIEWS_METRICS = """

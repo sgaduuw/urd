@@ -4264,7 +4264,7 @@ def test_the_real_section_list_leads_in_the_declared_order():
 def test_retro_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
     assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint",
-                    "points_vs_cycle", "carried_sprints", "points_per_sprint",
+                    "points_vs_cycle", "carried_sprints", "points_committed_vs_closed",
                     "sprint_landing_rate"}
 
 
@@ -4503,21 +4503,57 @@ def test_a_membership_with_no_window_is_not_counted_as_a_sprint():
     assert rows == {"PROJ-3": 2}, "a board column was counted as a sprint"
 
 
-def test_points_per_sprint_credits_the_sprint_that_was_running_at_close():
+def _sprint_move(con, key, ts, to_id, to_str, created="2026-01-01 09:00"):
+    """A ticket moved into sprint `to_id` at `ts`, and currently a member of it.
+    No fixture carries Sprint changelog entries, so commitment has to be seeded."""
+    con.execute("INSERT INTO issues_all (key, project, type, status, status_category, "
+                "summary, created, abandoned) VALUES (?, 'PROJ', 'Task', 'To Do', "
+                "'new', 'seeded', ?::TIMESTAMP, FALSE)", [key, created])
+    con.execute("INSERT INTO changes_all VALUES (?, ?::TIMESTAMP, 'Sprint', "
+                "NULL, '', ?, ?, 'acct-1', 1)", [key, ts, to_id, to_str])
+    con.execute("INSERT INTO issue_sprints_all VALUES (?, 7, 'Sprint B', 'closed', "
+                "TIMESTAMP '2026-01-05 09:00', TIMESTAMP '2026-01-19 09:00', 1)", [key])
+
+
+def test_commitment_matches_sprint_ids_rather_than_names():
+    """Sprints get renamed. On the live project 8713 was "Metal Q3 - S7" when three
+    of its tickets joined and is "META Q3 - S7" now, so matching the changelog's
+    recorded name against the sprint's current name missed every one of them.
+    PROJ-50 joined under a name the sprint no longer has. Verified red by matching
+    on to_str: PROJ-50 flips to uncommitted."""
+    con = _derived("reopened", "two_sprints")
+    _sprint_move(con, "PROJ-50", "2026-01-04 09:00", "7", "the name it had back then")
+    got = dict(con.execute("SELECT key, committed FROM sprint_commitment "
+                           "WHERE sprint_id = 7 AND key = 'PROJ-50'").fetchall())
+    assert got == {"PROJ-50": True}, got
+
+
+def test_a_ticket_added_after_the_sprint_started_is_not_committed():
+    """The whole point of the chart: work pulled in mid-sprint is not work the
+    team committed to. Sprint B runs from 2026-01-05, so PROJ-51 arrives five days
+    late. Verified red by dropping the ts <= start filter."""
+    con = _derived("reopened", "two_sprints")
+    _sprint_move(con, "PROJ-51", "2026-01-10 09:00", "7", "Sprint B")
+    got = dict(con.execute("SELECT key, committed FROM sprint_commitment "
+                           "WHERE sprint_id = 7 AND key = 'PROJ-51'").fetchall())
+    assert got == {"PROJ-51": False}, got
+
+
+def test_closed_points_credit_the_sprint_that_was_running_at_close():
     """PROJ-1 carries 5 points, belongs to Sprint B, and closes 2026-01-20, after
     Sprint B ended and inside Sprint A. Crediting the ticket's own sprint answers
     Sprint B, so the two models disagree here."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    _, rows = _flow_rows(con, "points_per_sprint")
-    assert [(r["sprint"], r["points"]) for r in rows] == [("Sprint A", 5.0)]
+    _, rows = _flow_rows(con, "points_committed_vs_closed")
+    assert [(r["sprint"], r["closed"]) for r in rows if r["closed"]] == [("Sprint A", 5.0)]
 
 
-def test_points_per_sprint_ignores_an_open_ticket_with_an_estimate():
+def test_closed_points_ignore_an_open_ticket_with_an_estimate():
     """PROJ-3 carries 3 points and has never closed. Summing estimates rather
     than closures would report work that has not been delivered."""
     con = _derived("reopened", "two_sprints")
-    _, rows = _flow_rows(con, "points_per_sprint")
-    assert sum(r["points"] for r in rows) == 5.0, rows
+    _, rows = _flow_rows(con, "points_committed_vs_closed")
+    assert sum(r["closed"] for r in rows) == 5.0, rows
 
 
 def test_cycle_per_sprint_keeps_tickets_that_closed_after_their_sprint_ended():
