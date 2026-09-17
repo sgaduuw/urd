@@ -583,28 +583,54 @@ CHARTS = [
         """,
     ),
     Chart(
-        key="points_per_sprint",
+        key="points_committed_vs_closed",
         section="Retro",
-        title="Story points closed per sprint",
+        title="Story points committed versus closed, per sprint",
         kind="hbars",
-        caption="Team totals, credited to the sprint that was running when the "
-                "ticket closed rather than to the sprint the ticket belonged to. "
-                "Sprint lengths differ here, so read these as totals and not as a "
-                "velocity to plan against.",
-        options={"labels": "sprint", "series": ["points"],
+        caption="Committed is what sat in the sprint when it started. Closed is "
+                "credited to the sprint that was running when the ticket closed, "
+                "which is not always the sprint it belonged to. Sprint lengths "
+                "differ here, so read these as totals rather than as a rate.",
+        options={"labels": "sprint", "series": ["committed", "closed"],
                  # Closures, not tickets: a ticket that was reopened and closed
                  # again is two closures, and "of N tickets" would be a false
                  # sentence about the population this actually measures.
                  "unit": "closures"},
         sql="""
-            SELECT ms.sprint_name AS sprint, sum(i.story_points) AS points
-            FROM mutation_sprint ms
-            JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
-            JOIN issues i ON i.key = ms.key
-            -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
-            WHERE NOT c.abandoned AND i.story_points > 0 AND in_window(ms.ts)
-            GROUP BY 1, ms.sprint_start
-            ORDER BY ms.sprint_start DESC
+            WITH windows AS (
+                -- One row per sprint. sprint_windows can carry two rows for one
+                -- sprint when it was renamed, because each issue embeds the name
+                -- as it stood when that issue was captured. 8510 is both
+                -- "META Q3 - S6" and "META Q3 - S6 (17-31aug)".
+                SELECT sprint_id, max(sprint_name) AS sprint_name, min(start) AS start
+                FROM sprint_windows GROUP BY sprint_id
+            ),
+            committed AS (
+                SELECT sc.sprint_id, sum(i.story_points) AS points
+                FROM sprint_commitment sc JOIN issues i ON i.key = sc.key
+                -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
+                WHERE sc.committed AND i.story_points > 0
+                GROUP BY 1
+            ),
+            closed AS (
+                SELECT ms.sprint_id, sum(i.story_points) AS points
+                FROM mutation_sprint ms
+                JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
+                JOIN issues i ON i.key = ms.key
+                WHERE NOT c.abandoned AND i.story_points > 0
+                GROUP BY 1
+            )
+            SELECT w.sprint_name AS sprint,
+                   coalesce(cm.points, 0) AS committed,
+                   coalesce(cl.points, 0) AS closed
+            FROM windows w
+            LEFT JOIN committed cm ON cm.sprint_id = w.sprint_id
+            LEFT JOIN closed cl ON cl.sprint_id = w.sprint_id
+            -- Windowed on the sprint's own start, not on each closure's timestamp:
+            -- the two bars have to describe the same sprint or the comparison lies.
+            WHERE in_window(w.start)
+              AND (cm.points IS NOT NULL OR cl.points IS NOT NULL)
+            ORDER BY w.start DESC
         """,
         # Closures actually summed over closures that could be, matching
         # points_vs_cycle: a closure with no estimate never reaches the chart.
