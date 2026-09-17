@@ -172,6 +172,22 @@ form.controls {
 
 form.controls label { max-width: 11rem; margin-bottom: 0; }
 
+/* A tick box is not a text field, and the rules above make every input a
+   full-width block: without these the component row renders as a stack of wide
+   empty boxes with their names beside them. */
+.boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.boxes label { display: flex; align-items: center; gap: 4px; max-width: none; }
+
+.boxes label input { display: inline; width: auto; margin: 0; padding: 0; }
+
 svg.chart.chart-wide {
   /* Horizontal bars carry their labels inside the frame, so they need the room
      the page already has. Still capped, so a very wide window does not stretch a
@@ -430,6 +446,12 @@ def page(header, sections):
     left_out = header.get("excluded") or []
     dropped = (f"<strong>Excluded: {esc(', '.join(left_out))}</strong>, with "
                "everything under them. " if left_out else "")
+    # Named for the same reason as the exclusions: two slices of one project
+    # look identical and say different things about every total. The <h1> keeps
+    # naming the synced scope, so a slice cannot be read as a mirror of it.
+    picked = header.get("components") or []
+    showing = (f"<strong>Showing component{'s' if len(picked) > 1 else ''} "
+               f"{esc(', '.join(picked))}.</strong> " if picked else "")
     exempt = header.get("exempt") or []
     if not header.get("window"):
         window = ""
@@ -448,7 +470,7 @@ def page(header, sections):
         f"<style>{UPLOT_CSS}\n{CSS}</style></head><body>"
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
         f"{esc(header['since'])}. Synced {esc(header['synced'])}. "
-        f"{dropped}{window}{warn}</p></header>"
+        f"{showing}{dropped}{window}{warn}</p></header>"
         + body
         + f"<script>{UPLOT_JS}</script>"
         + f"<script>{SORT_SCRIPT}{PLOT_SCRIPT}</script></body></html>\n"

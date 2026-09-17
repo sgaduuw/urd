@@ -42,8 +42,9 @@ def flags_from(request, project, con):
     project's stored default.
 
     `con` is the caller's own cursor, inside its own transaction: applying a
-    request's flags means writing them (window and epics live in tables
-    the chart SQL reads at query time, not as parameters report_html takes),
+    request's flags means writing them (the window, the epics and the
+    components live in tables the chart SQL reads at query time, not as
+    parameters report_html takes),
     and the transaction is what keeps that write from ever reaching another
     connection.
     """
@@ -54,6 +55,9 @@ def flags_from(request, project, con):
     epics = [k.strip() for value in epics for k in value.split(",") if k.strip()]
     if not epics and "exclude_epic" not in request.args:
         epics = urd.stored_excluded_epics(con)
+    components = request.args.getlist("component")
+    if not components and "component" not in request.args:
+        components = urd.stored_report_components(con)
     tiers = urd.stored_thresholds(con)
 
     try:
@@ -66,6 +70,11 @@ def flags_from(request, project, con):
         urd.set_excluded_epics(con, epics)
     except SystemExit as exc:
         problems.append(str(exc))
+
+    # No validator to fail: a checkbox cannot offer a name the mirror does not
+    # hold, and a hand-typed one that matches nothing empties the report under
+    # a header that names it.
+    urd.set_report_components(con, components)
 
     try:
         tiers = urd.parse_thresholds(request.args.getlist("threshold"), base=tiers)
@@ -84,8 +93,24 @@ def flags_from(request, project, con):
     if message:
         problems.append(message)
 
-    return {"since": since, "epics": epics,
+    return {"since": since, "epics": epics, "components": components,
+            "offered": urd.components_present(con),
             "tiers": tiers, "problems": problems}
+
+
+def _component_boxes(flags):
+    """Nothing at all when the mirror holds no components: there is then no
+    slice to choose between, and an empty control only invites the question."""
+    if not flags["offered"]:
+        return ""
+    boxes = "".join(
+        f'<label><input type="checkbox" name="component"'
+        f' value="{render.esc(name)}"'
+        f'{" checked" if name in flags["components"] else ""}>'
+        f' {render.esc(name)}</label>'
+        for name in flags["offered"]
+    )
+    return f'<span class="boxes">component {boxes}</span>'
 
 
 def _controls(project, flags, others):
@@ -102,6 +127,7 @@ def _controls(project, flags, others):
         f'<label>exclude epic <input name="exclude_epic"'
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
         f'<label>threshold <input name="threshold" placeholder="default=0.40"></label>'
+        f'{_component_boxes(flags)}'
         f'<button type="submit">Apply</button></form>'
         f'<form method="post" action="/{render.esc(project.slug)}/refresh">'
         f'<button type="submit">Refresh</button></form>'

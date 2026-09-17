@@ -15,7 +15,9 @@ security add-generic-password -s urd -a <email> -w
 (`URD_TOKEN` in the environment works too, and skips the keychain entirely. On
 Linux and Windows it is the only option: the keychain is macOS-only.)
 
-First run needs the full scope:
+First run needs the full scope. `--component` is optional and narrows what is
+mirrored; leave it out to mirror the whole project and pick components on the
+report instead:
 
 ```
 uv run --with duckdb python urd.py sync \
@@ -230,6 +232,33 @@ Repeatable, remembered between runs, and `--exclude-epic ""` clears the list. Th
 epic and every ticket parented to it disappear from every chart, and the header
 names what was left out, because a report with an epic removed and one without
 look identical and say different things about every total.
+
+## Slicing by component
+
+`sync --component` decides what is mirrored. `report --component` decides what a
+page shows of it, without refetching anything:
+
+```
+uv run --with duckdb python urd.py report --component TEAM --component OTHER
+```
+
+Repeatable, remembered between runs, and `--component ""` clears the list. On the
+served page the same choice is a row of tick boxes above the report, listing the
+components the mirror holds, most tickets first. No box ticked means every
+component, which is the default.
+
+`(none)` is the slice of tickets that carry no component. It is offered only when
+such tickets exist, since the list carries no counts and a box that can only
+return an empty report is a trap.
+
+A ticket in two components belongs to both slices. There is no primary component,
+which would drop work from whichever slice lost it.
+
+The header names the slice, and the title keeps naming the synced scope, so a
+narrowed page is never mistaken for a mirror of that slice. To pick between
+components on the page, leave `sync --component` empty and mirror the whole
+project: the dropdown can only narrow what was fetched, so a mirror scoped to one
+component offers the others as intersections with it.
 
 ## Reporting on a period
 

@@ -198,6 +198,7 @@ SCOPE_COLUMNS = (
     "abandoned_status",
     "report_since",
     "excluded_epics",
+    "report_components",
 )
 
 SCHEMA = """
@@ -218,6 +219,13 @@ CREATE TABLE IF NOT EXISTS excluded_epics (
     -- Epics whose whole subtree is left out of the report. Set at report time, so
     -- flipping it costs a report run rather than a re-derive.
     key VARCHAR PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS report_components (
+    -- The components the report is narrowed to, empty meaning every one of
+    -- them. Set at report time like the epic exclusion, so a slice costs a
+    -- report run rather than a re-sync: `sync --component` bounds what the
+    -- mirror holds, this bounds what a page shows of it.
+    name VARCHAR PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS report_window (
     -- One row. The date every chart measures from, as a real DATE so a typo is a
@@ -257,6 +265,18 @@ def open_db(path=DB_DEFAULT):
     # database that predates it. Idempotent, and cheap enough to run every open.
     for column in SCOPE_COLUMNS:
         con.execute(f"ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS {column} VARCHAR")
+    # A database derived before the component filter existed has an
+    # excluded_tickets that ignores report_components, so a report run without a
+    # re-derive would filter nothing and its header would say it had. Here
+    # rather than in set_report_components, because that runs on every rendered
+    # page: DDL there conflicts with the derive a background sync is running on
+    # this same connection, and DuckDB fails the sync, not the render. An open
+    # has no such race, since nothing can be syncing on a connection that does
+    # not exist yet. Guarded because the view reads issues_all, which a database
+    # that has never derived does not have.
+    if con.execute("SELECT count(*) FROM information_schema.tables "
+                   "WHERE table_name = 'issues_all'").fetchone()[0]:
+        con.execute(VIEW_EXCLUDED_TICKETS)
     if con.execute("SELECT count(*) FROM report_window").fetchone()[0] == 0:
         con.execute("INSERT INTO report_window VALUES (?)", [UNBOUNDED])
     con.execute(WINDOW_MACRO)
@@ -278,6 +298,14 @@ WINDOW_MACRO = (
 )
 
 UNBOUNDED = "1900-01-01"
+
+# The slice of tickets carrying no component at all, which is a real slice and
+# has no name of its own. One spelling for the query string, the stored column
+# and the SQL below, so the three cannot disagree.
+# ponytail: collides with a Jira component genuinely named "(none)", which
+# would then select both. Upgrade path is a NULL row in report_components and
+# a separate token in the form.
+NO_COMPONENT = "(none)"
 
 
 def set_excluded_epics(con, keys):
@@ -302,6 +330,55 @@ def set_excluded_epics(con, keys):
 def stored_excluded_epics(con):
     stored = load_scope(con)["excluded_epics"]
     return [k for k in (stored or "").split(",") if k]
+
+
+def set_report_components(con, names):
+    """Narrow every chart to these components. Empty means all of them.
+
+    NO_COMPONENT selects the tickets that carry none. Nothing validates a name
+    against the mirror: the form offers what exists, and a hand-typed one that
+    matches nothing produces an empty report whose header names the component
+    that emptied it.
+    """
+    cleaned = [n.strip() for n in names if n and n.strip()]
+    con.execute("DELETE FROM report_components")
+    if cleaned:
+        con.executemany("INSERT INTO report_components VALUES (?) ON CONFLICT DO NOTHING",
+                        [(n,) for n in cleaned])
+    # A direct UPDATE for the same reason as the epic list: save_scope skips
+    # None by design, so it can set a value and never clear one.
+    con.execute("UPDATE sync_state SET report_components = ?", [",".join(cleaned) or None])
+    return cleaned
+
+
+def stored_report_components(con):
+    stored = load_scope(con)["report_components"]
+    return [n for n in (stored or "").split(",") if n]
+
+
+def components_present(con):
+    """The components the mirror holds, most tickets first.
+
+    Reads issues_all rather than issues: `issues` filters through the very
+    choice this offers, so the list would collapse to whatever is already
+    selected and leave no way back to the rest. NO_COMPONENT comes last and
+    only when such tickets exist, since the list carries no counts and a box
+    that can only return an empty report is a trap.
+    """
+    # The union sits in a FROM clause because DuckDB refuses to ORDER BY an
+    # expression that is not in every arm of a UNION, and the NO_COMPONENT test
+    # is exactly that.
+    rows = con.execute(f"""
+        SELECT name, tickets FROM (
+            SELECT name, count(*) AS tickets FROM (
+                SELECT unnest(components) AS name FROM issues_all
+            ) GROUP BY name
+            UNION ALL
+            SELECT '{NO_COMPONENT}', count(*) FROM issues_all
+            WHERE len(components) = 0
+        ) ORDER BY name = '{NO_COMPONENT}', tickets DESC, name
+    """).fetchall()
+    return [name for name, tickets in rows if tickets]
 
 
 def set_report_window(con, since):
@@ -802,14 +879,33 @@ WHERE (members = 1 AND member) OR (members = 0 AND candidates = 1)
 # stay self-sufficient. Doing it all at the end of derive() looked tidier and
 # broke thirteen tests that call derive_changes on its own and then read
 # status_durations, which is the contract those functions have always had.
-VIEWS_SCOPE_ISSUES = """
+# Split from the view below it because open_db re-executes this one on its own:
+# every database derived before the component filter existed has an
+# excluded_tickets that knows nothing about it, and re-running the whole block
+# would try to CREATE OR REPLACE VIEW issues over a database old enough to still
+# have it as a table (see derive's own drop for that).
+VIEW_EXCLUDED_TICKETS = f"""
 CREATE OR REPLACE VIEW excluded_tickets AS
 -- The epics themselves and everything parented to them. Reads issues_all, since
 -- `issues` is the view this feeds.
 SELECT key FROM excluded_epics
 UNION
-SELECT i.key FROM issues_all i JOIN excluded_epics e ON i.parent = e.key;
+SELECT i.key FROM issues_all i JOIN excluded_epics e ON i.parent = e.key
+UNION
+-- Everything outside the components the report is narrowed to. An empty
+-- report_components selects nothing here, so no box ticked means the whole
+-- mirror rather than none of it. A ticket in two components belongs to both
+-- slices: list_contains, not a primary component, which would drop work from
+-- whichever slice lost.
+SELECT i.key FROM issues_all i
+WHERE EXISTS (SELECT 1 FROM report_components)
+  AND NOT EXISTS (
+      SELECT 1 FROM report_components c
+      WHERE CASE WHEN c.name = '{NO_COMPONENT}' THEN len(i.components) = 0
+                 ELSE list_contains(i.components, c.name) END);
+"""
 
+VIEWS_SCOPE_ISSUES = VIEW_EXCLUDED_TICKETS + """
 CREATE OR REPLACE VIEW issues AS
 SELECT * FROM issues_all WHERE key NOT IN (SELECT key FROM excluded_tickets);
 """
@@ -1125,6 +1221,7 @@ def report_html(con, tiers=None):
         "synced": scope["last_sync_at"] or "never",
         "window": scope["report_since"],
         "excluded": stored_excluded_epics(con),
+        "components": stored_report_components(con),
         "exempt": [c.title for c in chart_specs.CHARTS
                    if c.key in chart_specs.WINDOW_EXEMPT],
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
@@ -1243,6 +1340,11 @@ def build_parser():
         "--exclude-epic", action="append", metavar="KEY",
         help="leave this epic and every ticket under it out of every chart. "
              "Repeatable, remembered between runs; pass an empty value to clear.")
+    p_report.add_argument(
+        "--component", action="append", metavar="NAME",
+        help="narrow every chart to this component. Repeatable, remembered "
+             f"between runs; pass an empty value to clear, or {NO_COMPONENT} "
+             "for the tickets that carry none.")
     p_report.add_argument(
         "--since", metavar="YYYY-MM-DD",
         help="the date every chart measures from. Remembered between runs; "
@@ -1386,6 +1488,12 @@ def main(argv=None):
             set_excluded_epics(con, args.exclude_epic)
         else:
             set_excluded_epics(con, stored_excluded_epics(con))
+        # Same as --exclude-epic: passing "" has to mean clear, so this is not
+        # just `args.component or stored`.
+        if args.component is not None:
+            set_report_components(con, args.component)
+        else:
+            set_report_components(con, stored_report_components(con))
         tiers = parse_thresholds(args.threshold, base=stored_thresholds(con))
         save_scope(con, thresholds=format_thresholds(tiers))
         return report(con, tiers=tiers)

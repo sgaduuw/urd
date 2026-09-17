@@ -4584,6 +4584,136 @@ def test_an_excluded_epic_is_remembered_and_reported():
     assert urd.stored_excluded_epics(con) == []
 
 
+def _components(con, **by_key):
+    """Set each named ticket's components in issues_all.
+
+    Every fixture carries the one component TEAM, and a filter is only
+    interesting where tickets differ: one ticket in two components, one in
+    none. Writing the column beats a second set of fixture files, because what
+    is under test is the view over it and not derive's own extraction, which
+    has its own tests.
+    """
+    for key, names in by_key.items():
+        con.execute("UPDATE issues_all SET components = ? WHERE key = ?",
+                    [list(names), key])
+
+
+def _keys(con, view="issues"):
+    return [r[0] for r in con.execute(f"SELECT key FROM {view} ORDER BY key").fetchall()]
+
+
+def test_filtering_to_a_component_keeps_a_ticket_that_also_carries_another():
+    """A ticket in two components belongs to both slices. Picking a primary one
+    would silently drop work from whichever slice lost."""
+    con = _derived("reopened", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM", "OTHER"], "PROJ-3": ["TEAM"]})
+    urd.set_report_components(con, ["OTHER"])
+    assert _keys(con) == ["PROJ-1"]
+    urd.set_report_components(con, ["TEAM"])
+    assert _keys(con) == ["PROJ-1", "PROJ-3"]
+
+
+def test_selecting_no_component_keeps_everything():
+    """The empty selection is the default, and it has to mean the whole mirror
+    rather than nothing, since that is what a page with no box ticked shows."""
+    con = _derived("reopened", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM", "OTHER"], "PROJ-3": ["TEAM"]})
+    urd.set_report_components(con, ["OTHER"])
+    assert _keys(con) == ["PROJ-1"]
+    urd.set_report_components(con, [])
+    assert _keys(con) == ["PROJ-1", "PROJ-3"]
+
+
+def test_filtering_by_component_also_filters_the_history():
+    """Filtering issues alone is not enough: closures come from changes, so a
+    dropped ticket would keep driving every event-based chart while being
+    absent from every ticket-based one."""
+    con = _derived("reopened", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM"], "PROJ-3": ["OTHER"]})
+    assert "PROJ-3" in _keys(con, "changes")
+    urd.set_report_components(con, ["TEAM"])
+    for view in ("changes", "transitions", "closures", "status_durations",
+                 "cycle_times", "issue_sprints", "mutation_sprint"):
+        left = [k for k in _keys(con, view) if k == "PROJ-3"]
+        assert left == [], f"{view} still holds rows for a filtered-out component"
+
+
+def test_the_none_slice_selects_the_tickets_that_carry_no_component():
+    con = _derived("reopened", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM"], "PROJ-3": []})
+    urd.set_report_components(con, [urd.NO_COMPONENT])
+    assert _keys(con) == ["PROJ-3"]
+
+
+def test_the_none_slice_combines_with_a_named_component():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM"], "PROJ-2": ["OTHER"], "PROJ-3": []})
+    urd.set_report_components(con, ["TEAM", urd.NO_COMPONENT])
+    assert _keys(con) == ["PROJ-1", "PROJ-3"]
+
+
+def test_a_selected_component_is_remembered_and_cleared():
+    con = _derived("reopened", "two_sprints")
+    urd.set_report_components(con, ["TEAM", "OTHER"])
+    assert urd.load_scope(con)["report_components"] == "TEAM,OTHER"
+    assert urd.stored_report_components(con) == ["TEAM", "OTHER"]
+    urd.set_report_components(con, [])
+    assert urd.stored_report_components(con) == []
+    assert urd.load_scope(con)["report_components"] is None
+
+
+def test_opening_a_database_refreshes_a_view_older_than_the_filter():
+    """Every database derived before this feature has an excluded_tickets that
+    knows nothing about components, so a report run without a re-derive would
+    filter nothing at all and say it had. Refreshed on open rather than by the
+    setter, which runs on every rendered page and would race the derive a
+    background sync runs on the same connection."""
+    path = _tmpdb()
+    con = urd.open_db(path)
+    load_fixtures(con, "reopened", "two_sprints")
+    scope = urd.load_scope(con)
+    urd.derive(con, scope["status_order"], scope["start_status"], scope["review_status"])
+    _components(con, **{"PROJ-1": ["TEAM", "OTHER"], "PROJ-3": ["TEAM"]})
+    # Put it back the way a derive from before this feature left it.
+    con.execute("CREATE OR REPLACE VIEW excluded_tickets AS "
+                "SELECT key FROM excluded_epics")
+    urd.set_report_components(con, ["OTHER"])
+    assert _keys(con) == ["PROJ-1", "PROJ-3"], "an older view should filter nothing"
+    con.close()
+
+    con = urd.open_db(path)
+    assert _keys(con) == ["PROJ-1"], "reopening should bring the view up to date"
+
+
+def test_the_components_on_offer_are_the_ones_the_mirror_holds():
+    """Ordered by how many tickets carry them, so the slice someone wants is
+    near the top on a project with a long component list."""
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM", "OTHER"], "PROJ-2": ["TEAM"],
+                        "PROJ-3": ["TEAM"]})
+    assert urd.components_present(con) == ["TEAM", "OTHER"]
+
+
+def test_the_none_slice_is_offered_only_when_such_tickets_exist():
+    """A box that can only ever return an empty report is a trap, and the list
+    carries no counts to explain itself."""
+    con = _derived("reopened", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM"], "PROJ-3": ["TEAM"]})
+    assert urd.NO_COMPONENT not in urd.components_present(con)
+    _components(con, **{"PROJ-3": []})
+    assert urd.components_present(con) == ["TEAM", urd.NO_COMPONENT]
+
+
+def test_the_components_on_offer_survive_their_own_filter():
+    """Read from issues_all, not issues: issues now filters through the very
+    choice being offered, so the list would collapse to the ticked boxes and
+    there would be no way back to the others."""
+    con = _derived("reopened", "two_sprints")
+    _components(con, **{"PROJ-1": ["TEAM", "OTHER"], "PROJ-3": ["TEAM"]})
+    urd.set_report_components(con, ["OTHER"])
+    assert urd.components_present(con) == ["TEAM", "OTHER"]
+
+
 def test_the_page_names_the_epics_it_left_out():
     """A report with a trash epic removed and one without look identical, and they
     say different things about every total."""
@@ -4591,6 +4721,15 @@ def test_the_page_names_the_epics_it_left_out():
     assert "PROJ-100" in html
     assert "excluded" in html.lower()
     assert "excluded" not in render.page(_header(), []).lower()
+
+
+def test_the_page_names_the_components_it_was_filtered_to():
+    """Two slices of one project look identical and say different things about
+    every total, the same reason the excluded epics are named."""
+    html = render.page(_header(components=["TEAM", "OTHER"]), [])
+    assert "TEAM, OTHER" in html
+    assert "showing" in html.lower()
+    assert "showing" not in render.page(_header(), []).lower()
 
 
 def test_every_chart_respects_the_report_window():
@@ -4606,6 +4745,17 @@ def test_every_chart_respects_the_report_window():
             f"{'uses' if used else 'ignores'} the window")
         if chart.coverage and not exempt:
             assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores --since"
+
+
+def test_no_chart_reaches_around_the_scope_views():
+    """Every report-time filter lives in the views: the epic exclusion and the
+    component slice both narrow excluded_tickets, which issues, changes and
+    issue_sprints read. A chart reading a base table would ignore both and say
+    nothing about it, which is the one way the inheritance can be lost."""
+    for chart in chart_specs.CHARTS:
+        for table in ("issues_all", "changes_all", "issue_sprints_all"):
+            for sql in (chart.sql, chart.coverage or ""):
+                assert table not in sql, f"{chart.key} reads {table} directly"
     stray = set(chart_specs.WINDOW_EXEMPT) - {c.key for c in chart_specs.CHARTS}
     assert not stray, f"exemption for a chart that no longer exists: {stray}"
 
