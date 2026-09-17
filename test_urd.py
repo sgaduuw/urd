@@ -3573,10 +3573,11 @@ def test_an_unknown_threshold_tier_is_rejected_rather_than_ignored():
         raise AssertionError("a mistyped tier was accepted")
 
 
-def _closed_scored(con, key, points, cycle_days, started="2026-01-06 09:00"):
-    """A closed ticket carrying an estimate and a cycle time, which needs three
+def _closed_scored(con, key, points, cycle_days):
+    """A closed ticket carrying an estimate and a cycle time, which needs two
     rows: cycle_times is a view that reads the resolution date off the issue and
     the start from a status change into In Progress."""
+    started = "2026-01-06 09:00"
     con.execute("INSERT INTO issues_all (key, project, type, status, status_category, "
                 "summary, created, resolved, story_points, abandoned) VALUES "
                 "(?, 'PROJ', 'Task', 'Done', 'done', 'seeded', ?::TIMESTAMP, "
@@ -3586,28 +3587,27 @@ def _closed_scored(con, key, points, cycle_days, started="2026-01-06 09:00"):
                 "NULL, 'To Do', NULL, 'In Progress', 'acct-1', 1)", [key, started])
 
 
-def test_sprints_vs_points_counts_each_sprint_once():
+def test_the_landing_rate_counts_each_sprint_once():
     """A ticket re-added to a sprint it already sat in gets a second membership
-    row. Counting rows rather than distinct sprint ids reports a stay it never
-    had, and the bar for that estimate grows for a reason nobody can see.
-    Verified red with count(*): it answers 3."""
+    row. Counting rows rather than distinct sprint ids turns a ticket that landed
+    in its sprint into one that did not, which moves the bar the whole chart is
+    read from. Verified red with count(*): the rate drops to 0."""
     con = _derived("reopened")
-    # PROJ-1 is closed, scored 5, and already sits in one sprint. Put it in a
-    # second, then duplicate that membership.
-    for sid, name, ordinal in ((3, "Sprint A", 2), (3, "Sprint A", 3)):
-        con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-1', ?, ?, 'closed', "
-                    "TIMESTAMP '2026-01-19 09:00', TIMESTAMP '2026-02-02 09:00', ?)",
-                    [sid, name, ordinal])
-    rows = _flow_rows(con, "sprints_vs_points")[1]
-    assert [(r["points"], r["sprints"]) for r in rows] == [("5 pt (n=1)", 2.0)]
+    # PROJ-1 is closed, scored 5, and already sits in exactly one sprint. Add a
+    # second membership row for that same sprint.
+    con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-1', 7, 'Sprint B', "
+                "'closed', TIMESTAMP '2026-01-05 09:00', "
+                "TIMESTAMP '2026-01-19 09:00', 2)")
+    rows = _flow_rows(con, "sprint_landing_rate")[1]
+    assert [(r["points"], r["in one sprint"]) for r in rows] == [("5 pt (n=1)", 100.0)]
 
 
-def test_sprints_vs_points_leaves_out_tickets_that_are_still_open():
-    """An open ticket has no final sprint count, so including it drags every bar
-    toward the number of sprints it happens to have reached so far. PROJ-3 is
-    open, scored 3, and sits in two sprints, so it would show up as its own bar."""
+def test_the_landing_rate_leaves_out_tickets_that_are_still_open():
+    """An open ticket has no final sprint count, so counting it as "did not land"
+    is a guess about work that may yet land. PROJ-3 is open, scored 3, and sits in
+    two sprints, so it would show up as its own bar at 0%."""
     con = _derived("reopened", "two_sprints")
-    rows = _flow_rows(con, "sprints_vs_points")[1]
+    rows = _flow_rows(con, "sprint_landing_rate")[1]
     assert [r["points"] for r in rows] == ["5 pt (n=1)"], "an open ticket reached the chart"
 
 
@@ -4265,7 +4265,7 @@ def test_retro_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
     assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint",
                     "points_vs_cycle", "carried_sprints", "points_per_sprint",
-                    "sprints_vs_points"}
+                    "sprint_landing_rate"}
 
 
 def test_a_mutation_lands_in_at_most_one_sprint():

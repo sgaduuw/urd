@@ -637,20 +637,20 @@ CHARTS = [
             -- sits in the bottom 5% of the plot and reads as a single line. The
             -- clip is computed over the same rows that are plotted, so it moves
             -- with --since rather than being a number written here.
-            WITH clip AS (
-                SELECT quantile_cont(c.cycle_days, 0.95) AS ceiling
+            WITH plotted AS (
+                SELECT i.story_points, c.cycle_days
                 FROM issues i JOIN cycle_times c ON c.key = i.key
+                -- > 0 rather than IS NOT NULL: this instance stores an unestimated
+                -- ticket as 0, not NULL, so IS NOT NULL reported 100% coverage while
+                -- 69% of tickets carried no estimate and 131 of 309 plotted points
+                -- sat on the x axis at zero.
                 WHERE i.story_points > 0 AND in_window(c.resolved)
             )
-            SELECT i.story_points, c.cycle_days
-            FROM issues i JOIN cycle_times c ON c.key = i.key, clip
-            -- > 0 rather than IS NOT NULL: this instance stores an unestimated
-            -- ticket as 0, not NULL, so IS NOT NULL reported 100% coverage while
-            -- 69% of tickets carried no estimate and 131 of 309 plotted points
-            -- sat on the x axis at zero.
-            WHERE i.story_points > 0 AND in_window(c.resolved)
-              AND c.cycle_days <= clip.ceiling
-            ORDER BY i.story_points
+            -- One CTE, so the population is stated once. Stating it twice let an
+            -- edit to the ceiling's copy skew the clip with no test to notice.
+            SELECT * FROM plotted
+            WHERE cycle_days <= (SELECT quantile_cont(cycle_days, 0.95) FROM plotted)
+            ORDER BY story_points
         """,
         # Rows actually plotted over rows that could be, not points-present over all
         # issues: a ticket with points but no cycle time never reaches this chart.
@@ -670,17 +670,21 @@ CHARTS = [
     # tracking elapsed time. Every chart here reads Jira's own changelog instead,
     # which Jira writes rather than an addon.
     Chart(
-        key="sprints_vs_points",
+        key="sprint_landing_rate",
         section="Retro",
-        title="Sprints a ticket spans, by story point",
+        title="Tickets landing inside one sprint, by story point",
         kind="hbars",
-        caption="Whether a bigger estimate means a longer stay. A flat row means "
-                "the estimate does not predict how long the ticket lives on the "
-                "board. Closed tickets only: an open one has no final count yet.",
-        # The label carries its own ticket count because a bar drawn from one
-        # ticket looks exactly as authoritative as a bar drawn from 130. Dropping
-        # the thin rows would hide them instead, which is the same problem.
-        options={"labels": "points", "series": ["sprints"], "unit": "tickets"},
+        caption="Whether an estimate predicts delivery. Two shares per estimate: "
+                "tickets that finished in the sprint they were committed to, and "
+                "tickets that were still open five sprints later. Closed tickets "
+                "only, because an open one has no final count yet.",
+        # Shares, not the mean number of sprints. The mean reported 2.2 to 2.5 at
+        # every estimate and read as "the estimate tells you nothing", which the
+        # same rows contradict: 1-pointers land in one sprint 63% of the time
+        # against 35% for 3-pointers. A thin tail of 1-pointers running to ten
+        # sprints was dragging their mean up to meet the larger estimates.
+        options={"labels": "points",
+                 "series": ["in one sprint", "five or more"], "unit": "tickets"},
         sql="""
             WITH spanned AS (
                 -- DISTINCT sprint_id, not a row count: issue_sprints carries one
@@ -690,7 +694,10 @@ CHARTS = [
                 GROUP BY key
             )
             SELECT printf('%g pt (n=%d)', i.story_points, count(*)) AS points,
-                   round(avg(s.n), 2) AS sprints
+                   round(100.0 * count(*) FILTER (WHERE s.n = 1)
+                         / count(*), 0) AS "in one sprint",
+                   round(100.0 * count(*) FILTER (WHERE s.n >= 5)
+                         / count(*), 0) AS "five or more"
             FROM issues i
             JOIN spanned s ON s.key = i.key
             -- Joined to cycle_times so this chart and points_vs_cycle describe the
@@ -704,13 +711,10 @@ CHARTS = [
         # project whose tickets never enter a sprint says so rather than drawing
         # an empty chart.
         coverage="""
-            SELECT (SELECT count(*) FROM issues i
-                    JOIN cycle_times c ON c.key = i.key
-                    WHERE i.story_points > 0 AND in_window(c.resolved)
-                      AND i.key IN (SELECT key FROM issue_sprints)),
-                   (SELECT count(*) FROM issues i
-                    JOIN cycle_times c ON c.key = i.key
-                    WHERE i.story_points > 0 AND in_window(c.resolved))
+            SELECT count(*) FILTER (WHERE i.key IN (SELECT key FROM issue_sprints)),
+                   count(*)
+            FROM issues i JOIN cycle_times c ON c.key = i.key
+            WHERE i.story_points > 0 AND in_window(c.resolved)
         """,
         tier="points",
     ),
