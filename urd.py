@@ -1262,6 +1262,45 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
         print(f"{field}: {rate:.0%} empty")
 
 
+# Read out of the SQL rather than hand-kept, so a view added to either block is
+# covered without anyone remembering to add its name here.
+CHART_VIEWS = tuple(re.findall(r"CREATE OR REPLACE VIEW (\w+)",
+                               VIEWS_METRICS + VIEWS_SPRINT_ATTRIBUTION))
+
+
+def refresh_chart_views(con):
+    """Create any chart view this database is missing, and write nothing if it
+    is already current.
+
+    Defining these only in `derive` breaks every existing database the moment a
+    view is added: the derived tables are all present, and the report still
+    fails because the last derive predates the new view. `sprint_commitment`
+    did exactly that.
+
+    The "write nothing" half matters as much as the fix. Running CREATE OR
+    REPLACE on every render raises a write-write conflict against a refresh
+    running at the same time, which takes down reading a page while it
+    refreshes. test_pages_can_still_be_read_while_a_refresh_runs caught that.
+
+    Returns False when the database has no derived tables at all, which the
+    callers already report in their own words; a Catalog Error raised from here
+    would replace a clear message with a worse one.
+    """
+    derived = con.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'issues'"
+    ).fetchone()[0]
+    if not derived:
+        return False
+    present = con.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name IN "
+        f"({', '.join('?' * len(CHART_VIEWS))})", list(CHART_VIEWS)).fetchone()[0]
+    if present == len(CHART_VIEWS):
+        return False
+    con.execute(VIEWS_METRICS)
+    con.execute(VIEWS_SPRINT_ATTRIBUTION)
+    return True
+
+
 def report_html(con, tiers=None):
     """The report as a string. `report` writes this to a file.
 
@@ -1269,6 +1308,7 @@ def report_html(con, tiers=None):
     same bytes, so a chart cannot look different depending on how it was asked
     for.
     """
+    refresh_chart_views(con)
     scope = load_scope(con)
     header = {
         "project": scope["project"] or "unknown",

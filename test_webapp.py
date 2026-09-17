@@ -29,6 +29,31 @@ def test_report_html_returns_what_report_writes():
     assert urd.report_html(con) == written
 
 
+def test_a_database_derived_before_a_view_existed_repairs_itself():
+    """Defining the chart views only in `derive` breaks every database derived
+    before a new one is added: the derived tables are current and the report
+    still dies, because the last derive predates the view. sprint_commitment did
+    exactly that, with "Catalog Error: Table with name sprint_commitment does not
+    exist". Verified red by dropping the refresh_chart_views call from
+    report_html: this raises instead of rendering."""
+    con = test_helpers.configured_db()
+    urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+    con.execute("DROP VIEW sprint_commitment")
+    urd.report_html(con)   # without the repair this raises a Catalog Error
+    assert con.execute("SELECT count(*) FROM information_schema.tables "
+                       "WHERE table_name = 'sprint_commitment'").fetchone()[0] == 1
+
+
+def test_rendering_a_current_database_writes_nothing_to_it():
+    """Rebuilding the views on every render raises a write-write conflict against
+    a refresh running at the same time, which is what
+    test_pages_can_still_be_read_while_a_refresh_runs exists to prevent. So the
+    repair above has to be a read when there is nothing to repair."""
+    con = test_helpers.configured_db()
+    urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
+    assert urd.refresh_chart_views(con) is False
+
+
 def test_report_html_writes_no_file():
     """`report` defaults to writing report.html in the working directory. The
     server calls this thousands of times, so it must not touch the disk at all."""
