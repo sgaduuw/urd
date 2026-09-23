@@ -23,6 +23,9 @@ def _refuse_network(self, req, *args, **kwargs):
 
 urllib.request.OpenerDirector.open = _refuse_network
 
+# Route tests must not depend on an operator token or the macOS keychain.
+os.environ["URD_TOKEN"] = "test-only-token"
+
 # .invalid is reserved by RFC 6761: nobody can ever register a name under it,
 # unlike "example.atlassian.net", which is a real, registrable Atlassian site
 # slug that happens to look like a placeholder.
