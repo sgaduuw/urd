@@ -4516,9 +4516,8 @@ def _sprint_move(con, key, ts, to_id, to_str, created="2026-01-01 09:00"):
 
 
 def test_commitment_matches_sprint_ids_rather_than_names():
-    """Sprints get renamed. On the live project 8713 was "Metal Q3 - S7" when three
-    of its tickets joined and is "META Q3 - S7" now, so matching the changelog's
-    recorded name against the sprint's current name missed every one of them.
+    """Matching a changelog's recorded sprint name against its current name
+    loses memberships when the sprint has been renamed.
     PROJ-50 joined under a name the sprint no longer has. Verified red by matching
     on to_str: PROJ-50 flips to uncommitted."""
     con = _derived("reopened", "two_sprints")

@@ -53,8 +53,8 @@ def validate(proposal, token, opener=None):
     if not token:
         return Result(False, problem="no API token in the environment; set URD_TOKEN")
 
-    jira = urd.Jira(proposal.site, proposal.email, token, opener=opener)
     try:
+        jira = urd.Jira(proposal.site, proposal.email, token, opener=opener)
         me = jira.get("/myself")
     except SystemExit as exc:
         # Jira's client raises SystemExit on a non-200. Credential first, so a
@@ -130,9 +130,9 @@ def discover(proposal, token, opener=None):
     caught, not just SystemExit, which is not itself an Exception subclass. A
     lost hint must not stop someone finishing setup.
     """
-    jira = urd.Jira(proposal.site, proposal.email, token, opener=opener)
     found = []
     try:
+        jira = urd.Jira(proposal.site, proposal.email, token, opener=opener)
         for key in (k.strip() for k in proposal.project.split(",")):
             if not key:
                 continue

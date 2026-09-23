@@ -1,0 +1,21 @@
+name: checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.13'
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: sh tests/run.sh
+      - run: docker build -t urd-check .
+      - run: sh tests/check-container.sh urd-check

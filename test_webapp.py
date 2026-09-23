@@ -610,7 +610,7 @@ def test_the_environment_seeds_only_the_first_project():
     project = registry.add("alpha")
     urd.save_scope(project.con, site="kept.example.net", email="a@b.c",
                    project="KEPT", earliest_since="2026-01-01")
-    urd.seed_from_env(registry, {"URD_SITE": "other.example.net",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "other.example.net",
                                  "URD_PROJECT": "OTHER",
                                  "URD_EMAIL": "b@c.d",
                                  "URD_SINCE": "2020-01-01"})
@@ -619,7 +619,7 @@ def test_the_environment_seeds_only_the_first_project():
 
 def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})
     project = registry.get("proj")
@@ -629,7 +629,7 @@ def test_the_environment_creates_a_first_project_when_the_volume_is_empty():
 
 def test_an_incomplete_environment_seeds_nothing():
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid"})
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid"})
     assert registry.projects() == []
 
 
@@ -647,7 +647,7 @@ def test_seed_from_env_missing_project_seeds_nothing():
     """Isolates the project term: site, email and since are all set, so only
     project is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_EMAIL": "a@b.c", "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
 
@@ -656,7 +656,7 @@ def test_seed_from_env_missing_email_seeds_nothing():
     """Isolates the email term: site, project and since are all set, so only
     email is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
 
@@ -665,7 +665,7 @@ def test_seed_from_env_missing_since_seeds_nothing():
     """Isolates the since term: site, project and email are all set, so only
     since is missing."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_PROJECT": "PROJ", "URD_EMAIL": "a@b.c"})
     assert registry.projects() == []
 
@@ -677,7 +677,7 @@ def test_a_punctuation_only_project_is_skipped_not_crashed():
     this function's own docstring anticipates: the server must still start,
     landing on /setup, rather than crash-loop on a traceback."""
     registry = projects_mod.ProjectRegistry(tempfile.mkdtemp())
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_PROJECT": ",", "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})
     assert registry.projects() == []
@@ -770,7 +770,7 @@ def test_seed_from_env_and_the_wizard_derive_the_same_slug():
     together; without it the two could drift silently."""
     volume = tempfile.mkdtemp()
     registry = projects_mod.ProjectRegistry(volume)
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_PROJECT": "PROJ,OTHER",
                                  "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})

@@ -80,16 +80,31 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect())
 
 
+def _hostname(value, setting):
+    host = (value or "").lower()
+    if len(host) > 253 or any(
+            not re.fullmatch(r"(?!-)[a-z0-9-]{1,63}(?<!-)", label)
+            for label in host.split(".")):
+        raise SystemExit(f"{setting} must be a bare trusted hostname, e.g. example.atlassian.net")
+    return host
+
+
 class Jira:
     """Read only Jira Cloud client. GET requests only, by construction."""
 
     def __init__(self, site, email, token, opener=None):
-        self.base = f"https://{site}/rest/api/3"
+        self.base = f"https://{_hostname(site, '--site')}/rest/api/3"
         self.auth = base64.b64encode(f"{email}:{token}".encode()).decode()
         self._open = opener or self._urlopen
 
     @staticmethod
     def _urlopen(url, headers):
+        # The form and database may choose a site, but only process configuration
+        # decides where the process credential can go. Check the final URL too.
+        trusted = _hostname(os.environ.get("URD_JIRA_HOST"), "URD_JIRA_HOST")
+        target = urllib.parse.urlsplit(url)
+        if target.scheme != "https" or target.netloc.lower() != trusted:
+            raise SystemExit("refusing credential destination outside URD_JIRA_HOST")
         request = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with _OPENER.open(request, timeout=TIMEOUT_S) as response:
@@ -130,11 +145,23 @@ class Jira:
         params = {"jql": jql, "fields": "updated", "maxResults": PAGE_SIZE}
         while True:
             page = self.get("/search/jql", params)
-            for issue in page.get("issues", []):
+            # sync uses the complete result to delete absent issues. A malformed
+            # page must fail, never look like an empty or finished search.
+            if (not isinstance(page, dict) or not isinstance(page.get("issues"), list)
+                    or not isinstance(page.get("isLast"), bool)):
+                raise SystemExit("invalid search response: expected issues and boolean isLast")
+            for issue in page["issues"]:
+                if (not isinstance(issue, dict) or not isinstance(issue.get("key"), str)
+                        or not issue["key"] or not isinstance(issue.get("fields"), dict)
+                        or not isinstance(issue["fields"].get("updated"), str)
+                        or not issue["fields"]["updated"]):
+                    raise SystemExit("invalid search response: issue needs key and updated")
                 yield issue["key"], issue["fields"]["updated"]
-            nxt = page.get("nextPageToken")
-            if page.get("isLast") or not nxt:
+            if page["isLast"]:
                 return
+            nxt = page.get("nextPageToken")
+            if not isinstance(nxt, str) or not nxt:
+                raise SystemExit("incomplete search response: missing nextPageToken")
             if nxt == params.get("nextPageToken"):
                 # The same token twice means the server is not advancing. Failing
                 # loudly beats a hung command: the caller consumes this generator
@@ -414,14 +441,11 @@ def load_scope(con):
     return dict(zip(SCOPE_COLUMNS, row, strict=True))
 
 
-# worklog rides along unused: it is free on a request already being made, and a
-# future logged-time chart then needs no refetch.
-# ponytail: fetch it, derive nothing. Upgrade path is a worklogs table in derive.
 BASE_FIELDS = (
     "summary", "issuetype", "status", "statuscategorychangedate", "priority",
     "labels", "components", "assignee", "reporter", "created", "updated",
     "resolutiondate", "resolution", "parent", "fixVersions", "timespent",
-    "timeoriginalestimate", "worklog",
+    "timeoriginalestimate",
 )
 
 # Custom fields are per instance, so they are resolved by name at sync time and
@@ -925,10 +949,9 @@ SELECT * FROM issue_sprints_all WHERE key NOT IN (SELECT key FROM excluded_ticke
 # field cannot cover: it holds no timestamps, and a ticket moved out of a sprint is
 # dropped from it entirely, which is exactly the population a commitment count needs.
 #
-# Matched on the changelog's ids, never its names. Sprints get renamed: 8713 was
-# "Metal Q3 - S7" when three of its tickets joined and is "META Q3 - S7" now, so
-# name matching missed them. Ids also settle the two sprints sharing the name
-# "MetalCore M7 S1", and remove any worry about a comma inside a sprint name.
+# Matched on the changelog's ids, never its names. A sprint renamed from
+# "Team Sprint 7" to "Team Sprint 7 (revised)" still has the same members.
+# Ids also distinguish two sprints sharing a name, including names with commas.
 #
 # Validated against Jira's own sprint report, which reports the issues added after a
 # sprint started, over five sprints on the live project: 116 of 118 commitments agree,
@@ -1464,7 +1487,7 @@ def build_parser():
 # gap is what once shipped a container that could sync but never derive, since
 # derive refuses without status_order. test_container.py checks compose.yaml
 # against this same list, so the two cannot drift apart silently again.
-SEED_ENV_KEYS = ("URD_SITE", "URD_EMAIL", "URD_PROJECT", "URD_COMPONENT", "URD_SINCE",
+SEED_ENV_KEYS = ("URD_JIRA_HOST", "URD_EMAIL", "URD_PROJECT", "URD_COMPONENT", "URD_SINCE",
                  "URD_STATUS_ORDER", "URD_START_STATUS", "URD_REVIEW_STATUS")
 
 
@@ -1491,7 +1514,7 @@ def seed_from_env(registry, env=None):
     env = os.environ if env is None else env
     if registry.projects():
         return None
-    site, project, email, since = (env.get("URD_SITE"), env.get("URD_PROJECT"),
+    site, project, email, since = (env.get("URD_JIRA_HOST"), env.get("URD_PROJECT"),
                                    env.get("URD_EMAIL"), env.get("URD_SINCE"))
     if not (site and project and email and since):
         return None

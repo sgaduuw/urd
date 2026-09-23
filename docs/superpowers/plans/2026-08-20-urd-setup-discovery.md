@@ -106,7 +106,7 @@ def test_seed_from_env_and_the_wizard_derive_the_same_slug():
     together; without it the two could drift silently."""
     volume = tempfile.mkdtemp()
     registry = projects_mod.ProjectRegistry(volume)
-    urd.seed_from_env(registry, {"URD_SITE": "example.invalid",
+    urd.seed_from_env(registry, {"URD_JIRA_HOST": "example.invalid",
                                  "URD_PROJECT": "PROJ,OTHER",
                                  "URD_EMAIL": "a@b.c",
                                  "URD_SINCE": "2026-01-01"})

@@ -600,8 +600,8 @@ CHARTS = [
             WITH windows AS (
                 -- One row per sprint. sprint_windows can carry two rows for one
                 -- sprint when it was renamed, because each issue embeds the name
-                -- as it stood when that issue was captured. 8510 is both
-                -- "META Q3 - S6" and "META Q3 - S6 (17-31aug)".
+                -- as it stood when that issue was captured, for example
+                -- "Team Sprint 6" and "Team Sprint 6 (revised)".
                 SELECT sprint_id, max(sprint_name) AS sprint_name, min(start) AS start
                 FROM sprint_windows GROUP BY sprint_id
             ),
