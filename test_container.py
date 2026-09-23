@@ -64,13 +64,8 @@ def test_the_image_pins_a_python_that_can_parse_the_timestamps():
 
 
 def test_the_image_installs_only_the_two_dependencies():
-    text = _read("Dockerfile")
-    installed = re.findall(r"pip install[^\n]*", text)
-    assert installed, text
-    joined = " ".join(installed)
-    assert "duckdb" in joined and "flask" in joined
-    for extra in ("fastapi", "uvicorn", "gunicorn", "pandas", "requests"):
-        assert extra not in joined, f"{extra} is not a dependency of this project"
+    direct = set(_read("requirements.in").splitlines())
+    assert direct == {"duckdb", "flask"}, direct
 
 
 if __name__ == "__main__":

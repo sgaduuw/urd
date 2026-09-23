@@ -9,6 +9,8 @@ Split into two pages so nobody has to know their workflow's status names before
 using the tool: page one asks only what the operator already knows, page two shows
 what discovery found (or why it did not) and lets them confirm or correct it.
 """
+import os
+
 import flask
 
 import render
@@ -62,9 +64,12 @@ def _scope_page(values=None, message=""):
         "Add a project",
         ["The API token comes from URD_TOKEN in the environment, never from this "
          "form.",
+         "The site must match URD_JIRA_HOST in the server environment. Only that "
+         "hostname can receive the token.",
          "The next page shows the statuses this project uses, so you do not have "
          "to know them now."],
-        _inputs(_SCOPE_FIELDS, values or {}) + '<button type="submit">Check</button>',
+        _inputs(_SCOPE_FIELDS, values or {"site": os.environ.get("URD_JIRA_HOST", "")})
+        + '<button type="submit">Check</button>',
         message,
     )
 

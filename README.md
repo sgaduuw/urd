@@ -15,27 +15,40 @@ security add-generic-password -s urd -a <email> -w
 (`URD_TOKEN` in the environment works too, and skips the keychain entirely. On
 Linux and Windows it is the only option: the keychain is macOS-only.)
 
+Set the trusted Jira hostname in the process environment before any sync or
+setup request. This is independent of the form and stored database settings:
+
+```
+export URD_JIRA_HOST=example.atlassian.net
+```
+
+`URD_JIRA_HOST` must be a bare hostname, without a scheme, port, path or credentials.
+Every live request requires it, including refreshes of existing databases.
+The requested site must match it exactly (case-insensitive). To use another
+Jira tenant, run a separate process with that tenant and its token. Offline
+`derive`, `report` and `sql` commands do not require it.
+
 First run needs the full scope. `--component` is optional and narrows what is
 mirrored; leave it out to mirror the whole project and pick components on the
 report instead:
 
 ```
-uv run --with duckdb python urd.py sync \
+uv run --isolated --with-requirements requirements.txt python urd.py sync \
   --site example.atlassian.net --email you@example.com \
   --project PROJ --component TEAM --since 2026-01-01
-uv run --with duckdb python urd.py derive \
+uv run --isolated --with-requirements requirements.txt python urd.py derive \
   --status-order "To Do,In Progress,Review,Done" \
   --start-status "In Progress" --review-status "Review" \
   --abandoned-status "Won't do"
-uv run --with duckdb python urd.py report
+uv run --isolated --with-requirements requirements.txt python urd.py report
 ```
 
 Every flag there is remembered in `sync_state`. From the second run on:
 
 ```
-uv run --with duckdb python urd.py sync
-uv run --with duckdb python urd.py derive
-uv run --with duckdb python urd.py report
+uv run --isolated --with-requirements requirements.txt python urd.py sync
+uv run --isolated --with-requirements requirements.txt python urd.py derive
+uv run --isolated --with-requirements requirements.txt python urd.py report
 open report.html
 ```
 
@@ -45,7 +58,7 @@ open report.html
 flags as controls and a Refresh button that syncs in the background:
 
 ```
-uv run --with duckdb --with flask python urd.py serve --volume ./urd-data
+uv run --isolated --with-requirements requirements.txt python urd.py serve --volume ./urd-data
 ```
 
 One DuckDB file per Jira project, all in the volume, each with its own workflow
@@ -62,11 +75,14 @@ URD_TOKEN=... docker compose up      # podman compose up works unchanged
 ```
 
 `URD_TOKEN` is passed through from your environment and is never written to the
-database, a file, or a log. `URD_SITE`, `URD_EMAIL`, `URD_PROJECT`,
+database, a file, or a log. `URD_JIRA_HOST` remains required as the credential
+trust anchor on every run, including with an existing volume.
+`URD_JIRA_HOST`, `URD_EMAIL`, `URD_PROJECT`,
 `URD_COMPONENT`, `URD_SINCE`, `URD_STATUS_ORDER`, `URD_START_STATUS` and
 `URD_REVIEW_STATUS` seed the *first* project so a fresh volume comes up already
-synced and derived; a database that is already configured wins over them, so
-restarting with a stale compose file cannot rescope your data. Without the three
+synced and derived. A configured database keeps its stored scope; a changed
+`URD_JIRA_HOST` blocks requests to that old site rather than rescoping the database.
+Without the three
 status keys the seeded project syncs, but derive refuses for want of
 `--status-order` and lands on a page whose only action is Refresh.
 
@@ -74,16 +90,34 @@ status keys the seeded project syncs, but derive refuses for want of
 prints the value. The token is not being dropped: a bare key is resolved from
 your environment when the container starts, not when the file is rendered.
 
+### Upgrading an existing container volume
+
+The container now runs as UID/GID `10001:10001`. A new named volume gets the
+correct owner automatically. For a volume created by an older root-run image,
+stop the service and change its data ownership once before restarting:
+
+```
+docker compose stop urd
+docker compose run --rm --no-deps --user 0 --entrypoint chown urd \
+  -R 10001:10001 /var/lib/urd
+docker compose up -d
+```
+
+Build the new image first with `docker compose build`. The ownership command
+preserves the database contents. Bind-mounted directories need the same ownership.
+Keep `URD_JIRA_HOST` set when restarting. The next sync refetches issues once because
+unused worklog data is no longer requested; no report data depends on that field.
+
 ### It has no authentication
 
 Anyone who can reach the port reads every ticket title and can trigger a sync. The
 Dockerfile's own `CMD` binds `0.0.0.0`; compose's published port is what keeps that
-off a network by default. The app also refuses any request whose `Host` header is
-not `127.0.0.1`, `localhost` or `[::1]` (`webapp.py`'s `_same_origin_only`), so
-widening the published port alone (`-p 8731:8731` instead of
-`-p 127.0.0.1:8731:8731`) is not enough: every request still 403s until that
-allowlist is widened too. Do not make either edit on a shared host until
-authentication exists.
+off a network by default. Keep the published port bound to loopback.
+The Host allowlist and Fetch Metadata checks protect against browser attacks;
+a network client can forge both headers, so they do not restrict who can access
+an exposed port. Add authentication before sharing access. `URD_JIRA_HOST` restricts
+where the token can be sent, but does not restrict who can read reports or start
+work against that tenant.
 
 ### The write lock
 
@@ -111,7 +145,7 @@ SVG, no external references. Open it directly in a browser.
 ## Widening the window
 
 ```
-uv run --with duckdb python urd.py sync --since 2025-01-01
+uv run --isolated --with-requirements requirements.txt python urd.py sync --since 2025-01-01
 ```
 
 `keys_to_fetch` (see `urd.py`) applies one rule regardless of direction:
@@ -184,7 +218,7 @@ done-category statuses that mean dropped, and they are counted apart from
 delivered work everywhere at once:
 
 ```
-uv run --with duckdb python urd.py derive --abandoned-status "Won't do,Duplicate"
+uv run --isolated --with-requirements requirements.txt python urd.py derive --abandoned-status "Won't do,Duplicate"
 ```
 
 Unset, nothing is treated as dropped: no status name is universal, so urd will
@@ -225,7 +259,7 @@ A trash-bin epic with a hundred abandoned children skews every total it appears
 in, and nothing in the data distinguishes it from a real one:
 
 ```
-uv run --with duckdb python urd.py report --exclude-epic PROJ-1 --exclude-epic PROJ-2
+uv run --isolated --with-requirements requirements.txt python urd.py report --exclude-epic PROJ-1 --exclude-epic PROJ-2
 ```
 
 Repeatable, remembered between runs, and `--exclude-epic ""` clears the list. The
@@ -239,7 +273,7 @@ look identical and say different things about every total.
 page shows of it, without refetching anything:
 
 ```
-uv run --with duckdb python urd.py report --component TEAM --component OTHER
+uv run --isolated --with-requirements requirements.txt python urd.py report --component TEAM --component OTHER
 ```
 
 Repeatable, remembered between runs, and `--component ""` clears the list. On the
@@ -266,7 +300,7 @@ component offers the others as intersections with it.
 measure, without refetching anything:
 
 ```
-uv run --with duckdb python urd.py report --since 2026-03-01
+uv run --isolated --with-requirements requirements.txt python urd.py report --since 2026-03-01
 ```
 
 Remembered between runs; pass `1900-01-01` to go back to everything. The header
@@ -309,7 +343,7 @@ A chart names a *tier* rather than a number. There are two, and both can be
 set per run and are then remembered:
 
 ```
-uv run --with duckdb python urd.py report --threshold default=0.40 --threshold points=0.35
+uv run --isolated --with-requirements requirements.txt python urd.py report --threshold default=0.40 --threshold points=0.35
 ```
 
 `default` covers most charts; `points` covers the two built on Story Points,
@@ -343,6 +377,41 @@ Python 3.11 or later. `_ts` in `urd.py` parses Jira's two timestamp shapes
 (`...+0000` on issue fields, `...Z` on the Sprint field) with
 `datetime.fromisoformat`, which only accepts both shapes natively from 3.11
 onward. On 3.10 it raises `ValueError`.
+
+## Checks and dependency updates
+
+Run the same check used by pull requests (requires uv and ShellCheck):
+
+```
+sh tests/run.sh
+```
+
+It runs Python lint, shell lint, the privacy guard and every test script.
+Missing required tests fail the check. Tests use the same dependency pins as the
+container; `requirements.in` lists the direct dependencies and `requirements.txt`
+locks their full dependency tree with hashes.
+
+To update the lock, then validate it:
+
+```
+uv pip compile --universal --python-version 3.11 --generate-hashes \
+  --upgrade --output-file requirements.txt requirements.in
+sh tests/run.sh
+```
+
+For container changes, also run:
+
+```
+docker build -t urd-check .
+sh tests/check-container.sh urd-check
+```
+
+Use `podman build` and `CONTAINER_ENGINE=podman sh tests/check-container.sh urd-check`
+with Podman. The check uses a temporary volume to verify non-root execution and
+persistence across container restarts.
+
+Dependency update pull requests are checked weekly. No Jira credentials are
+needed for the checks; network requests from tests are stubbed or refused.
 
 ## Privacy
 
