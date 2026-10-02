@@ -16,3 +16,11 @@ __pycache__/
 # SDD workspace: scratch reports that quote leak terms as test data.
 # Never publishable, and never needed by a reader of this repo.
 .superpowers/
+
+# Claude Code's auto-loader walks UP from cwd and needs a CLAUDE.md at
+# the root to pick up project context. The stub just imports the two
+# TRACKED docs (AGENTS.md, CONTEXT.md), so it carries nothing itself
+# and stays local. There is deliberately no /CONTEXT.md or /AGENTS.md
+# rule here: those are repo state, and an ignore rule for either would
+# silently untrack them.
+/CLAUDE.md
