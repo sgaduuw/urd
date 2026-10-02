@@ -8,13 +8,8 @@ is the difference between a chart that is missing and one that is quietly wrong.
 """
 from typing import NamedTuple
 
-# Audience order, and it is the reason for the sequence rather than a listing
-# convention: Flow health and Retro are both the team reading about itself,
-# now and about the last sprint, and Reporting outward is what gets shown to
-# someone else. Outward sat in the middle and put a stakeholder detour between
-# the two internal sections. Ending on it also ends the page on the part most
-# likely to be exported.
-SECTIONS = ("Flow health", "Retro", "Reporting outward")
+# Start with tickets needing attention, then trends and commitments.
+SECTIONS = ("Attention today", "Flow over time", "Commitments", "Retrospective")
 
 # Optional-field charts are held to a lower bar than always-available ones: a
 # field most tickets skip is still worth showing with a caveat, where an
@@ -83,8 +78,141 @@ class Chart(NamedTuple):
 
 CHARTS = [
     Chart(
+        key="sprint_scope_changes",
+        section="Commitments",
+        title="Sprint scope changes",
+        kind="hbars",
+        caption="Ticket counts at the scheduled sprint end, for sprints whose end has passed. "
+                "Original work is split into delivered, unfinished, removed and dropped. "
+                "Added counts work first added after the start, including later removals; "
+                "added_delivered is the subset still in the sprint and done at its end. "
+                "Unknown counts uncertain start membership or unknown end status; "
+                "known additions with unknown outcomes still count as added. "
+                "Dropped work is not delivery; sprints absent from the mirror cannot be shown. "
+                "Conflicting snapshots use the earliest start and latest end; "
+                "scheduled end dates may differ from actual sprint close times.",
+        options={"labels": "sprint", "series": [
+            "original_delivered", "original_unfinished", "original_removed",
+            "original_dropped", "added", "added_delivered", "unknown",
+        ]},
+        sql="""
+            WITH windows AS (
+                SELECT sprint_id, max(sprint_name) AS sprint_name,
+                       min(start) AS start, max("end") AS finish
+                -- Dates belong to the sprint, even when the selected team's
+                -- tickets were all removed and only another team retains it.
+                FROM issue_sprints_all
+                WHERE start IS NOT NULL AND "end" IS NOT NULL
+                GROUP BY sprint_id
+                HAVING max("end") <= now() AT TIME ZONE 'UTC'
+            ),
+            sprint_changes AS (
+                SELECT key, ts, history_id,
+                       str_split(coalesce(from_id, ''), ', ') AS from_ids,
+                       str_split(coalesce(to_id, ''), ', ') AS to_ids
+                FROM changes WHERE field = 'Sprint'
+            ),
+            candidates AS (
+                SELECT w.sprint_id, c.key
+                FROM windows w JOIN sprint_changes c
+                  ON list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                  OR list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                UNION
+                SELECT sprint_id, key FROM issue_sprints
+            ),
+            membership AS (
+                SELECT w.*, sc.key,
+                       -- Classify each scoped ticket once at the chosen start.
+                       coalesce(
+                           (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                            FROM sprint_changes c
+                            WHERE c.key = sc.key AND c.ts <= w.start
+                            ORDER BY c.ts DESC, c.history_id DESC LIMIT 1),
+                           CASE
+                             WHEN i.created > w.start THEN FALSE
+                             WHEN NOT EXISTS (SELECT 1 FROM sprint_changes c WHERE c.key = sc.key)
+                               THEN i.created <= w.start AND EXISTS (
+                                   SELECT 1 FROM issue_sprints m
+                                   WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
+                             WHEN NOT (
+                                 SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                                 FROM sprint_changes c WHERE c.key = sc.key
+                                 ORDER BY c.ts, c.history_id LIMIT 1)
+                               THEN FALSE
+                             -- First observed already in the sprint: preserve
+                             -- uncertainty instead of treating a return as new work.
+                           END
+                       ) AS committed,
+                       coalesce(
+                           (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                            FROM sprint_changes c
+                            WHERE c.key = sc.key AND c.ts < w.finish
+                            ORDER BY c.ts DESC, c.history_id DESC LIMIT 1),
+                           -- With no earlier change, the first change's prior
+                           -- membership also describes the state at the cutoff.
+                           (SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                            FROM sprint_changes c WHERE c.key = sc.key
+                            ORDER BY c.ts, c.history_id LIMIT 1),
+                           EXISTS (
+                               SELECT 1 FROM issue_sprints m
+                               WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
+                       ) AS retained,
+                       (
+                           EXISTS (
+                               SELECT 1 FROM sprint_changes c
+                               WHERE c.key = sc.key AND c.ts > w.start AND c.ts < w.finish
+                                 AND list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                                 AND NOT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                           ) OR (
+                               i.created > w.start AND i.created < w.finish
+                               -- Assignment at creation is not a changelog event.
+                               -- Later changes preserve its evidence in from_ids.
+                               AND coalesce(
+                                   (SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                                    FROM sprint_changes c WHERE c.key = sc.key
+                                    ORDER BY c.ts, c.history_id LIMIT 1),
+                                   EXISTS (SELECT 1 FROM issue_sprints m
+                                           WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
+                               )
+                           )
+                       ) AS added
+                FROM windows w
+                JOIN candidates sc ON sc.sprint_id = w.sprint_id
+                JOIN issues i ON i.key = sc.key
+                WHERE in_window(w.start)
+            ),
+            outcomes AS (
+                SELECT m.*, CASE WHEN s.category IN ('new', 'indeterminate', 'done')
+                                 THEN s.category = 'done' END AS done,
+                       d.status IN (SELECT status FROM abandoned_status) AS dropped
+                FROM membership m
+                LEFT JOIN status_durations d
+                  ON d.key = m.key AND d.entered < m.finish AND d.left_at >= m.finish
+                LEFT JOIN statuses s ON s.name = d.status
+                WHERE m.committed OR m.added OR m.committed IS NULL
+            )
+            SELECT sprint_name AS sprint,
+                   count(*) FILTER (WHERE committed AND retained AND done
+                                    AND NOT dropped) AS original_delivered,
+                   count(*) FILTER (WHERE committed AND retained AND NOT done)
+                       AS original_unfinished,
+                   count(*) FILTER (WHERE committed AND NOT retained) AS original_removed,
+                   count(*) FILTER (WHERE committed AND retained AND done AND dropped)
+                       AS original_dropped,
+                   count(*) FILTER (WHERE added AND NOT committed) AS added,
+                   count(*) FILTER (WHERE added AND NOT committed AND retained AND done
+                                    AND NOT dropped)
+                       AS added_delivered,
+                   count(*) FILTER (WHERE committed IS NULL OR (retained AND done IS NULL))
+                       AS unknown
+            FROM outcomes
+            GROUP BY sprint_id, sprint_name, start
+            ORDER BY start DESC, sprint_id
+        """,
+    ),
+    Chart(
         key="aging_wip",
-        section="Flow health",
+        section="Attention today",
         title="Aging work in progress",
         kind="table",
         caption="Open tickets by days in their current status. The chart that "
@@ -116,7 +244,7 @@ CHARTS = [
     ),
     Chart(
         key="created_vs_closed",
-        section="Flow health",
+        section="Flow over time",
         title="Created versus closed per week",
         kind="lines",
         caption="Where created and delivered diverge, the backlog is growing. "
@@ -150,7 +278,7 @@ CHARTS = [
     ),
     Chart(
         key="flow_trend",
-        section="Flow health",
+        section="Flow over time",
         title="New versus done, four week trend",
         kind="combo",
         caption="The same counts as the chart above, smoothed over four weeks. "
@@ -215,7 +343,7 @@ CHARTS = [
     ),
     Chart(
         key="flow_per_sprint",
-        section="Flow health",
+        section="Commitments",
         title="New, delivered and dropped per sprint",
         kind="hbars",
         caption="Every ticket mutation attributed to the sprint that was running "
@@ -249,7 +377,7 @@ CHARTS = [
     ),
     Chart(
         key="cfd",
-        section="Flow health",
+        section="Flow over time",
         title="Cumulative flow",
         kind="stacked",
         caption="Tickets per status, sampled once a week. A widening band is a queue.",
@@ -288,7 +416,7 @@ CHARTS = [
     ),
     Chart(
         key="net_open",
-        section="Flow health",
+        section="Flow over time",
         title="Open tickets over time",
         kind="lines",
         caption="What the gap between new and done adds up to. Counted from the "
@@ -318,11 +446,11 @@ CHARTS = [
     ),
     Chart(
         key="cycle_scatter",
-        section="Flow health",
+        section="Flow over time",
         title="Cycle time",
         kind="scatter",
-        caption="One point per closed ticket. The 85th percentile is the number "
-                "you can promise; the median is the one you will be asked for.",
+        caption="One point per closed ticket. The median and 85th percentile "
+                "describe past delivery times, not promises about future work.",
         # 309 points on the real project. Zoom and per-point readout are the
         # difference between a cloud and a chart you can interrogate.
         options={"x": "resolved", "y": "cycle_days", "interactive": True, "guides_sql": """
@@ -339,7 +467,7 @@ CHARTS = [
     ),
     Chart(
         key="time_in_status",
-        section="Flow health",
+        section="Retrospective",
         title="Median days in status, by issue type",
         kind="matrix",
         caption="Where the weeks actually go. Review queues show up here first.",
@@ -373,7 +501,7 @@ CHARTS = [
     ),
     Chart(
         key="per_fix_version",
-        section="Reporting outward",
+        section="Commitments",
         title="Delivered versus open, per version",
         kind="hbars",
         caption="The delivery view. One bar pair per version a ticket is tagged with.",
@@ -394,7 +522,7 @@ CHARTS = [
     ),
     Chart(
         key="per_epic",
-        section="Reporting outward",
+        section="Commitments",
         title="Progress per epic",
         kind="hbars",
         caption="The 40 largest by ticket count, biggest first. Horizontal because "
@@ -436,11 +564,11 @@ CHARTS = [
     ),
     Chart(
         key="type_mix",
-        section="Reporting outward",
+        section="Retrospective",
         title="Ticket type mix per month",
         kind="stacked",
-        caption="How much of each month was planned work. A growing bug or "
-                "incident band is the interesting case.",
+        caption="Ticket types by creation month. Type alone does not tell "
+                "whether work was planned or an interruption.",
         options={"x": "month", "band": "type", "value": "tickets", "interactive": True},
         # ::DATE for the same reason as created_vs_closed: date_trunc returns a
         # TIMESTAMP and the tick label is the value's own str().
@@ -455,7 +583,7 @@ CHARTS = [
     ),
     Chart(
         key="rework_per_sprint",
-        section="Retro",
+        section="Retrospective",
         title="Rework per sprint",
         kind="hbars",
         caption="Transitions that moved a ticket backwards through the workflow. "
@@ -486,7 +614,7 @@ CHARTS = [
     ),
     Chart(
         key="carry_over",
-        section="Retro",
+        section="Commitments",
         title="Carried into each sprint",
         kind="hbars",
         caption="Tickets that were already in an earlier sprint. Persistent "
@@ -509,7 +637,7 @@ CHARTS = [
     ),
     Chart(
         key="carried_sprints",
-        section="Retro",
+        section="Attention today",
         title="Open tickets by sprints carried",
         kind="table",
         caption="Open tickets planned into more than one sprint, worst first, with "
@@ -547,7 +675,7 @@ CHARTS = [
     ),
     Chart(
         key="cycle_per_sprint",
-        section="Retro",
+        section="Retrospective",
         title="Cycle time per sprint",
         kind="hbars",
         caption="Median and 85th percentile days per sprint. Tightening is the "
@@ -584,7 +712,7 @@ CHARTS = [
     ),
     Chart(
         key="points_committed_vs_closed",
-        section="Retro",
+        section="Retrospective",
         title="Story points committed versus closed, per sprint",
         kind="hbars",
         caption="Committed is what sat in the sprint when it started. Closed is "
@@ -645,7 +773,7 @@ CHARTS = [
     ),
     Chart(
         key="points_vs_cycle",
-        section="Retro",
+        section="Retrospective",
         title="Story points versus actual cycle time",
         kind="scatter",
         caption="Whether the estimates carry information. If the cloud is flat, "
@@ -697,7 +825,7 @@ CHARTS = [
     # which Jira writes rather than an addon.
     Chart(
         key="sprint_landing_rate",
-        section="Retro",
+        section="Retrospective",
         title="Tickets landing inside one sprint, by story point",
         kind="hbars",
         caption="Whether an estimate predicts delivery. Two shares per estimate: "
