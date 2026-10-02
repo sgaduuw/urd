@@ -509,8 +509,37 @@ def build_jql(project, component, since):
     return " AND ".join(clauses) + " ORDER BY key"
 
 
-def sync(con, jira):
+def log_progress(label, message, started):
+    """Flush each line: container stdout otherwise hides a running sync's output."""
+    line = (f"{_now().isoformat(timespec='seconds')}Z [{label!r}] {message}; "
+            f"elapsed={time.monotonic() - started:.1f}s\n")
+    try:
+        # One write keeps concurrent records together on unbuffered streams.
+        sys.stderr.write(line)
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        # A disconnected or closed log sink must not change a sync's outcome.
+        pass
+
+
+def sync(con, jira, label=None):
     scope = load_scope(con)
+    started = time.monotonic()
+
+    def progress(message):
+        log_progress(label or scope['project'], message, started)
+
+    progress('sync starting')
+    try:
+        return _sync(con, jira, scope, progress)
+    except (Exception, SystemExit) as exc:
+        # Exceptions can contain response bodies or credentials. Preserve the
+        # original exception for the caller, but don't duplicate it into logs.
+        progress(f'sync failed ({type(exc).__name__})')
+        raise
+
+
+def _sync(con, jira, scope, progress):
     if not scope["project"] or not scope["earliest_since"]:
         raise SystemExit("first run needs --site, --email, --project and --since")
 
@@ -521,16 +550,25 @@ def sync(con, jira):
     # _refresh_workflow_statuses uses it: the test doubles implement only the
     # calls they exercise.
     if getattr(jira, "get", None):
+        progress('authenticating')
         jira.get("/myself")
 
     # Before anything is fetched, not after: the field list is built from the
     # `fields` table, so resolving it afterwards left a first run asking for the
     # built-ins only, forever.
+    progress('loading metadata')
     _refresh_lookups(con, jira, scope["project"])
     fields = fetch_fields(con)
 
     jql = build_jql(scope["project"], scope["component"], scope["earliest_since"])
-    remote = list(jira.search(jql))
+    progress('discovering scope')
+    remote = []
+    last_report = time.monotonic()
+    for item in jira.search(jql):
+        remote.append(item)
+        if len(remote) % 100 == 0 or time.monotonic() - last_report >= 10:
+            progress(f'discovered {len(remote)} tickets')
+            last_report = time.monotonic()
     # A key that has left the scope can never be retried, so its error would be
     # reported forever. `remote` is the authoritative list of what is in scope.
     con.execute("DELETE FROM sync_errors WHERE NOT list_contains(?::VARCHAR[], key)",
@@ -547,7 +585,7 @@ def sync(con, jira):
         [[key for key, _ in remote], scope["earliest_since"]],
     ).fetchone()[0]
     if gone:
-        print(f"{gone} left the scope, dropped from the cache")
+        progress(f"{gone} left the scope, dropped from the cache")
     stored = dict(con.execute("SELECT key, updated FROM raw_issues").fetchall())
     if scope["fetched_fields"] != fields:
         # `updated` has not moved, so the usual rule would fetch nothing and every
@@ -558,10 +596,12 @@ def sync(con, jira):
             # Also fires on a database predating this column, which is exactly when
             # the explanation is most wanted: otherwise an upgrade silently reports
             # "751 in scope, 751 to fetch" on a database that already holds all 751.
-            print("field set changed, refetching everything")
+            progress("field set changed, refetching everything")
         stored = {}
     wanted = keys_to_fetch(stored, remote)
-    print(f"{len(remote)} in scope, {len(wanted)} to fetch")
+    progress(f"{len(remote)} in scope, {len(wanted)} to fetch")
+    last_report = time.monotonic()
+    failed = 0
 
     for n, key in enumerate(wanted, start=1):
         # ponytail: one HTTP request per changed issue. Daily delta is small and
@@ -576,21 +616,23 @@ def sync(con, jira):
                 'SET "at" = excluded."at", error = excluded.error',
                 [key, _now(), str(err)],
             )
-            print(f"  {key}: {err}", file=sys.stderr)
-            continue
-        con.execute(
-            "INSERT INTO raw_issues VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE "
-            "SET updated = excluded.updated, fetched_at = excluded.fetched_at, "
-            "json = excluded.json",
-            [key, updated, _now(), json.dumps(issue)],
-        )
-        con.execute("DELETE FROM sync_errors WHERE key = ?", [key])
-        if n % 50 == 0:
-            print(f"  {n}/{len(wanted)}")
+            failed += 1
+            progress(f"ticket {key!r} failed ({type(err).__name__}); details in sync_errors")
+        else:
+            con.execute(
+                "INSERT INTO raw_issues VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE "
+                "SET updated = excluded.updated, fetched_at = excluded.fetched_at, "
+                "json = excluded.json",
+                [key, updated, _now(), json.dumps(issue)],
+            )
+            con.execute("DELETE FROM sync_errors WHERE key = ?", [key])
+        if n % 50 == 0 or n == len(wanted) or time.monotonic() - last_report >= 10:
+            progress(f"processed {n}/{len(wanted)}; {failed} failed")
+            last_report = time.monotonic()
 
     save_scope(con, fetched_fields=fields, last_sync_at=_now().isoformat(timespec="seconds") + "Z")
     errors = con.execute("SELECT count(*) FROM sync_errors").fetchone()[0]
-    print(f"synced. {errors} error(s) outstanding" if errors else "synced, no errors")
+    progress(f"sync complete; {errors} error(s) outstanding")
     return 0
 
 

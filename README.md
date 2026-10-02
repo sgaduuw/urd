@@ -132,6 +132,15 @@ scope from Jira, and writes the raw JSON into `raw_issues`. It is the only
 verb that touches the network, and the only one that writes `raw_issues`. A
 ticket already stored is refetched only if its `updated` timestamp moved.
 
+Sync writes timestamped, immediately flushed progress to stderr, including in
+container logs. Lines identify the project (or database slug for a background
+refresh), phase and elapsed time. Discovery reports every 100 tickets; fetching
+reports every 50 attempts and at completion, including failures. Both also report
+at the next completed item after 10 seconds, so small slow batches stay visible.
+An in-flight request can still wait for the existing network timeout and retry.
+Background refresh also logs derivation and completion or failure. Progress logs
+omit response bodies; per-ticket error details remain in `sync_errors`.
+
 `derive` rebuilds every relational table and view (`issues`, `changes`,
 `issue_sprints`, and the metric views: `transitions`, `status_durations`,
 `closures`, `cycle_times`, `rework`) from `raw_issues`. It is pure and
