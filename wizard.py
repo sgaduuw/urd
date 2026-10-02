@@ -24,6 +24,7 @@ class Proposal(NamedTuple):
     start_status: str
     review_status: str
     abandoned_status: str
+    parked_status: str | None = None
 
 
 class Result(NamedTuple):
@@ -87,6 +88,7 @@ def apply(con, proposal):
         start_status=proposal.start_status,
         review_status=proposal.review_status or None,
         abandoned_status=proposal.abandoned_status or None,
+        parked_status=proposal.parked_status,
     )
 
 
@@ -139,9 +141,11 @@ def discover(proposal, token, opener=None):
             for issue_type in jira.project_statuses(key):
                 for status in issue_type.get("statuses", []):
                     name = status.get("name")
-                    if name and name not in [s.name for s in found]:
+                    if name:
                         category = (status.get("statusCategory") or {}).get("key") or ""
-                        found.append(Status(name, category))
+                        entry = Status(name, category)
+                        if entry not in found:
+                            found.append(entry)
     except (SystemExit, Exception) as exc:
         return Discovery([], f"could not read the workflow's statuses: {exc}")
     return Discovery(found)
@@ -164,8 +168,14 @@ def propose(statuses):
             return len(_CATEGORY_ORDER)
 
     ordered = sorted(statuses, key=rank)
-    moving = [s for s in ordered if s.category == "indeterminate"]
-    done = [s for s in ordered if s.category == "done"]
+    # Keep conflicting evidence in discovery and the order, but never guess
+    # category-dependent settings from a name shared by different categories.
+    categories = {}
+    for status in ordered:
+        categories.setdefault(status.name, set()).add(status.category)
+    unambiguous = [s for s in ordered if len(categories[s.name]) == 1]
+    moving = [s for s in unambiguous if s.category == "indeterminate"]
+    done = [s for s in unambiguous if s.category == "done"]
 
     def first_hint(candidates, hints):
         for status in candidates:
@@ -175,7 +185,7 @@ def propose(statuses):
 
     review = first_hint(moving, _REVIEW_HINTS)
     return {
-        "status_order": ",".join(s.name for s in ordered),
+        "status_order": ",".join(dict.fromkeys(s.name for s in ordered)),
         "start_status": moving[0].name if moving else "",
         "review_status": review,
         "abandoned_status": ",".join(

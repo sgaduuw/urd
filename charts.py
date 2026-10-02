@@ -238,7 +238,7 @@ CHARTS = [
     Chart(
         key="aging_wip",
         section="Attention today",
-        title="Aging work in progress",
+        title="Active / available: aging work",
         kind="table",
         caption="Open tickets by days in their current status. The chart that "
                 "changes what you do today. Ignores --since: a window drops any "
@@ -259,7 +259,7 @@ CHARTS = [
             LEFT JOIN people p ON p.account_id = i.assignee_id
             JOIN (SELECT key, max(entered) AS entered FROM status_durations GROUP BY key) d
                  ON d.key = i.key
-            WHERE i.status_category <> 'done'
+            WHERE attention_group(i.status, i.status_category) = 'active'
             -- key last, so the order is total. 43 day-values are shared here and
             -- five tickets sit on the cutoff, so without it the fortieth row was
             -- whichever of them the scan happened to reach first.
@@ -740,7 +740,7 @@ CHARTS = [
     Chart(
         key="carried_sprints",
         section="Attention today",
-        title="Open tickets by sprints carried",
+        title="Active / available: sprints carried",
         kind="table",
         caption="Open tickets planned into more than one sprint, worst first, with "
                 "the date they were first committed. Carried into each sprint "
@@ -765,7 +765,7 @@ CHARTS = [
             -- instance reports "Refined Backlog" through the same field, and
             -- counting it adds a phantom sprint to every ticket parked there,
             -- which is exactly the population being ranked.
-            WHERE i.status_category <> 'done' AND sp.start IS NOT NULL
+            WHERE attention_group(i.status, i.status_category) = 'active' AND sp.start IS NOT NULL
             GROUP BY 1, 2, 3
             HAVING count(DISTINCT sp.sprint_id) > 1
             -- key last, so the order is total: 23 open tickets share both
@@ -976,3 +976,38 @@ CHARTS = [
         tier="points",
     ),
 ]
+
+
+# The same SQL and ordering for each population; split before each table's cap.
+for _key in ("aging_wip", "carried_sprints"):
+    _chart = next(c for c in CHARTS if c.key == _key)
+    _index = CHARTS.index(_chart)
+    _caption = (("Days in the current status, oldest first. " if _key == "aging_wip" else
+                 "Tickets committed to more than one dated sprint, most sprints first, "
+                 "with the date of first commitment. ")
+                + "Eligible for attention, not necessarily being worked on. "
+                "Parked means explicitly configured deferred statuses. Unclassified means "
+                "parking is unconfirmed, or the status or category is unfamiliar. "
+                "Each table shows up to 40 tickets; counts above are uncapped. Ignores --since.")
+    CHARTS[_index] = _chart._replace(caption=_caption)
+    for _group, _label in (("parked", "Parked"), ("unclassified", "Unclassified")):
+        _variant = _chart._replace(
+            key=f"{_key}_{_group}", title=_chart.title.replace("Active / available", _label),
+            caption=_caption, sql=_chart.sql.replace("= 'active'", f"= '{_group}'"))
+        CHARTS.insert(_index + 1, _variant)
+        WINDOW_EXEMPT[_variant.key] = WINDOW_EXEMPT[_key]
+CHARTS.insert(0, Chart(
+    key="attention_counts", section="Attention today", title="Open work by attention group",
+    kind="table", options={"headers": ["active", "parked", "unclassified"], "sortable": True},
+    caption="Uncapped counts across the current scope. Active means available for attention, "
+            "not necessarily in progress. Parking must be configured explicitly; "
+            "unconfirmed parking or unfamiliar statuses and categories remain unclassified.",
+    sql="""WITH classified AS (
+               SELECT attention_group(status, status_category) AS attention FROM issues
+           )
+           SELECT count(*) FILTER (WHERE attention = 'active') AS active,
+                  count(*) FILTER (WHERE attention = 'parked') AS parked,
+                  count(*) FILTER (WHERE attention = 'unclassified') AS unclassified
+           FROM classified""",
+))
+WINDOW_EXEMPT["attention_counts"] = "all currently open work, including older tickets"

@@ -52,7 +52,7 @@ def load_fixtures(con, *names):
     ):
         con.execute("INSERT INTO statuses VALUES (?, ?)", [status, category])
     urd.save_scope(con, status_order="To Do,In Progress,Review,Done",
-                   start_status="In Progress", review_status="Review")
+                   start_status="In Progress", review_status="Review", parked_status="")
 
 
 def _derived(*fixtures):
@@ -4492,6 +4492,7 @@ def test_carried_sprints_puts_the_worst_carried_ticket_first():
     con.execute("INSERT INTO issues_all (key, summary, status, status_category, "
                 "abandoned) VALUES ('PROJ-9', 'Rolling for months', 'Backlog', "
                 "'new', FALSE)")
+    urd.save_scope(con, status_order="To Do,Backlog,In Progress,Review,Done")
     # Dated AFTER PROJ-3's first sprint (2026-01-05) on purpose, so sprint count
     # and first-committed date disagree: ordering by the date alone answers
     # PROJ-3 first, which is the mistake this test exists to catch.
@@ -4979,7 +4980,7 @@ def test_no_chart_measures_an_individual():
         # aging_wip is the one chart allowed to name a person: it names the
         # assignee of a single open ticket, which is who to ask about it, not a
         # comparison between people.
-        if chart.key == "aging_wip":
+        if chart.key.startswith("aging_wip"):
             continue
         assert not re.search(r"\b(?:FROM|JOIN)\s+people\b", chart.sql, re.I), chart.key
 

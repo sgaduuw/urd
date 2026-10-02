@@ -226,6 +226,7 @@ SCOPE_COLUMNS = (
     "report_since",
     "excluded_epics",
     "report_components",
+    "parked_status",
 )
 
 SCHEMA = """
@@ -309,7 +310,25 @@ def open_db(path=DB_DEFAULT):
     con.execute(WINDOW_MACRO)
     if con.execute("SELECT count(*) FROM sync_state").fetchone()[0] == 0:
         con.execute(f"INSERT INTO sync_state VALUES ({','.join(['NULL'] * len(SCOPE_COLUMNS))})")
+    con.execute(ATTENTION_MACRO)
     return con
+
+
+ATTENTION_MACRO = """
+CREATE OR REPLACE MACRO attention_group(current_status, category) AS (
+    SELECT CASE
+        WHEN category = 'done' THEN NULL
+        WHEN category IS NULL OR category NOT IN ('new', 'indeterminate')
+             OR parked_status IS NULL THEN 'unclassified'
+        WHEN NOT list_contains(list_transform(string_split(status_order, ','), s -> trim(s)),
+                               current_status)
+             OR current_status IS NULL OR status_order IS NULL THEN 'unclassified'
+        WHEN list_contains(list_transform(string_split(parked_status, ','), s -> trim(s)),
+                           current_status) THEN 'parked'
+        ELSE 'active' END
+    FROM sync_state
+);
+"""
 
 
 # A ticket counts if it was created or resolved inside the window; an event counts
@@ -1154,7 +1173,8 @@ def format_statuses(rows):
     if retired:
         out.append(f"{retired} status(es) are not in the project's current workflow and are "
                    "left out of the line below; they remain real history.")
-    out.append("a parking status such as Blocked sorts earlier than it belongs; edit before use:")
+    out.append("a status reached on multiple paths may sort earlier than intended; "
+               "edit before use:")
     out.append(f'  --status-order "{",".join(flow + done)}"')
     return "\n".join(out)
 
@@ -1177,7 +1197,20 @@ def _migrate_scope_views(con):
     return legacy
 
 
-def derive(con, status_order, start_status, review_status, abandoned_status=None):
+def validate_parked(status_order, parked_status, done=()):
+    """None is unconfirmed; an explicitly empty list confirms no parking."""
+    if parked_status is None:
+        return None
+    parked = [s.strip() for s in parked_status.split(",")] if parked_status.strip() else []
+    known = {s.strip() for s in (status_order or "").split(",")}
+    if (any(not s or s not in known or s in done for s in parked)
+            or len(parked) != len(set(parked))):
+        raise SystemExit("--parked-status must name distinct open statuses in --status-order")
+    return ",".join(parked)
+
+
+def derive(con, status_order, start_status, review_status, abandoned_status=None,
+           parked_status=None):
     """Rebuild the derived tables and views from raw_issues.
 
     Offline and idempotent: this reads only what sync already fetched, so a
@@ -1224,6 +1257,17 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
                 f"done-category status. Candidates: {', '.join(sorted(known))}"
             )
 
+    if parked_status is None:
+        parked_status = load_scope(con)["parked_status"]
+    # Global status names can collide across workflows. Only current mirrored
+    # tickets provide scoped category evidence here; unseen categories stay unknown.
+    parked_status = validate_parked(status_order, parked_status, {
+        r[0] for r in con.execute("""
+            SELECT DISTINCT json->>'$.fields.status.name' FROM raw_issues
+            WHERE json->>'$.fields.status.statusCategory.key' = 'done'
+        """).fetchall()
+    })
+
     # Everything from here on is one transaction. derive_issues drops and
     # recreates the `issues` view with the old column list, then this function
     # adds `abandoned` to issues_all and recreates the view again; a reader on
@@ -1237,8 +1281,9 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
     # what keeps pages serving while it runs.
     con.execute("BEGIN")
     try:
-        save_scope(con, status_order=status_order, start_status=start_status,
-                   review_status=review_status, abandoned_status=abandoned_status)
+        save_scope(con, status_order=",".join(statuses), start_status=start_status,
+                   review_status=review_status, abandoned_status=abandoned_status,
+                   parked_status=parked_status)
         con.execute("CREATE OR REPLACE TABLE abandoned_status (status VARCHAR PRIMARY KEY)")
         if abandoned:
             # Guarded: DuckDB's executemany rejects an empty parameter list
@@ -1448,6 +1493,8 @@ def build_parser():
     p_derive.add_argument("--status-order", help="statuses in workflow order, comma separated")
     p_derive.add_argument("--start-status", help="the status at which cycle time starts")
     p_derive.add_argument("--review-status", help="the status reviewers move work out of")
+    p_derive.add_argument("--parked-status", help="deliberately parked open statuses, comma "
+                          "separated; pass an empty value to confirm none")
     p_derive.add_argument(
         "--abandoned-status",
         help="done-category statuses meaning dropped rather than delivered, "
@@ -1598,6 +1645,7 @@ def main(argv=None):
             args.start_status or scope["start_status"],
             args.review_status or scope["review_status"],
             args.abandoned_status or scope["abandoned_status"],
+            args.parked_status if args.parked_status is not None else scope["parked_status"],
         )
         return 0
 
