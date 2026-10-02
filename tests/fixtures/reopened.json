@@ -2,7 +2,7 @@
   "key": "PROJ-1",
   "fields": {
     "summary": "Reopened once",
-    "issuetype": {"name": "Story"},
+    "issuetype": {"name": "Story", "subtask": false},
     "status": {"name": "Done", "statusCategory": {"key": "done"}},
     "assignee": {"accountId": "acct-2", "displayName": "Birch"},
     "reporter": {"accountId": "acct-1", "displayName": "Alder"},

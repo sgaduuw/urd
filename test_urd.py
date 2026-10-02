@@ -1531,7 +1531,7 @@ def test_missing_accountid_is_skipped():
         "key": "PROJ-4",
         "fields": {
             "summary": "Malformed person",
-            "issuetype": {"name": "Story"},
+            "issuetype": {"name": "Story", "subtask": False},
             "status": {"name": "Done", "statusCategory": {"key": "done"}},
             "assignee": {"displayName": "NoId", "avatarUrl": "..."},
             "reporter": {"accountId": "acct-1", "displayName": "Alder"},
@@ -1697,7 +1697,7 @@ def test_an_issue_that_never_moved_still_has_one_span():
     con.execute(
         "INSERT INTO raw_issues VALUES ('PROJ-4', 'u', ?, ?)",
         [urd._now(), json.dumps({"key": "PROJ-4", "fields": {
-            "issuetype": {"name": "Task"},
+            "issuetype": {"name": "Task", "subtask": False},
             "status": {"name": "To Do", "statusCategory": {"key": "new"}},
             "created": "2026-03-01T09:00:00.000+0000",
             "updated": "2026-03-01T09:00:00.000+0000",
@@ -1715,7 +1715,7 @@ def test_changelog_authors_join_people():
     con.execute(
         "INSERT INTO raw_issues VALUES ('PROJ-5', 'u', ?, ?)",
         [urd._now(), json.dumps({"key": "PROJ-5", "fields": {
-            "issuetype": {"name": "Task"},
+            "issuetype": {"name": "Task", "subtask": False},
             "status": {"name": "Done", "statusCategory": {"key": "done"}},
             "assignee": None,
             "reporter": {"accountId": "acct-1", "displayName": "Alder"},
@@ -1775,7 +1775,7 @@ def test_same_timestamp_transitions_use_history_id_tiebreaker():
             json.dumps({
                 "key": "PROJ-5",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "Done", "statusCategory": {"key": "done"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-02T09:00:00.000+0000",
@@ -1834,7 +1834,7 @@ def test_first_transition_predating_created_does_not_produce_negative_span():
             json.dumps({
                 "key": "PROJ-6",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
                     "created": "2026-01-10T09:00:00.000+0000",
                     "updated": "2026-01-20T09:00:00.000+0000",
@@ -1899,7 +1899,7 @@ def test_derive_changes_handles_empty_changelog():
             json.dumps({
                 "key": "PROJ-7",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "To Do", "statusCategory": {"key": "new"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-02T09:00:00.000+0000",
@@ -1930,7 +1930,7 @@ def test_person_display_name_propagates_on_rename():
             json.dumps({
                 "key": "TEST-1",
                 "fields": {
-                    "issuetype": {"name": "Story"},
+                    "issuetype": {"name": "Story", "subtask": False},
                     "status": {"name": "Done", "statusCategory": {"key": "done"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-02T09:00:00.000+0000",
@@ -1966,7 +1966,7 @@ def test_person_display_name_propagates_on_rename():
         [json.dumps({
             "key": "TEST-1",
             "fields": {
-                "issuetype": {"name": "Story"},
+                "issuetype": {"name": "Story", "subtask": False},
                 "status": {"name": "Done", "statusCategory": {"key": "done"}},
                 "created": "2026-03-01T09:00:00.000+0000",
                 "updated": "2026-03-02T09:00:00.000+0000",
@@ -2003,7 +2003,7 @@ def test_assignee_display_name_refresh_on_derive_issues():
             json.dumps({
                 "key": "ASSIGN-1",
                 "fields": {
-                    "issuetype": {"name": "Story"},
+                    "issuetype": {"name": "Story", "subtask": False},
                     "status": {"name": "Done", "statusCategory": {"key": "done"}},
                     "assignee": {"accountId": "assignee-id", "displayName": "Old Assignee Name"},
                     "reporter": {"accountId": "reporter-id", "displayName": "Reporter"},
@@ -2032,7 +2032,7 @@ def test_assignee_display_name_refresh_on_derive_issues():
         [json.dumps({
             "key": "ASSIGN-1",
             "fields": {
-                "issuetype": {"name": "Story"},
+                "issuetype": {"name": "Story", "subtask": False},
                 "status": {"name": "Done", "statusCategory": {"key": "done"}},
                 "assignee": {"accountId": "assignee-id", "displayName": "New Assignee Name"},
                 "reporter": {"accountId": "reporter-id", "displayName": "Reporter"},
@@ -2069,6 +2069,30 @@ def test_derive_recovers_completion_from_raw_data_over_legacy_schema():
         assert result.fetchall() == [
             (datetime(2026, 1, 20, 9), datetime(2026, 1, 23)),
             (None, datetime(2026, 1, 23)),
+        ]
+    con.close()
+
+
+def test_subtask_classification_uses_boolean_metadata_and_preserves_unknowns():
+    con = urd.open_db(_tmpdb())
+    cases = [('PARENT', False), ('CHILD', True), ('MISSING', None),
+             ('TEXT', 'false'), ('NUMBER', 0)]
+    for key, value in cases:
+        issue_type = {'name': 'Same unfamiliar type'}
+        if key != 'MISSING':
+            issue_type['subtask'] = value
+        raw = {'fields': {'issuetype': issue_type, 'parent': {'key': 'OUTSIDE'}}}
+        con.execute('INSERT INTO raw_issues VALUES (?, ?, ?, ?)',
+                    [key, 'u', urd._now(), json.dumps(raw)])
+    # A populated old derived table is rebuilt, not treated as classified.
+    con.execute('CREATE TABLE issues_all (key VARCHAR, type VARCHAR)')
+    for _ in range(2):
+        urd.derive_issues(con)
+        columns = [r[0] for r in con.execute('DESCRIBE issues').fetchall()]
+        assert 'is_subtask' in columns, 'derive discarded Jira subtask metadata'
+        assert con.execute('SELECT key, is_subtask FROM issues ORDER BY key').fetchall() == [
+            ('CHILD', True), ('MISSING', None), ('NUMBER', None),
+            ('PARENT', False), ('TEXT', None),
         ]
     con.close()
 
@@ -2128,7 +2152,7 @@ def test_sprint_field_missing_contributes_no_rows():
             json.dumps({
                 "key": "PROJ-MISSING",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "To Do", "statusCategory": {"key": "new"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-01T09:00:00.000+0000",
@@ -2156,7 +2180,7 @@ def test_sprint_field_empty_array_contributes_no_rows():
             json.dumps({
                 "key": "PROJ-EMPTY",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "To Do", "statusCategory": {"key": "new"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-01T09:00:00.000+0000",
@@ -2230,7 +2254,7 @@ def test_sprint_field_is_resolved_by_name_not_hardcoded_by_id():
             json.dumps({
                 "key": "PROJ-DIFF-ID",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "To Do", "statusCategory": {"key": "new"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-01T09:00:00.000+0000",
@@ -2272,7 +2296,7 @@ def test_ordinal_follows_array_order_not_date_order():
             json.dumps({
                 "key": "PROJ-OUT-OF-ORDER",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "To Do", "statusCategory": {"key": "new"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-01T09:00:00.000+0000",
@@ -2324,7 +2348,7 @@ def test_resolve_field_returns_exact_match_not_lexicographic_largest():
             json.dumps({
                 "key": "PROJ-LEX",
                 "fields": {
-                    "issuetype": {"name": "Task"},
+                    "issuetype": {"name": "Task", "subtask": False},
                     "status": {"name": "To Do", "statusCategory": {"key": "new"}},
                     "created": "2026-03-01T09:00:00.000+0000",
                     "updated": "2026-03-01T09:00:00.000+0000",
@@ -3232,6 +3256,29 @@ def test_hbars_leaves_room_for_the_longest_name():
     _assert_content_within_viewbox(long, "hbars long name")
 
 
+def test_hbars_labels_each_series_when_colours_repeat():
+    import xml.etree.ElementTree as ET
+
+    chart = next(c for c in chart_specs.CHARTS if c.key == 'sprint_scope_changes')
+    series = chart.options['series']
+    rows = [{'sprint': name, **{key: index for index, key in enumerate(series)}}
+            for name in ('Sprint A', 'Sprint B with a long name ' * 4)]
+    out = render.hbars(rows, labels='sprint', series=series)
+    root = ET.fromstring(out)
+    nodes = list(root.iter())
+    texts = [n for n in nodes if n.tag.rsplit('}', 1)[-1] == 'text']
+    bars = [n for n in nodes if n.tag.rsplit('}', 1)[-1] == 'rect'
+            and n.get('class') == 'bar']
+    for index, name in enumerate(series):
+        labels = [n for n in texts if n.text == name]
+        assert len(labels) == 2, f'{name} needs a visible label beside each bar'
+        for row, label in enumerate(labels):
+            bar = bars[row * len(series) + index]
+            assert float(bar.get('y')) <= float(label.get('y')) <= (
+                float(bar.get('y')) + float(bar.get('height')))
+    _assert_content_within_viewbox(out, 'scope series labels')
+
+
 def test_hbars_empty_data_renders_a_note():
     assert "no data" in render.hbars([], labels="k", series=["v"]).lower()
 
@@ -3452,7 +3499,8 @@ def test_the_trend_chart_smooths_both_series_over_four_weeks():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     chart, rows = _flow_rows(con, "flow_trend")
     assert chart.options["series"] == [
-        "net_trend", "new_trend", "done_trend", "dropped_trend"]
+        "net_trend", "new_trend", "done_trend", "dropped_trend",
+        "subtasks_completed_trend"]
     assert rows, "no weeks at all"
     weeks = [r["week"] for r in rows]
     assert weeks == sorted(weeks)
@@ -3601,9 +3649,9 @@ def _closed_scored(con, key, points, cycle_days):
     the start from a status change into In Progress."""
     started = "2026-01-06 09:00"
     con.execute("INSERT INTO issues_all (key, project, type, status, status_category, "
-                "summary, created, resolved, story_points, abandoned) VALUES "
+                "summary, created, resolved, story_points, abandoned, is_subtask) VALUES "
                 "(?, 'PROJ', 'Task', 'Done', 'done', 'seeded', ?::TIMESTAMP, "
-                "?::TIMESTAMP + INTERVAL (?) MINUTE, ?, FALSE)",
+                "?::TIMESTAMP + INTERVAL (?) MINUTE, ?, FALSE, FALSE)",
                 [key, started, started, int(cycle_days * 1440), points])
     con.execute("INSERT INTO changes_all VALUES (?, ?::TIMESTAMP, 'status', "
                 "NULL, 'To Do', NULL, 'In Progress', 'acct-1', 1)", [key, started])
@@ -4135,7 +4183,7 @@ def test_the_report_header_reflects_the_database_it_read():
 def test_commitment_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Commitments"}
     assert keys == {"sprint_scope_changes", "flow_per_sprint", "per_fix_version",
-                    "per_epic", "carry_over"}
+                    "per_epic", "carry_over", "subtasks_by_parent", "issue_classification"}
 
 
 def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
@@ -4187,9 +4235,9 @@ def test_per_epic_breaks_a_tie_so_two_renders_of_one_database_agree():
     parents = [f"PROJ-{n}" for n in range(800, 100, -100)]
     for i, parent in enumerate(parents):
         con.execute("INSERT INTO issues_all (key, project, type, status, "
-                    "status_category, created, summary, parent, abandoned) VALUES "
+                    "status_category, created, summary, parent, abandoned, is_subtask) VALUES "
                     "(?, 'PROJ', 'Task', 'To Do', 'new', TIMESTAMP '2026-01-06 09:00', "
-                    "'tied', ?, FALSE)", [f"PROJ-9{i}", parent])
+                    "'tied', ?, FALSE, FALSE)", [f"PROJ-9{i}", parent])
     _, rows = _flow_rows(con, "per_epic")
     labels = [r["epic"] for r in rows]
     # PROJ-100 holds two fixture tickets and leads on count alone. The other seven
@@ -4527,8 +4575,8 @@ def _sprint_move(con, key, ts, to_id, to_str, created="2026-01-01 09:00"):
     """A ticket moved into sprint `to_id` at `ts`, and currently a member of it.
     No fixture carries Sprint changelog entries, so commitment has to be seeded."""
     con.execute("INSERT INTO issues_all (key, project, type, status, status_category, "
-                "summary, created, abandoned) VALUES (?, 'PROJ', 'Task', 'To Do', "
-                "'new', 'seeded', ?::TIMESTAMP, FALSE)", [key, created])
+                "summary, created, abandoned, is_subtask) VALUES (?, 'PROJ', 'Task', 'To Do', "
+                "'new', 'seeded', ?::TIMESTAMP, FALSE, FALSE)", [key, created])
     con.execute("INSERT INTO changes_all VALUES (?, ?::TIMESTAMP, 'Sprint', "
                 "NULL, '', ?, ?, 'acct-1', 1)", [key, ts, to_id, to_str])
     con.execute("INSERT INTO issue_sprints_all "

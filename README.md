@@ -155,6 +155,25 @@ everything already held is left alone.
 
 ## The charts
 
+Delivery totals count confirmed non-subtask work items. Subtask completions are
+shown separately, so a completed parent and three completed subtasks contribute
+one main delivery and three subtask completions. Jira's boolean issue-type
+metadata supplies the classification, not the type name or the presence of a
+parent in the report. Missing classification is shown as unknown and excluded
+from confirmed totals. Attention tables still include all tickets.
+
+Created, committed, open and dropped counts use the same non-subtask population
+as their paired delivery counts. Story-point comparisons exclude subtask
+points. Event charts count transitions into done, so reopening and completing a
+ticket again remains another closure; sprint outcomes and current-state progress
+count each ticket once. Neither measure proves that work shipped or was accepted.
+Classification reflects the currently mirrored issue type, not a reconstructed
+historical type. Converting a ticket to or from a subtask can change earlier totals.
+
+After upgrading, run `derive` offline to recover classification from stored raw
+issues. Historical totals will decrease where they previously combined parents
+and subtasks. If raw metadata is missing, derivation preserves that uncertainty.
+
 **Attention today**
 
 - Aging work in progress: open tickets by days in their current status, with owner and ticket link.
@@ -173,10 +192,15 @@ everything already held is left alone.
 - Sprint scope changes: original work split into delivered, unfinished, removed and dropped tickets, alongside added work and its delivered subset.
 - New, delivered and dropped per sprint: events attributed to the sprint running at the time.
 - Delivered versus open, per version: one bar pair per tagged version.
-- Progress per epic: delivered, dropped and open children per parent.
+- Progress per epic: delivered, dropped and open non-subtask children per parent.
+- Subtasks by parent: separate completion, dropped and open counts under actual direct parents.
+- Issue classification coverage: counts of non-subtasks, subtasks and unknowns across all scoped tickets, independent of the report period.
 - Carried into each sprint: tickets with earlier sprint memberships.
 
-The scope-change chart uses ticket counts, including unestimated work. Original
+The scope-change chart uses non-subtask ticket counts, including unestimated work.
+Original and added subtask completions are separate series. Main work and subtasks
+have separate counts of uncertain membership or historical status; missing
+classification is counted separately from both. Original
 membership is reconstructed from recorded sprint changes. When the first
 record already places an older ticket in the sprint, its start membership is
 unknown; a later return does not count as added work. Conflicting sprint
@@ -267,7 +291,7 @@ offline, unchanged, years later.
 Line, scatter, stack and combined charts gain hover readouts and drag-to-zoom; on
 a stack, hovering reads the band's own value rather than the running total it sits
 on. Charts whose categories are names are horizontal bars instead, drawn wider,
-with every label and value written out, and are not upgraded. Three tables sort by
+with every label and value written out, and are not upgraded. Tables sort by
 any column, click or Enter on the header.
 
 All of it is additive: every chart is rendered as SVG by Python and is present in

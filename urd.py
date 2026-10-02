@@ -633,7 +633,7 @@ CREATE OR REPLACE TABLE issues_all (
     status_category VARCHAR, assignee_id VARCHAR, reporter_id VARCHAR,
     created TIMESTAMP, updated TIMESTAMP, resolved TIMESTAMP,
     story_points DOUBLE, timespent_s BIGINT, parent VARCHAR,
-    fix_versions VARCHAR[], labels VARCHAR[], components VARCHAR[]
+    fix_versions VARCHAR[], labels VARCHAR[], components VARCHAR[], is_subtask BOOLEAN
 );
 CREATE TABLE IF NOT EXISTS people (account_id VARCHAR PRIMARY KEY, display_name VARCHAR);
 """
@@ -747,6 +747,7 @@ def derive_issues(con):
         # as missing here too. Otherwise this prints 0% empty on a field that
         # 69% of tickets never had filled in.
         missing_points += not points
+        subtask = (f.get("issuetype") or {}).get("subtask")
         rows.append(
             [
                 key, key.split("-")[0], (f.get("issuetype") or {}).get("name"),
@@ -758,12 +759,12 @@ def derive_issues(con):
                 _ts(f.get("created")), _ts(f.get("updated")), _ts(f.get("resolutiondate")),
                 points, f.get("timespent"), (f.get("parent") or {}).get("key"),
                 _names(f.get("fixVersions")), f.get("labels") or [],
-                _names(f.get("components")),
+                _names(f.get("components")), subtask if isinstance(subtask, bool) else None,
             ]
         )
 
     if rows:
-        con.executemany(f"INSERT INTO issues_all VALUES ({','.join(['?'] * 17)})", rows)
+        con.executemany(f"INSERT INTO issues_all VALUES ({','.join(['?'] * 18)})", rows)
     if people:
         # ponytail: last-writer wins on rename. For anyone who is both assignee and
         # changelog author, the author name wins because derive_changes runs after

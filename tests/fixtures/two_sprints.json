@@ -2,7 +2,7 @@
   "key": "PROJ-3",
   "fields": {
     "summary": "Carried over",
-    "issuetype": {"name": "Story"},
+    "issuetype": {"name": "Story", "subtask": false},
     "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
     "assignee": {"accountId": "acct-3", "displayName": "Cedar"},
     "reporter": {"accountId": "acct-3", "displayName": "Cedar"},

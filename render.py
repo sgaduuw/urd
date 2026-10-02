@@ -845,17 +845,22 @@ def hbars(rows, labels, series):
     width = 720
     row_h, bar_h = 22, 14
     per_row = max(len(series), 1)
+    label_series = len(series) > len(PALETTE)
     widest = max((len(str(r.get(labels) or "")) for r in rows), default=1)
+    if label_series:
+        widest = max(widest, max(map(len, series)))
     # Half the wider frame: past that the bars stop being able to say anything.
     pad_l = min(int(widest * 7) + 10, 360)
     pad_r, pad_t, pad_b = 46, 8, 20
     plot_w = max(width - pad_l - pad_r, 40)
-    band_h = row_h * per_row
+    band_h = row_h * (per_row + int(label_series))
     height = pad_t + band_h * len(rows) + pad_b
 
     values = [_num(r.get(name)) for r in rows for name in series]
     v_max = max([v for v in values if v is not None] or [0])
-    legend, legend_h = _legend(series, height, width) if len(series) > 1 else ("", 0)
+    legend, legend_h = (
+        _legend(series, height, width) if 1 < len(series) <= len(PALETTE) else ("", 0)
+    )
 
     parts = []
     for i, row in enumerate(rows):
@@ -867,10 +872,13 @@ def hbars(rows, labels, series):
         # renderer; the <title> carries the original either way.
         room = max(int((pad_l - 6) / 7), 1)
         shown = name if len(name) <= room else name[: max(room - 1, 1)] + "…"
+        label_y = top + 14 if label_series else top + band_h / 2 + 4
         parts.append(
-            f'<text x="{pad_l - 6}" y="{top + band_h / 2 + 4:.1f}" class="tick" '
+            f'<text x="{pad_l - 6}" y="{label_y:.1f}" class="tick" '
             f'text-anchor="end">{esc(shown)}<title>{esc(name)}</title></text>'
         )
+        if label_series:
+            top += row_h
         for j, s in enumerate(series):
             v = _num(row.get(s))
             if v is None:
@@ -879,6 +887,13 @@ def hbars(rows, labels, series):
             # measured value, which is a different fact from none.
             bar_w = 0.0 if v_max <= 0 else max(v, 0) / v_max * plot_w
             y = top + j * row_h + (row_h - bar_h) / 2
+            if label_series:
+                # Repeated colours cannot identify series in a printed report.
+                shown_series = s if len(s) <= room else s[:room - 1] + "…"
+                parts.append(
+                    f'<text x="{pad_l - 6}" y="{y + bar_h - 3:.1f}" class="tick" '
+                    f'text-anchor="end">{esc(shown_series)}<title>{esc(s)}</title></text>'
+                )
             parts.append(
                 f'<rect class="bar" x="{pad_l}" y="{y:.1f}" width="{bar_w:.1f}" '
                 f'height="{bar_h}" rx="3" fill="{_slot(j)}">'

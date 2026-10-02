@@ -19,7 +19,8 @@ def _db():
 
 def _ticket(con, key, *, joined='2026-01-01', created='2025-12-01'):
     con.execute("INSERT INTO issues_all (key, created, status, status_category, "
-                "components, abandoned) VALUES (?, ?, 'To Do', 'new', ['TEAM'], FALSE)",
+                "components, abandoned, is_subtask) VALUES "
+                "(?, ?, 'To Do', 'new', ['TEAM'], FALSE, FALSE)",
                 [key, created])
     con.execute("INSERT INTO issue_sprints_all "
         "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
@@ -66,7 +67,8 @@ def test_original_commitment_and_added_delivery_stay_separate():
         'sprint': '[scheduled end fallback] Sprint A',
         'original_delivered': 1, 'original_unfinished': 4,
         'original_removed': 1, 'original_dropped': 1, 'added': 3, 'added_delivered': 1,
-        'unknown': 0,
+        'unknown': 0, 'original_subtasks_completed': 0,
+        'added_subtasks_completed': 0, 'subtasks_unknown': 0, 'classification_unknown': 0,
     }]
     # Current resolution and later reopening must not rewrite the sprint outcome.
     _change(con, 'DONE', '2026-01-20', 'status', 'Done', 'To Do', 4)
@@ -116,7 +118,8 @@ def test_conflicting_sprint_snapshots_do_not_duplicate_or_reclassify_tickets():
         'sprint': '[scheduled end fallback] Sprint A',
         'original_delivered': 0, 'original_unfinished': 1,
         'original_removed': 0, 'original_dropped': 0, 'added': 1, 'added_delivered': 0,
-        'unknown': 0,
+        'unknown': 0, 'original_subtasks_completed': 0,
+        'added_subtasks_completed': 0, 'subtasks_unknown': 0, 'classification_unknown': 0,
     }]
     con.close()
 
@@ -163,7 +166,8 @@ def test_scope_filters_preserve_sprint_dates_for_removed_tickets():
         'sprint': '[scheduled end fallback] Sprint A',
         'original_delivered': 0, 'original_unfinished': 0,
         'original_removed': 1, 'original_dropped': 0, 'added': 0, 'added_delivered': 0,
-        'unknown': 0,
+        'unknown': 0, 'original_subtasks_completed': 0,
+        'added_subtasks_completed': 0, 'subtasks_unknown': 0, 'classification_unknown': 0,
     }]
     urd.set_report_components(con, ['TEAM'])
     assert _rows(con) == expected
@@ -244,7 +248,8 @@ def test_actual_close_includes_late_outcomes_but_not_cutoff_events():
     assert _rows(con) == [{
         'sprint': 'Sprint A', 'original_delivered': 2, 'original_unfinished': 1,
         'original_removed': 1, 'original_dropped': 1, 'added': 1,
-        'added_delivered': 1, 'unknown': 0,
+        'added_delivered': 1, 'unknown': 0, 'original_subtasks_completed': 0,
+        'added_subtasks_completed': 0, 'subtasks_unknown': 0, 'classification_unknown': 0,
     }]
     con.close()
 
