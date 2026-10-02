@@ -485,13 +485,13 @@ def fetch_fields(con):
     return ",".join(list(BASE_FIELDS) + sorted(f for f in resolved if f))
 
 
-def keys_to_fetch(stored, remote):
-    """One rule, both directions: fetch a key we lack, or whose `updated` moved.
+def keys_to_fetch(stored, remote, failed=()):
+    """Fetch missing, changed or previously failed tickets still in remote scope.
 
     This is why extending --since backwards costs only the issues not already
     held, with no window arithmetic to get wrong.
     """
-    return [key for key, updated in remote if stored.get(key) != updated]
+    return [key for key, updated in remote if key in failed or stored.get(key) != updated]
 
 
 def build_jql(project, component, since):
@@ -598,7 +598,8 @@ def _sync(con, jira, scope, progress):
             # "751 in scope, 751 to fetch" on a database that already holds all 751.
             progress("field set changed, refetching everything")
         stored = {}
-    wanted = keys_to_fetch(stored, remote)
+    failed_keys = {r[0] for r in con.execute("SELECT key FROM sync_errors").fetchall()}
+    wanted = keys_to_fetch(stored, remote, failed_keys)
     progress(f"{len(remote)} in scope, {len(wanted)} to fetch")
     last_report = time.monotonic()
     failed = 0

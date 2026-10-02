@@ -87,6 +87,64 @@ def test_sync_does_not_request_unused_worklog_data():
         con.close()
 
 
+def test_failed_refetch_retries_unchanged_cached_tickets_until_recovered():
+    con = urd.open_db(':memory:')
+    urd.save_scope(con, project='SYN', earliest_since='2026-01-01')
+
+    class Jira:
+        keys = ['SYN-1', 'SYN-2', 'SYN-3']
+        failures = set()
+        fetched = []
+        version = 'cached'
+
+        def fields(self):
+            return []
+
+        def statuses(self):
+            return []
+
+        def search(self, jql):
+            return [(key, UPDATED) for key in self.keys]
+
+        def issue(self, key, fields):
+            self.fetched.append(key)
+            if key in self.failures:
+                raise SystemExit('synthetic timeout')
+            return {'key': key, 'fields': {'updated': UPDATED, 'summary': self.version}}
+
+    jira = Jira()
+    try:
+        urd.sync(con, jira)
+        cached = "SELECT json FROM raw_issues WHERE key = 'SYN-1'"
+        original = con.execute(cached).fetchone()
+        # A schema upgrade refetches even unchanged cached tickets. A failure
+        # must remain eligible after the new field set has been remembered.
+        urd.save_scope(con, fetched_fields='previous field set')
+        jira.failures = {'SYN-1', 'SYN-3'}
+        urd.sync(con, jira)
+        assert con.execute('SELECT count(*) FROM sync_errors').fetchone() == (2,)
+
+        jira.keys = ['SYN-1', 'SYN-2']
+        jira.fetched = []
+        urd.sync(con, jira)
+        assert jira.fetched == ['SYN-1'], jira.fetched
+        assert con.execute('SELECT key FROM sync_errors').fetchall() == [('SYN-1',)]
+        assert con.execute(cached).fetchone() == original
+
+        jira.failures = set()
+        jira.version = 'recovered'
+        jira.fetched = []
+        urd.sync(con, jira)
+        assert jira.fetched == ['SYN-1'], jira.fetched
+        assert con.execute('SELECT count(*) FROM sync_errors').fetchone() == (0,)
+        assert con.execute(cached).fetchone() != original
+        jira.fetched = []
+        urd.sync(con, jira)
+        assert jira.fetched == []
+    finally:
+        con.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

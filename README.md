@@ -130,7 +130,9 @@ process even read-only. Stop the server first.
 `sync` fetches issues matching the persisted project, component and `since`
 scope from Jira, and writes the raw JSON into `raw_issues`. It is the only
 verb that touches the network, and the only one that writes `raw_issues`. A
-ticket already stored is refetched only if its `updated` timestamp moved.
+ticket already stored is refetched if its `updated` timestamp moved, an outstanding
+sync error needs retrying, or the requested field set changed. Errors clear after a
+successful refetch; unchanged healthy tickets are skipped.
 
 Sync writes timestamped, immediately flushed progress to stderr, including in
 container logs. Lines identify the project (or database slug for a background
