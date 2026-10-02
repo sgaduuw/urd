@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import threading
+import time
 
 import urd
 
@@ -142,21 +143,26 @@ def start_refresh(project, jira_factory=None):
     factory = jira_factory or _default_jira
 
     def run():
+        started = time.monotonic()
         try:
+            urd.log_progress(project.slug, 'refresh starting', started)
             scope = urd.load_scope(project.con)
             project.job.progress = "syncing"
-            urd.sync(project.con, factory(scope))
+            urd.sync(project.con, factory(scope), label=project.slug)
             project.job.progress = "deriving"
+            urd.log_progress(project.slug, 'deriving', started)
             urd.derive(project.con, scope["status_order"], scope["start_status"],
                        scope["review_status"], scope["abandoned_status"], scope["parked_status"])
             project.job.state = "idle"
             project.job.progress = ""
+            urd.log_progress(project.slug, 'refresh complete', started)
         except BaseException as exc:      # noqa: BLE001 - SystemExit included
             # SystemExit is how urd reports every operational failure, and it is
             # not an Exception, so a bare `except Exception` would let a failed
             # sync kill the thread silently with the job stuck on "running".
             project.job.state = "failed"
             project.job.message = str(exc) or type(exc).__name__
+            urd.log_progress(project.slug, f'refresh failed ({type(exc).__name__})', started)
         finally:
             project.lock.release()
 
