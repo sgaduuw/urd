@@ -2,7 +2,7 @@
   "key": "PROJ-2",
   "fields": {
     "summary": "Closed without starting",
-    "issuetype": {"name": "Task"},
+    "issuetype": {"name": "Task", "subtask": false},
     "status": {"name": "Done", "statusCategory": {"key": "done"}},
     "assignee": null,
     "reporter": {"accountId": "acct-1", "displayName": "Alder"},

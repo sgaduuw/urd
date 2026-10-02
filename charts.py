@@ -58,6 +58,7 @@ WINDOW_WEEKS = 26
 WINDOW_EXEMPT = {
     "aging_wip": "always current, so the window would hide the oldest work it exists to find",
     "carried_sprints": "a carried ticket is old by definition, so a window hides the worst of them",
+    "issue_classification": "all scoped tickets, including older open work excluded from totals",
 }
 
 
@@ -82,12 +83,14 @@ CHARTS = [
         section="Commitments",
         title="Sprint scope changes",
         kind="hbars",
-        caption="Ticket counts just before actual closure, for closed sprints. "
+        caption="Confirmed non-subtask counts just before actual closure, for closed sprints. "
+                "Subtask completions and unknown issue classifications are separate series. "
                 "Sprints missing a close time are labelled scheduled end fallback. "
                 "Original work is split into delivered, unfinished, removed and dropped. "
                 "Added counts work first added after the start, including later removals; "
                 "added_delivered is the subset still in the sprint and done at its end. "
                 "Unknown counts uncertain start membership or unknown end status; "
+                "subtasks_unknown reports the same uncertainty among confirmed subtasks. "
                 "known additions with unknown outcomes still count as added. "
                 "Dropped work is not delivery; sprints absent from the mirror cannot be shown. "
                 "Conflicting snapshots use the earliest start and latest close time "
@@ -95,6 +98,8 @@ CHARTS = [
         options={"labels": "sprint", "series": [
             "original_delivered", "original_unfinished", "original_removed",
             "original_dropped", "added", "added_delivered", "unknown",
+            "original_subtasks_completed", "added_subtasks_completed", "subtasks_unknown",
+            "classification_unknown",
         ]},
         sql="""
             WITH windows AS (
@@ -127,7 +132,7 @@ CHARTS = [
                 SELECT sprint_id, key FROM issue_sprints
             ),
             membership AS (
-                SELECT w.*, sc.key,
+                SELECT w.*, sc.key, i.is_subtask,
                        -- Classify each scoped ticket once at the chosen start.
                        coalesce(
                            (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
@@ -199,19 +204,32 @@ CHARTS = [
             )
             SELECT CASE WHEN scheduled_fallback THEN '[scheduled end fallback] '
                         ELSE '' END || sprint_name AS sprint,
-                   count(*) FILTER (WHERE committed AND retained AND done
+                   count(*) FILTER (WHERE is_subtask = FALSE AND committed AND retained AND done
                                     AND NOT dropped) AS original_delivered,
-                   count(*) FILTER (WHERE committed AND retained AND NOT done)
+                   count(*) FILTER (WHERE is_subtask = FALSE AND committed
+                                    AND retained AND NOT done)
                        AS original_unfinished,
-                   count(*) FILTER (WHERE committed AND NOT retained) AS original_removed,
-                   count(*) FILTER (WHERE committed AND retained AND done AND dropped)
+                   count(*) FILTER (WHERE is_subtask = FALSE AND committed AND NOT retained)
+                       AS original_removed,
+                   count(*) FILTER (WHERE is_subtask = FALSE AND committed
+                                    AND retained AND done AND dropped)
                        AS original_dropped,
-                   count(*) FILTER (WHERE added AND NOT committed) AS added,
-                   count(*) FILTER (WHERE added AND NOT committed AND retained AND done
+                   count(*) FILTER (WHERE is_subtask = FALSE AND added AND NOT committed) AS added,
+                   count(*) FILTER (WHERE is_subtask = FALSE AND added AND NOT committed
+                                    AND retained AND done
                                     AND NOT dropped)
                        AS added_delivered,
-                   count(*) FILTER (WHERE committed IS NULL OR (retained AND done IS NULL))
-                       AS unknown
+                   count(*) FILTER (WHERE is_subtask = FALSE AND
+                                    (committed IS NULL OR (retained AND done IS NULL))) AS unknown,
+                   count(*) FILTER (WHERE is_subtask AND committed AND retained AND done
+                                    AND NOT dropped) AS original_subtasks_completed,
+                   count(*) FILTER (WHERE is_subtask AND added AND NOT committed
+                                    AND retained AND done AND NOT dropped)
+                       AS added_subtasks_completed,
+                   count(*) FILTER (WHERE is_subtask AND
+                                    (committed IS NULL OR (retained AND done IS NULL)))
+                       AS subtasks_unknown,
+                   count(*) FILTER (WHERE is_subtask IS NULL) AS classification_unknown
             FROM outcomes
             GROUP BY sprint_id, sprint_name, start, scheduled_fallback
             ORDER BY start DESC, sprint_id
@@ -254,23 +272,27 @@ CHARTS = [
         section="Flow over time",
         title="Created versus closed per week",
         kind="lines",
-        caption="Where created and delivered diverge, the backlog is growing. "
+        caption="Created counts confirmed non-subtasks; delivered and dropped count closures. "
+                "Reclosed tickets count again. Subtask completions are separate closure events. "
                 "Dropped work is counted separately: it is a real outcome, and "
                 "it is not delivery.",
         # Interactive: ~100 weekly points across three series, where reading an
         # exact value off a 480px axis is guesswork.
-        options={"x": "week", "series": ["created", "delivered", "dropped"],
+        options={"x": "week", "series": ["created", "delivered", "dropped", "subtasks_completed"],
                  "interactive": True},
         sql="""
             WITH c AS (
                 SELECT date_trunc('week', created) AS week, count(*) AS created
-                FROM issues WHERE in_window(created) GROUP BY 1
+                FROM issues WHERE is_subtask = FALSE AND in_window(created) GROUP BY 1
             ),
             d AS (
                 SELECT date_trunc('week', ts) AS week,
-                       count(*) FILTER (WHERE NOT abandoned) AS delivered,
-                       count(*) FILTER (WHERE abandoned) AS dropped
-                FROM closures WHERE in_window(ts) GROUP BY 1
+                       count(*) FILTER (WHERE i.is_subtask = FALSE AND NOT c.abandoned)
+                           AS delivered,
+                       count(*) FILTER (WHERE i.is_subtask = FALSE AND c.abandoned) AS dropped,
+                       count(*) FILTER (WHERE i.is_subtask AND NOT c.abandoned)
+                           AS subtasks_completed
+                FROM closures c JOIN issues i ON i.key = c.key WHERE in_window(ts) GROUP BY 1
             )
             -- ::DATE because date_trunc returns a TIMESTAMP, and the axis label is
             -- the value's own str(): a weekly chart was printing '2026-01-05 00:00:00',
@@ -278,7 +300,8 @@ CHARTS = [
             SELECT COALESCE(c.week, d.week)::DATE AS week,
                    COALESCE(c.created, 0) AS created,
                    COALESCE(d.delivered, 0) AS delivered,
-                   COALESCE(d.dropped, 0) AS dropped
+                   COALESCE(d.dropped, 0) AS dropped,
+                   COALESCE(d.subtasks_completed, 0) AS subtasks_completed
             FROM c FULL OUTER JOIN d ON c.week = d.week
             ORDER BY week
         """,
@@ -288,14 +311,16 @@ CHARTS = [
         section="Flow over time",
         title="New versus done, four week trend",
         kind="combo",
-        caption="The same counts as the chart above, smoothed over four weeks. "
+        caption="Confirmed non-subtask creation and closure events, smoothed over four weeks. "
+                "Subtask completion events are shown separately. Reclosed tickets count again. "
                 "Week to week noise hides the direction; this is the direction. "
                 "The bars are the answer the three lines only imply: arriving minus "
                 "everything that leaves, delivered and dropped both. Above zero the "
                 "backlog grew that week. Same axis, because they are the same unit "
                 "and the bars are literally the difference between the lines.",
         options={"x": "week",
-                 "series": ["net_trend", "new_trend", "done_trend", "dropped_trend"],
+                 "series": ["net_trend", "new_trend", "done_trend", "dropped_trend",
+                            "subtasks_completed_trend"],
                  "bars": ["net_trend"], "interactive": True},
         # The week series is generated rather than taken from the data, so a week
         # in which nothing happened is a zero rather than a missing row. Without
@@ -310,18 +335,26 @@ CHARTS = [
             WITH weeks AS (
                 SELECT unnest(generate_series(
                     (SELECT min(date_trunc('week', created)) FROM issues),
-                    (SELECT max(date_trunc('week', created)) FROM issues),
+                    -- Closures can occur after the last creation, including
+                    -- subtask completions with no new main delivery tickets.
+                    (SELECT greatest(max(date_trunc('week', created)),
+                            (SELECT max(date_trunc('week', ts)) FROM closures)) FROM issues),
                     INTERVAL 1 WEEK))::DATE AS week
             ),
             c AS (SELECT date_trunc('week', created)::DATE w, count(*) n
-                  FROM issues GROUP BY 1),
+                  FROM issues WHERE is_subtask = FALSE GROUP BY 1),
             d AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
-                  FROM closures WHERE NOT abandoned GROUP BY 1),
+                  FROM closures c JOIN issues i ON i.key = c.key
+                  WHERE i.is_subtask = FALSE AND NOT c.abandoned GROUP BY 1),
             -- Dropped work leaves the backlog exactly as delivered work does.
             -- Omitting it made the gap between the two lines read as backlog
             -- growth of 271 over 26 weeks where the backlog chart showed 121.
             x AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
-                  FROM closures WHERE abandoned GROUP BY 1),
+                  FROM closures c JOIN issues i ON i.key = c.key
+                  WHERE i.is_subtask = FALSE AND c.abandoned GROUP BY 1),
+            sub AS (SELECT date_trunc('week', ts)::DATE w, count(*) n
+                    FROM closures c JOIN issues i ON i.key = c.key
+                    WHERE i.is_subtask AND NOT c.abandoned GROUP BY 1),
             trend AS (
                 SELECT weeks.week,
                        round(avg(COALESCE(c.n, 0)) OVER (
@@ -332,13 +365,17 @@ CHARTS = [
                        ), 1) AS done_trend,
                        round(avg(COALESCE(x.n, 0)) OVER (
                            ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-                       ), 1) AS dropped_trend
+                       ), 1) AS dropped_trend,
+                       round(avg(COALESCE(sub.n, 0)) OVER (
+                           ORDER BY weeks.week ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                       ), 1) AS subtasks_completed_trend
                 FROM weeks
                 LEFT JOIN c ON c.w = weeks.week
                 LEFT JOIN d ON d.w = weeks.week
                 LEFT JOIN x ON x.w = weeks.week
+                LEFT JOIN sub ON sub.w = weeks.week
             )
-            SELECT week, new_trend, done_trend, dropped_trend,
+            SELECT week, new_trend, done_trend, dropped_trend, subtasks_completed_trend,
                    -- Rounded after subtracting, not a sum of rounded means: the
                    -- three lines are each rounded for display and their rounding
                    -- errors would otherwise land in the bar.
@@ -353,11 +390,13 @@ CHARTS = [
         section="Commitments",
         title="New, delivered and dropped per sprint",
         kind="hbars",
-        caption="Every ticket mutation attributed to the sprint that was running "
+        caption="Confirmed non-subtask arrivals and closures, with subtask completions separate. "
+                "Reclosed tickets count again. Each mutation belongs to the sprint running "
                 "when it happened, rather than to a calendar week. Sprints vary "
                 "from three to twenty days here, so read these as totals for a "
                 "sprint and not as rates.",
-        options={"labels": "sprint", "series": ["arrived", "delivered", "dropped"],
+        options={"labels": "sprint",
+                 "series": ["arrived", "delivered", "dropped", "subtasks_completed"],
                  # Coverage counts mutations here, not tickets: "of 22347 tickets"
                  # would be a false sentence about a project with 1151 of them.
                  "unit": "mutations"},
@@ -365,21 +404,28 @@ CHARTS = [
         # dividing would invent a precision the sprint boundaries do not have.
         sql="""
             SELECT ms.sprint_name AS sprint,
-                   count(*) FILTER (WHERE ms.kind = 'created') AS arrived,
-                   count(*) FILTER (WHERE c.key IS NOT NULL AND NOT c.abandoned) AS delivered,
-                   count(*) FILTER (WHERE c.key IS NOT NULL AND c.abandoned) AS dropped
+                   count(*) FILTER (WHERE i.is_subtask = FALSE AND ms.kind = 'created') AS arrived,
+                   count(*) FILTER (WHERE i.is_subtask = FALSE AND c.key IS NOT NULL
+                                    AND NOT c.abandoned) AS delivered,
+                   count(*) FILTER (WHERE i.is_subtask = FALSE AND c.key IS NOT NULL
+                                    AND c.abandoned) AS dropped,
+                   count(*) FILTER (WHERE i.is_subtask AND c.key IS NOT NULL
+                                    AND NOT c.abandoned) AS subtasks_completed
             FROM mutation_sprint ms
+            JOIN issues i ON i.key = ms.key
             LEFT JOIN closures c
                    ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
             WHERE in_window(ms.ts)
             GROUP BY 1, ms.sprint_start
             ORDER BY ms.sprint_start DESC
         """,
-        # Two thirds attribute; the rest fall between sprints or inside two with
-        # the ticket in neither. Stated rather than implied.
+        # Both displayed classifications contribute to coverage, so a subtask-only
+        # component is not suppressed by an empty main-ticket denominator.
         coverage="""
-            SELECT (SELECT count(*) FROM mutation_sprint WHERE in_window(ts)),
-                   (SELECT count(*) FROM mutations WHERE in_window(ts))
+            SELECT (SELECT count(*) FROM mutation_sprint m JOIN issues i ON i.key = m.key
+                    WHERE i.is_subtask IS NOT NULL AND in_window(ts)),
+                   (SELECT count(*) FROM mutations m JOIN issues i ON i.key = m.key
+                    WHERE i.is_subtask IS NOT NULL AND in_window(ts))
         """,
     ),
     Chart(
@@ -387,7 +433,7 @@ CHARTS = [
         section="Flow over time",
         title="Cumulative flow",
         kind="stacked",
-        caption="Tickets per status, sampled once a week. A widening band is a queue.",
+        caption="Confirmed non-subtasks per status, sampled weekly. A widening band is a queue.",
         # Interactive: 26 weekly snapshots across 9 bands, where reading one
         # band off a stacked SVG means measuring the gap by eye.
         options={"x": "day", "band": "status", "value": "tickets", "interactive": True},
@@ -417,6 +463,7 @@ CHARTS = [
               -- left_at, not left_at::DATE: truncating excludes the final day,
               -- because midnight on that date is not less than the date itself.
               ON s.day >= d.entered::DATE AND s.day < d.left_at
+            JOIN issues i ON i.key = d.key AND i.is_subtask = FALSE
             GROUP BY 1, 2
             ORDER BY 1, 2
         """,
@@ -426,7 +473,7 @@ CHARTS = [
         section="Flow over time",
         title="Open tickets over time",
         kind="lines",
-        caption="What the gap between new and done adds up to. Counted from the "
+        caption="Open confirmed non-subtasks. Counted from the "
                 "status history rather than created minus closed, because a "
                 "reopened ticket closes twice and that arithmetic double counts it.",
         options={"x": "day", "series": ["open_tickets"], "interactive": True},
@@ -447,6 +494,7 @@ CHARTS = [
             FROM snapshots s
             JOIN status_durations d ON s.day >= d.entered::DATE AND s.day < d.left_at
             JOIN statuses st ON st.name = d.status
+            JOIN issues i ON i.key = d.key AND i.is_subtask = FALSE
             GROUP BY 1
             ORDER BY 1
         """,
@@ -511,16 +559,21 @@ CHARTS = [
         section="Commitments",
         title="Delivered versus open, per version",
         kind="hbars",
-        caption="The delivery view. One bar pair per version a ticket is tagged with.",
-        options={"labels": "fix_version", "series": ["delivered", "dropped", "open"]},
+        caption="Distinct confirmed non-subtasks per version, with completed subtasks separate. "
+                "A ticket tagged with multiple versions counts once in each.",
+        options={"labels": "fix_version",
+                 "series": ["delivered", "dropped", "open", "subtasks_completed"]},
         # UNNEST, so a ticket tagged with two versions counts in both rather than
         # being dropped or arbitrarily attributed to one.
         sql="""
             SELECT v AS fix_version,
-                   count(*) FILTER (WHERE status_category = 'done' AND NOT abandoned)
+                   count(*) FILTER (WHERE is_subtask = FALSE AND status_category = 'done'
+                                    AND NOT abandoned)
                        AS delivered,
-                   count(*) FILTER (WHERE abandoned) AS dropped,
-                   count(*) FILTER (WHERE status_category <> 'done') AS open
+                   count(*) FILTER (WHERE is_subtask = FALSE AND abandoned) AS dropped,
+                   count(*) FILTER (WHERE is_subtask = FALSE AND status_category <> 'done') AS open,
+                   count(*) FILTER (WHERE is_subtask AND status_category = 'done'
+                                    AND NOT abandoned) AS subtasks_completed
             FROM issues i, UNNEST(i.fix_versions) AS t(v)
             WHERE (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
@@ -532,7 +585,9 @@ CHARTS = [
         section="Commitments",
         title="Progress per epic",
         kind="hbars",
-        caption="The 40 largest by ticket count, biggest first. Horizontal because "
+        caption="Distinct confirmed non-subtasks only; subtasks are not rolled up to epics. "
+                "Delivered, dropped, open and percent done use that same population. "
+                "The 40 largest by ticket count, biggest first. Horizontal because "
                 "the label is a key and a title, which a vertical axis gives three "
                 "characters: all 138 epics laid out this way would be 9108px tall, "
                 "so the tail is not shown. Hover a bar for the full title. Parents "
@@ -559,7 +614,8 @@ CHARTS = [
             -- The parent is routinely outside the fetched scope, so this is a LEFT
             -- JOIN and the label falls back to the bare key rather than half a one.
             LEFT JOIN issues e ON e.key = i.parent
-            WHERE i.parent IS NOT NULL AND (in_window(i.created) OR in_window(i.resolved))
+            WHERE i.is_subtask = FALSE AND i.parent IS NOT NULL
+              AND (in_window(i.created) OR in_window(i.resolved))
             GROUP BY 1
             -- Ordered before limiting, so the cap keeps the epics worth keeping.
             -- Tie-broken on the label, which GROUP BY 1 makes unique, so the order
@@ -567,6 +623,45 @@ CHARTS = [
             -- arbitrary order and two renders of one database did not diff.
             ORDER BY count(*) DESC, 1
             LIMIT 40
+        """,
+    ),
+    Chart(
+        key="subtasks_by_parent",
+        section="Commitments",
+        title="Subtasks by direct parent",
+        kind="hbars",
+        caption="Current distinct confirmed subtasks, grouped by their actual direct parent. "
+                "Parent keys outside the report remain labels; no epic ancestry is inferred. "
+                "The 40 largest groups are shown. Dropped work is not completion.",
+        options={"labels": "parent", "series": ["subtasks_completed", "dropped", "open"]},
+        sql="""
+            SELECT coalesce(i.parent, '[no parent]') ||
+                       CASE WHEN p.summary IS NULL THEN '' ELSE '  ' || p.summary END AS parent,
+                   count(*) FILTER (WHERE i.status_category = 'done' AND NOT i.abandoned)
+                       AS subtasks_completed,
+                   count(*) FILTER (WHERE i.abandoned) AS dropped,
+                   count(*) FILTER (WHERE i.status_category <> 'done') AS open
+            FROM issues i LEFT JOIN issues p ON p.key = i.parent
+            WHERE i.is_subtask AND (in_window(i.created) OR in_window(i.resolved))
+            GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 40
+        """,
+    ),
+    Chart(
+        key="issue_classification",
+        section="Commitments",
+        title="Issue classification coverage",
+        kind="table",
+        caption="All scoped tickets, ignoring the time window so older open work remains visible. "
+                "Unknown means no boolean subtask flag and is excluded from both delivery totals "
+                "and subtask totals. "
+                "Classification uses latest fetched metadata, independently of parent presence.",
+        options={"headers": ["non_subtasks", "subtasks", "unknown", "total"], "sortable": True},
+        sql="""
+            SELECT count(*) FILTER (WHERE is_subtask = FALSE) AS non_subtasks,
+                   count(*) FILTER (WHERE is_subtask) AS subtasks,
+                   count(*) FILTER (WHERE is_subtask IS NULL) AS unknown,
+                   count(*) AS total
+            FROM issues
         """,
     ),
     Chart(
@@ -722,7 +817,8 @@ CHARTS = [
         section="Retrospective",
         title="Story points committed versus closed, per sprint",
         kind="hbars",
-        caption="Committed is what sat in the sprint when it started. Closed is "
+        caption="Confirmed non-subtask points. Committed is work present at sprint start. "
+                "Closed sums closure events, so reclosed tickets count again. Closed is "
                 "credited to the sprint that was running when the ticket closed, "
                 "which is not always the sprint it belonged to. Sprint lengths "
                 "differ here, so read these as totals rather than as a rate.",
@@ -744,7 +840,7 @@ CHARTS = [
                 SELECT sc.sprint_id, sum(i.story_points) AS points
                 FROM sprint_commitment sc JOIN issues i ON i.key = sc.key
                 -- > 0, not IS NOT NULL: an unestimated ticket is stored as 0 here.
-                WHERE sc.committed AND i.story_points > 0
+                WHERE i.is_subtask = FALSE AND sc.committed AND i.story_points > 0
                 GROUP BY 1
             ),
             closed AS (
@@ -752,7 +848,7 @@ CHARTS = [
                 FROM mutation_sprint ms
                 JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
                 JOIN issues i ON i.key = ms.key
-                WHERE NOT c.abandoned AND i.story_points > 0
+                WHERE i.is_subtask = FALSE AND NOT c.abandoned AND i.story_points > 0
                 GROUP BY 1
             )
             SELECT w.sprint_name AS sprint,
@@ -774,7 +870,7 @@ CHARTS = [
             FROM mutation_sprint ms
             JOIN closures c ON c.key = ms.key AND c.ts = ms.ts AND ms.kind = 'status'
             JOIN issues i ON i.key = ms.key
-            WHERE NOT c.abandoned AND in_window(ms.ts)
+            WHERE i.is_subtask = FALSE AND NOT c.abandoned AND in_window(ms.ts)
         """,
         tier="points",
     ),
