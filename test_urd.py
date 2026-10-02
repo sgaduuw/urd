@@ -4183,7 +4183,8 @@ def test_the_report_header_reflects_the_database_it_read():
 def test_commitment_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Commitments"}
     assert keys == {"sprint_scope_changes", "flow_per_sprint", "per_fix_version",
-                    "per_epic", "carry_over", "subtasks_by_parent", "issue_classification"}
+                    "per_epic", "carry_over", "subtasks_by_parent", "issue_classification",
+                    "active_sprint_scope", "active_sprint_tickets"}
 
 
 def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
@@ -4863,7 +4864,8 @@ def test_no_chart_reaches_around_the_scope_views():
     for chart in chart_specs.CHARTS:
         for table in ("issues_all", "changes_all", "issue_sprints_all"):
             for sql in (chart.sql, chart.coverage or ""):
-                if (chart.key == "sprint_scope_changes" and table == "issue_sprints_all"
+                if (chart.key in ("sprint_scope_changes", "active_sprint_scope",
+                                  "active_sprint_tickets") and table == "issue_sprints_all"
                         and sql == chart.sql):
                     metadata, counts = sql.split("sprint_changes AS (", 1)
                     assert table in metadata and table not in counts

@@ -200,6 +200,8 @@ and subtasks. If raw metadata is missing, derivation preserves that uncertainty.
 
 **Commitments**
 
+- Active sprint scope: original commitment, added work, removed work and uncertain membership per active sprint, with main work, subtasks and unknown issue types counted separately.
+- Active sprint tickets: linked tickets supporting those counts, with their origin and membership at the snapshot.
 - Sprint scope changes: original work split into delivered, unfinished, removed and dropped tickets, alongside added work and its delivered subset.
 - New, delivered and dropped per sprint: events attributed to the sprint running at the time.
 - Delivered versus open, per version: one bar pair per tagged version.
@@ -208,7 +210,32 @@ and subtasks. If raw metadata is missing, derivation preserves that uncertainty.
 - Issue classification coverage: counts of non-subtasks, subtasks and unknowns across all scoped tickets, independent of the report period.
 - Carried into each sprint: tickets with earlier sprint memberships.
 
-The scope-change chart uses non-subtask ticket counts, including unestimated work.
+Active sprint tables describe the mirrored snapshot, with its source sync timestamp
+shown beside each table. That cutoff is saved with the derived data, so a completed
+sync cannot advance it until derive finishes. After upgrading, run `derive` offline
+or use Refresh to establish the snapshot cutoff. Without it the tables show a notice.
+If sync was interrupted after starting source changes, finish a sync before deriving.
+This includes deleted tickets and metadata changes, even when no newer raw rows remain.
+The same applies if raw rows exceed a legacy timestamp rounded to whole seconds.
+The report does not query live Jira to establish whether a sprint is still active.
+
+Original means in the sprint at its start, including changes exactly at the start.
+Added counts each confirmed later addition once, including work created in the sprint.
+Removed means absent at the snapshot, including changes exactly at its cutoff.
+These counts overlap: an added ticket subsequently removed contributes to both.
+An original ticket that leaves and returns stays original and is no longer removed;
+a return whose initial membership is uncertain stays unknown instead of becoming
+a confirmed addition. No ticket-detail rows are truncated. Component and epic
+filters apply, while report `--since` does not hide an ongoing sprint.
+
+Parallel sprints remain separate by ID, even if their names match. Their state and
+start date come from the freshest mirrored snapshots across the whole mirror.
+Equally fresh snapshots must agree that the sprint is active and on its start date;
+older planned dates do not override that evidence. A missing start or a start after
+the snapshot prevents inclusion. Passing a scheduled end alone does not close a sprint.
+Sprints with no remaining metadata in the mirror cannot be shown.
+
+The closed-sprint scope-change chart uses non-subtask ticket counts, including unestimated work.
 Original and added subtask completions are separate series. Main work and subtasks
 have separate counts of uncertain membership or historical status; missing
 classification is counted separately from both. Original

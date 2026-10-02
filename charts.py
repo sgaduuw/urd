@@ -56,6 +56,8 @@ WINDOW_WEEKS = 26
 # comment because the report header reads it: a page claiming every chart covers
 # a window while one does not is worse than no claim at all.
 WINDOW_EXEMPT = {
+    "active_sprint_scope": "scope at the mirrored snapshot, regardless of sprint start date",
+    "active_sprint_tickets": "tickets supporting the active sprint snapshot",
     "aging_wip": "always current, so the window would hide the oldest work it exists to find",
     "carried_sprints": "a carried ticket is old by definition, so a window hides the worst of them",
     "issue_classification": "all scoped tickets, including older open work excluded from totals",
@@ -77,7 +79,171 @@ class Chart(NamedTuple):
     tier: str = "default"   # a key of THRESHOLDS, not a number
 
 
+# Both active snapshots and closed-sprint outcomes use the same membership rules.
+# Each windows row supplies start, finish and whether finish itself is included.
+SPRINT_MEMBERSHIP_SQL = """
+            sprint_changes AS (
+                SELECT key, ts, history_id,
+                       str_split(coalesce(from_id, ''), ', ') AS from_ids,
+                       str_split(coalesce(to_id, ''), ', ') AS to_ids
+                FROM changes WHERE field = 'Sprint'
+            ),
+            candidates AS (
+                SELECT w.sprint_id, c.key
+                FROM windows w JOIN sprint_changes c
+                  ON list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                  OR list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                UNION
+                SELECT sprint_id, key FROM issue_sprints
+            ),
+            membership AS (
+                SELECT w.*, sc.key, i.is_subtask, i.created, i.summary,
+                       -- Classify each scoped ticket once at the chosen start.
+                       coalesce(
+                           (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                            FROM sprint_changes c
+                            WHERE c.key = sc.key AND c.ts <= w.start
+                            ORDER BY c.ts DESC, c.history_id DESC LIMIT 1),
+                           CASE
+                             WHEN i.created > w.start THEN FALSE
+                             WHEN NOT EXISTS (SELECT 1 FROM sprint_changes c WHERE c.key = sc.key)
+                               THEN i.created <= w.start AND EXISTS (
+                                   SELECT 1 FROM issue_sprints m
+                                   WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
+                             WHEN NOT (
+                                 SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                                 FROM sprint_changes c WHERE c.key = sc.key
+                                 ORDER BY c.ts, c.history_id LIMIT 1)
+                               THEN FALSE
+                             -- First observed already in the sprint: preserve
+                             -- uncertainty instead of treating a return as new work.
+                           END
+                       ) AS committed,
+                       coalesce(
+                           (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                            FROM sprint_changes c
+                            WHERE c.key = sc.key
+                              AND (c.ts < w.finish OR (w.inclusive_finish AND c.ts = w.finish))
+                            ORDER BY c.ts DESC, c.history_id DESC LIMIT 1),
+                           -- With no earlier change, the first change's prior
+                           -- membership also describes the state at the cutoff.
+                           (SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                            FROM sprint_changes c WHERE c.key = sc.key
+                            ORDER BY c.ts, c.history_id LIMIT 1),
+                           EXISTS (
+                               SELECT 1 FROM issue_sprints m
+                               WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
+                       ) AS retained,
+                       (
+                           EXISTS (
+                               SELECT 1 FROM sprint_changes c
+                               WHERE c.key = sc.key AND c.ts > w.start
+                                 AND (c.ts < w.finish OR (w.inclusive_finish AND c.ts = w.finish))
+                                 AND list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
+                                 AND NOT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                           ) OR (
+                               i.created > w.start AND (i.created < w.finish
+                                   OR (w.inclusive_finish AND i.created = w.finish))
+                               -- Assignment at creation is not a changelog event.
+                               -- Later changes preserve its evidence in from_ids.
+                               AND coalesce(
+                                   (SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
+                                    FROM sprint_changes c WHERE c.key = sc.key
+                                    ORDER BY c.ts, c.history_id LIMIT 1),
+                                   EXISTS (SELECT 1 FROM issue_sprints m
+                                           WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
+                               )
+                           )
+                       ) AS added
+                FROM windows w
+                JOIN candidates sc ON sc.sprint_id = w.sprint_id
+                JOIN issues i ON i.key = sc.key
+            )
+"""
+
+ACTIVE_SPRINT_SQL = """
+    WITH freshest AS (
+        SELECT * FROM issue_sprints_all
+        QUALIFY dense_rank() OVER (
+            PARTITION BY sprint_id ORDER BY fetched_at DESC NULLS LAST
+        ) = 1
+    ),
+    windows AS (
+        SELECT sprint_id, max(sprint_name) AS sprint_name, min(start) AS start,
+               snapshot.finish, TRUE AS inclusive_finish
+        FROM freshest
+        CROSS JOIN (
+            SELECT try_cast(derived_sync_at AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS finish
+            FROM sync_state
+        ) snapshot
+        GROUP BY sprint_id, snapshot.finish
+        -- Equally fresh snapshots must agree on activity and the start boundary.
+        HAVING bool_and(coalesce(state, '') = 'active')
+           AND count(start) = count(*) AND count(DISTINCT start) = 1
+           AND min(start) <= snapshot.finish
+    ),
+""" + SPRINT_MEMBERSHIP_SQL + """,
+    classified AS (
+        SELECT *,
+               coalesce(sprint_name, 'Unnamed sprint') || ' (#' || sprint_id || ')' AS sprint,
+               CASE WHEN is_subtask = FALSE THEN 'Main work'
+                    WHEN is_subtask THEN 'Subtasks' ELSE 'Unknown type' END AS work,
+               CASE WHEN committed THEN 'Original'
+                    WHEN committed IS NULL THEN 'Unknown' ELSE 'Added' END AS origin
+        FROM membership
+        WHERE (committed OR added OR committed IS NULL)
+          AND (created IS NULL OR created <= finish)
+    )
+"""
+
+ACTIVE_SPRINT_CHARTS = ("active_sprint_scope", "active_sprint_tickets")
+
 CHARTS = [
+    Chart(
+        key="active_sprint_scope",
+        section="Commitments",
+        title="Active sprint scope",
+        kind="table",
+        caption="Distinct tickets per active sprint in the mirrored data. Original means "
+                "in the sprint at its start; added means first joined after the start. "
+                "Removed means absent at the snapshot, including later-removed additions, "
+                "so these columns overlap. Returning tickets keep their origin and are no "
+                "longer removed. Unknown means initial membership cannot be established. "
+                "Main work, subtasks and unknown issue types are separate. Ignores --since. "
+                "Sprint state and start use the freshest mirrored evidence. Equally fresh "
+                "snapshots must agree on activity and a known start date.",
+        options={"headers": ["sprint", "work", "original", "added", "removed", "unknown"],
+                 "sortable": True},
+        sql=ACTIVE_SPRINT_SQL + """
+            SELECT sprint, work,
+                   count(*) FILTER (WHERE origin = 'Original') AS original,
+                   count(*) FILTER (WHERE origin = 'Added') AS added,
+                   count(*) FILTER (WHERE NOT retained) AS removed,
+                   count(*) FILTER (WHERE origin = 'Unknown') AS unknown
+            FROM classified
+            GROUP BY sprint_id, sprint, start, work
+            ORDER BY start DESC, sprint_id, work
+        """,
+    ),
+    Chart(
+        key="active_sprint_tickets",
+        section="Commitments",
+        title="Active sprint tickets",
+        kind="table",
+        caption="Every ticket supporting the active sprint counts, including removed work. "
+                "Membership includes changes at the snapshot time. A return with uncertain "
+                "initial membership remains unknown, never a confirmed addition. "
+                "All rows respect the report's component and epic filters; ignores --since. "
+                "Sprints without any remaining metadata in the mirror cannot appear.",
+        options={"headers": ["sprint", "key", "summary", "work", "origin", "membership"],
+                 "sortable": True, "links": ["key"]},
+        sql=ACTIVE_SPRINT_SQL + """
+            SELECT sprint, key, summary, work, origin,
+                   CASE WHEN retained THEN 'In sprint' ELSE 'Removed' END AS membership
+            FROM classified
+            ORDER BY start DESC, sprint_id, work, origin, key
+        """,
+    ),
     Chart(
         key="sprint_scope_changes",
         section="Commitments",
@@ -106,7 +272,8 @@ CHARTS = [
                 SELECT sprint_id, max(sprint_name) AS sprint_name,
                        min(start) AS start,
                        coalesce(max(completed_at), max("end")) AS finish,
-                       max(completed_at) IS NULL AS scheduled_fallback
+                       max(completed_at) IS NULL AS scheduled_fallback,
+                       FALSE AS inclusive_finish
                 -- Dates belong to the sprint, even when the selected team's
                 -- tickets were all removed and only another team retains it.
                 FROM issue_sprints_all
@@ -115,83 +282,10 @@ CHARTS = [
                 HAVING first(coalesce(state, '') ORDER BY fetched_at DESC NULLS LAST,
                              coalesce(state, '') = 'closed', key, ordinal) = 'closed'
                    AND min(start) IS NOT NULL
+                   AND in_window(min(start))
                    AND coalesce(max(completed_at), max("end")) <= now() AT TIME ZONE 'UTC'
             ),
-            sprint_changes AS (
-                SELECT key, ts, history_id,
-                       str_split(coalesce(from_id, ''), ', ') AS from_ids,
-                       str_split(coalesce(to_id, ''), ', ') AS to_ids
-                FROM changes WHERE field = 'Sprint'
-            ),
-            candidates AS (
-                SELECT w.sprint_id, c.key
-                FROM windows w JOIN sprint_changes c
-                  ON list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
-                  OR list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
-                UNION
-                SELECT sprint_id, key FROM issue_sprints
-            ),
-            membership AS (
-                SELECT w.*, sc.key, i.is_subtask,
-                       -- Classify each scoped ticket once at the chosen start.
-                       coalesce(
-                           (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
-                            FROM sprint_changes c
-                            WHERE c.key = sc.key AND c.ts <= w.start
-                            ORDER BY c.ts DESC, c.history_id DESC LIMIT 1),
-                           CASE
-                             WHEN i.created > w.start THEN FALSE
-                             WHEN NOT EXISTS (SELECT 1 FROM sprint_changes c WHERE c.key = sc.key)
-                               THEN i.created <= w.start AND EXISTS (
-                                   SELECT 1 FROM issue_sprints m
-                                   WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
-                             WHEN NOT (
-                                 SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
-                                 FROM sprint_changes c WHERE c.key = sc.key
-                                 ORDER BY c.ts, c.history_id LIMIT 1)
-                               THEN FALSE
-                             -- First observed already in the sprint: preserve
-                             -- uncertainty instead of treating a return as new work.
-                           END
-                       ) AS committed,
-                       coalesce(
-                           (SELECT list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
-                            FROM sprint_changes c
-                            WHERE c.key = sc.key AND c.ts < w.finish
-                            ORDER BY c.ts DESC, c.history_id DESC LIMIT 1),
-                           -- With no earlier change, the first change's prior
-                           -- membership also describes the state at the cutoff.
-                           (SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
-                            FROM sprint_changes c WHERE c.key = sc.key
-                            ORDER BY c.ts, c.history_id LIMIT 1),
-                           EXISTS (
-                               SELECT 1 FROM issue_sprints m
-                               WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
-                       ) AS retained,
-                       (
-                           EXISTS (
-                               SELECT 1 FROM sprint_changes c
-                               WHERE c.key = sc.key AND c.ts > w.start AND c.ts < w.finish
-                                 AND list_contains(c.to_ids, CAST(w.sprint_id AS VARCHAR))
-                                 AND NOT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
-                           ) OR (
-                               i.created > w.start AND i.created < w.finish
-                               -- Assignment at creation is not a changelog event.
-                               -- Later changes preserve its evidence in from_ids.
-                               AND coalesce(
-                                   (SELECT list_contains(c.from_ids, CAST(w.sprint_id AS VARCHAR))
-                                    FROM sprint_changes c WHERE c.key = sc.key
-                                    ORDER BY c.ts, c.history_id LIMIT 1),
-                                   EXISTS (SELECT 1 FROM issue_sprints m
-                                           WHERE m.key = sc.key AND m.sprint_id = w.sprint_id)
-                               )
-                           )
-                       ) AS added
-                FROM windows w
-                JOIN candidates sc ON sc.sprint_id = w.sprint_id
-                JOIN issues i ON i.key = sc.key
-                WHERE in_window(w.start)
-            ),
+        """ + SPRINT_MEMBERSHIP_SQL + """,
             outcomes AS (
                 SELECT m.*, CASE WHEN s.category IN ('new', 'indeterminate', 'done')
                                  THEN s.category = 'done' END AS done,
