@@ -1,7 +1,7 @@
 # 3.11 is a floor, not a preference: _ts relies on its fromisoformat parsing both
 # the "+0000" shape Jira sends on issue fields and the "Z" shape it sends on the
 # sprint field. On 3.10 it raises.
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # Two dependencies, which is the whole list. duckdb for the database, flask for
 # the server. Anything else is a decision, not an install.
