@@ -457,7 +457,7 @@ def page(header, sections):
         window = ""
     elif exempt:
         window = (f"<strong>Charts cover {esc(header['window'])} onward, except "
-                  f"{esc(', '.join(exempt))}, which is always current.</strong> ")
+                  f"{esc(', '.join(exempt))}, which use current mirrored data.</strong> ")
     else:
         window = f"<strong>Every chart covers {esc(header['window'])} onward.</strong> "
     body = "".join(

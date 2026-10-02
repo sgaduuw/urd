@@ -227,6 +227,8 @@ SCOPE_COLUMNS = (
     "excluded_epics",
     "report_components",
     "parked_status",
+    "derived_sync_at",
+    "sync_started_at",
 )
 
 SCHEMA = """
@@ -557,6 +559,9 @@ def _sync(con, jira, scope, progress):
     # `fields` table, so resolving it afterwards left a first run asking for the
     # built-ins only, forever.
     progress('loading metadata')
+    # Persist before any source mutation, including metadata replacement and
+    # pruning. Surviving row timestamps cannot reveal an interrupted deletion.
+    save_scope(con, sync_started_at=_now().isoformat() + "Z")
     _refresh_lookups(con, jira, scope["project"])
     fields = fetch_fields(con)
 
@@ -631,7 +636,8 @@ def _sync(con, jira, scope, progress):
             progress(f"processed {n}/{len(wanted)}; {failed} failed")
             last_report = time.monotonic()
 
-    save_scope(con, fetched_fields=fields, last_sync_at=_now().isoformat(timespec="seconds") + "Z")
+    con.execute("UPDATE sync_state SET fetched_fields = ?, last_sync_at = ?, "
+                "sync_started_at = NULL", [fields, _now().isoformat() + "Z"])
     errors = con.execute("SELECT count(*) FROM sync_errors").fetchone()[0]
     progress(f"sync complete; {errors} error(s) outstanding")
     return 0
@@ -1356,6 +1362,16 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
         sprints = derive_sprints(con)
         con.execute(VIEWS_METRICS)
         con.execute(VIEWS_SPRINT_ATTRIBUTION)
+        # Sync may finish before derive starts. Date these tables atomically,
+        # so a report during refresh keeps the previous snapshot's cutoff.
+        # An interrupted sync can change or delete source rows. The timestamp
+        # guard also covers newer raw rows from before sync_started_at existed.
+        con.execute("""
+            UPDATE sync_state SET derived_sync_at = CASE WHEN sync_started_at IS NULL AND
+                coalesce((SELECT max(fetched_at) FROM raw_issues), TIMESTAMP '-infinity')
+                    <= (try_cast(last_sync_at AS TIMESTAMPTZ) AT TIME ZONE 'UTC')
+                THEN last_sync_at END
+        """)
         con.execute("COMMIT")
     except BaseException:
         con.execute("ROLLBACK")
@@ -1489,6 +1505,14 @@ def run_chart(con, chart, tiers=None):
     """Run one spec and hand its rows to the renderer its kind names."""
     tiers = chart_specs.THRESHOLDS if tiers is None else tiers
     subtitle = chart.caption
+    scope = load_scope(con)
+    if chart.key in chart_specs.ACTIVE_SPRINT_CHARTS:
+        snapshot = scope["derived_sync_at"]
+        if not snapshot:
+            return render.figure(chart, [],
+                                 "Snapshot cutoff unavailable. Run sync then derive, or Refresh, "
+                                 "to date the mirrored report data.", con)
+        subtitle = f"Mirrored snapshot through {snapshot}. " + subtitle
     if chart.coverage:
         numerator, denominator = con.execute(chart.coverage).fetchone()
         numerator, denominator = numerator or 0, denominator or 0
@@ -1504,7 +1528,7 @@ def run_chart(con, chart, tiers=None):
     rows = [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
     # Built from the synced site, never compiled in: the same report against a
     # different instance has to link to that instance.
-    site = load_scope(con)["site"]
+    site = scope["site"]
     link_base = f"https://{site}/browse/" if site else None
     return render.figure(chart, rows, subtitle, con, link_base)
 

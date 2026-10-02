@@ -227,7 +227,9 @@ def test_attention_precedes_flow_and_commitments_in_the_report():
     ]
     attention = ''.join(sections[0][1])
     assert 'id="aging_wip"' in attention and 'id="carried_sprints"' in attention
-    assert 'Sprint scope changes' in sections[2][1][0]
+    assert 'Active sprint scope' in sections[2][1][0]
+    assert 'Active sprint tickets' in sections[2][1][1]
+    assert 'Sprint scope changes' in sections[2][1][2]
     con.close()
 
 
