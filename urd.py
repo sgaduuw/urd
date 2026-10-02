@@ -649,7 +649,7 @@ CREATE OR REPLACE TABLE changes_all (
 SPRINTS_SCHEMA = """
 CREATE OR REPLACE TABLE issue_sprints_all (
     key VARCHAR, sprint_id BIGINT, sprint_name VARCHAR, state VARCHAR,
-    start TIMESTAMP, "end" TIMESTAMP, ordinal INTEGER
+    start TIMESTAMP, "end" TIMESTAMP, ordinal INTEGER, completed_at TIMESTAMP, fetched_at TIMESTAMP
 );
 """
 
@@ -805,17 +805,19 @@ def derive_sprints(con):
     if not sprint_field:
         return 0
     rows = []
-    for key, raw in con.execute("SELECT key, json FROM raw_issues ORDER BY key").fetchall():
+    for key, raw, fetched_at in con.execute(
+            "SELECT key, json, fetched_at FROM raw_issues ORDER BY key").fetchall():
         sprints = json.loads(raw)["fields"].get(sprint_field) or []
         for ordinal, sprint in enumerate(sprints, start=1):
             rows.append(
                 [
                     key, sprint.get("id"), sprint.get("name"), sprint.get("state"),
                     _ts(sprint.get("startDate")), _ts(sprint.get("endDate")), ordinal,
+                    _ts(sprint.get("completeDate")), fetched_at,
                 ]
             )
     if rows:
-        con.executemany(f"INSERT INTO issue_sprints_all VALUES ({','.join(['?'] * 7)})", rows)
+        con.executemany(f"INSERT INTO issue_sprints_all VALUES ({','.join(['?'] * 9)})", rows)
     return len(rows)
 
 

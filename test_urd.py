@@ -2050,6 +2050,29 @@ def test_assignee_display_name_refresh_on_derive_issues():
     assert name_after == "New Assignee Name", f"Expected 'New Assignee Name', got '{name_after}'"
 
 
+def test_derive_recovers_completion_from_raw_data_over_legacy_schema():
+    con = urd.open_db(_tmpdb())
+    load_fixtures(con, 'two_sprints')
+    raw = json.loads(con.execute("SELECT json FROM raw_issues WHERE key='PROJ-3'").fetchone()[0])
+    sprint_field = urd.resolve_field(con, 'Sprint')
+    con.execute("UPDATE raw_issues SET fetched_at = '2026-01-23'")
+    raw['fields'][sprint_field][0]['completeDate'] = '2026-01-20T11:00:00+02:00'
+    con.execute("UPDATE raw_issues SET json=? WHERE key='PROJ-3'", [json.dumps(raw)])
+    con.execute('CREATE TABLE issue_sprints_all (key VARCHAR, sprint_id BIGINT, '
+                'sprint_name VARCHAR, state VARCHAR, start TIMESTAMP, "end" TIMESTAMP, '
+                'ordinal INTEGER)')
+    for _ in range(2):
+        urd.derive(con, 'To Do,In Progress,Review,Done', 'In Progress', 'Review')
+        columns = [r[0] for r in con.execute('DESCRIBE issue_sprints_all').fetchall()]
+        assert 'completed_at' in columns, 'derive discarded Jira completeDate'
+        result = con.execute('SELECT completed_at, fetched_at FROM issue_sprints ORDER BY ordinal')
+        assert result.fetchall() == [
+            (datetime(2026, 1, 20, 9), datetime(2026, 1, 23)),
+            (None, datetime(2026, 1, 23)),
+        ]
+    con.close()
+
+
 def test_sprint_membership_is_ordered_so_carry_over_is_visible():
     """Ordinal must follow array position, not id or name order. The fixture has
     array [id=7 name=SprintB, id=3 name=SprintA] so ordinal must be [1, 2], not
@@ -3594,7 +3617,9 @@ def test_the_landing_rate_counts_each_sprint_once():
     con = _derived("reopened")
     # PROJ-1 is closed, scored 5, and already sits in exactly one sprint. Add a
     # second membership row for that same sprint.
-    con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-1', 7, 'Sprint B', "
+    con.execute("INSERT INTO issue_sprints_all "
+        "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+        "VALUES ('PROJ-1', 7, 'Sprint B', "
                 "'closed', TIMESTAMP '2026-01-05 09:00', "
                 "TIMESTAMP '2026-01-19 09:00', 2)")
     rows = _flow_rows(con, "sprint_landing_rate")[1]
@@ -4348,7 +4373,9 @@ def test_rework_is_attributed_to_the_sprint_it_happened_in():
     apart. PROJ-1 gets a later second sprint here so the two models disagree."""
     con = _derived("reopened", "two_sprints")
     con.execute(
-        "INSERT INTO issue_sprints_all VALUES ('PROJ-1', 3, 'Sprint A', 'closed', "
+        "INSERT INTO issue_sprints_all "
+            "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+            "VALUES ('PROJ-1', 3, 'Sprint A', 'closed', "
         "TIMESTAMP '2026-01-19 09:00', TIMESTAMP '2026-02-02 09:00', 2)")
     _, rows = _flow_rows(con, "rework_per_sprint")
     # The backward move is at 2026-01-09, inside Sprint B's window. Attributing to
@@ -4423,7 +4450,9 @@ def test_carried_sprints_puts_the_worst_carried_ticket_first():
     for i, (sid, name, start) in enumerate((
             (11, "Sprint C", "2026-02-01"), (12, "Sprint D", "2026-02-15"),
             (13, "Sprint E", "2026-03-01")), start=1):
-        con.execute("INSERT INTO issue_sprints_all VALUES ('PROJ-9', ?, ?, 'closed', "
+        con.execute("INSERT INTO issue_sprints_all "
+            "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+            "VALUES ('PROJ-9', ?, ?, 'closed', "
                     "?::TIMESTAMP, ?::TIMESTAMP + INTERVAL 14 DAY, ?)",
                     [sid, name, start, start, i])
     rows = _flow_rows(con, "carried_sprints")[1]
@@ -4448,7 +4477,9 @@ def test_carried_sprints_and_the_aging_table_break_a_tie_on_the_key():
                     "TIMESTAMP '2026-01-06 09:00', 'tied', FALSE)", [key])
         for sid, name, start in ((7, "Sprint B", "2026-01-05"),
                                  (3, "Sprint A", "2026-01-19")):
-            con.execute("INSERT INTO issue_sprints_all VALUES (?, ?, ?, 'closed', "
+            con.execute("INSERT INTO issue_sprints_all "
+                "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+                "VALUES (?, ?, ?, 'closed', "
                         "?::TIMESTAMP, ?::TIMESTAMP + INTERVAL 14 DAY, 1)",
                         [key, sid, name, start, start])
         # status_durations is a view over transitions, so the aging table reaches
@@ -4484,7 +4515,9 @@ def test_a_membership_with_no_window_is_not_counted_as_a_sprint():
     nothing about this guard."""
     con = _derived("reopened", "two_sprints")
     con.execute(
-        "INSERT INTO issue_sprints_all VALUES ('PROJ-3', 99, 'Refined Backlog', "
+        "INSERT INTO issue_sprints_all "
+            "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+            "VALUES ('PROJ-3', 99, 'Refined Backlog', "
         "'active', NULL, NULL, 3)")
     rows = {r["key"]: r["sprints"] for r in _flow_rows(con, "carried_sprints")[1]}
     assert rows == {"PROJ-3": 2}, "a board column was counted as a sprint"
@@ -4498,7 +4531,9 @@ def _sprint_move(con, key, ts, to_id, to_str, created="2026-01-01 09:00"):
                 "'new', 'seeded', ?::TIMESTAMP, FALSE)", [key, created])
     con.execute("INSERT INTO changes_all VALUES (?, ?::TIMESTAMP, 'Sprint', "
                 "NULL, '', ?, ?, 'acct-1', 1)", [key, ts, to_id, to_str])
-    con.execute("INSERT INTO issue_sprints_all VALUES (?, 7, 'Sprint B', 'closed', "
+    con.execute("INSERT INTO issue_sprints_all "
+        "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+        "VALUES (?, 7, 'Sprint B', 'closed', "
                 "TIMESTAMP '2026-01-05 09:00', TIMESTAMP '2026-01-19 09:00', 1)", [key])
 
 

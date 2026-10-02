@@ -1,5 +1,8 @@
 """Team report decisions, using synthetic sprint histories only."""
+import xml.etree.ElementTree as ET
+
 import charts
+import render
 import test_helpers  # noqa: F401 - refuses network access
 import urd
 
@@ -18,7 +21,9 @@ def _ticket(con, key, *, joined='2026-01-01', created='2025-12-01'):
     con.execute("INSERT INTO issues_all (key, created, status, status_category, "
                 "components, abandoned) VALUES (?, ?, 'To Do', 'new', ['TEAM'], FALSE)",
                 [key, created])
-    con.execute("INSERT INTO issue_sprints_all VALUES "
+    con.execute("INSERT INTO issue_sprints_all "
+        "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+        "VALUES "
                 "(?, 7, 'Sprint A', 'closed', '2026-01-05', '2026-01-19', 1)", [key])
     if joined:
         _change(con, key, joined, 'Sprint', None, '7', 1)
@@ -58,7 +63,8 @@ def test_original_commitment_and_added_delivery_stay_separate():
     _ticket(con, 'REMOVED-BEFORE', joined='2026-01-01')
     _change(con, 'REMOVED-BEFORE', '2026-01-03', 'Sprint', '7', '')
     assert _rows(con) == [{
-        'sprint': 'Sprint A', 'original_delivered': 1, 'original_unfinished': 4,
+        'sprint': '[scheduled end fallback] Sprint A',
+        'original_delivered': 1, 'original_unfinished': 4,
         'original_removed': 1, 'original_dropped': 1, 'added': 3, 'added_delivered': 1,
         'unknown': 0,
     }]
@@ -79,7 +85,9 @@ def test_sprint_ids_and_boundaries_prevent_double_counting():
     _change(con, 'BOUNDARY', '2026-01-10', 'status', 'To Do', 'Done')
     _change(con, 'BOUNDARY', '2026-01-19', 'Sprint', '7', '')
     # A renamed embedded sprint and a parallel sprint with the same name.
-    con.execute("INSERT INTO issue_sprints_all VALUES "
+    con.execute("INSERT INTO issue_sprints_all "
+        "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+        "VALUES "
                 "('BOUNDARY', 7, 'Sprint renamed', 'closed', '2026-01-05', '2026-01-19', 2)")
     _ticket(con, 'PARALLEL')
     con.execute("UPDATE issue_sprints_all SET sprint_id = 8 WHERE key = 'PARALLEL'")
@@ -100,10 +108,13 @@ def test_conflicting_sprint_snapshots_do_not_duplicate_or_reclassify_tickets():
     _ticket(con, 'ADDITION', joined='2026-01-05 12:00')
     # One stale snapshot starts later, after ADDITION joined. The chart uses
     # the earliest recorded start consistently for membership and its window.
-    con.execute("INSERT INTO issue_sprints_all VALUES "
+    con.execute("INSERT INTO issue_sprints_all "
+        "(key, sprint_id, sprint_name, state, start, \"end\", ordinal) "
+        "VALUES "
                 "('ORIGINAL', 7, 'Sprint A', 'closed', '2026-01-06', '2026-01-19', 2)")
     assert _rows(con) == [{
-        'sprint': 'Sprint A', 'original_delivered': 0, 'original_unfinished': 1,
+        'sprint': '[scheduled end fallback] Sprint A',
+        'original_delivered': 0, 'original_unfinished': 1,
         'original_removed': 0, 'original_dropped': 0, 'added': 1, 'added_delivered': 0,
         'unknown': 0,
     }]
@@ -149,7 +160,8 @@ def test_scope_filters_preserve_sprint_dates_for_removed_tickets():
                 "WHERE key = 'OTHER-TEAM'")
     assert _rows(con)[0]['original_removed'] == 1
     expected = [{
-        'sprint': 'Sprint A', 'original_delivered': 0, 'original_unfinished': 0,
+        'sprint': '[scheduled end fallback] Sprint A',
+        'original_delivered': 0, 'original_unfinished': 0,
         'original_removed': 1, 'original_dropped': 0, 'added': 0, 'added_delivered': 0,
         'unknown': 0,
     }]
@@ -212,6 +224,102 @@ def test_attention_precedes_flow_and_commitments_in_the_report():
     attention = ''.join(sections[0][1])
     assert 'id="aging_wip"' in attention and 'id="carried_sprints"' in attention
     assert 'Sprint scope changes' in sections[2][1][0]
+    con.close()
+
+
+
+def test_actual_close_includes_late_outcomes_but_not_cutoff_events():
+    con = _db()
+    for key in ('DONE', 'REMOVED', 'DROPPED', 'BOUNDARY', 'REOPENED'):
+        _ticket(con, key)
+    _ticket(con, 'ADDED', joined='2026-01-20')
+    con.execute("UPDATE issue_sprints_all SET completed_at = '2026-01-21'")
+    _change(con, 'DONE', '2026-01-20', 'status', 'To Do', 'Done')
+    _change(con, 'REMOVED', '2026-01-20', 'Sprint', '7', '')
+    _change(con, 'DROPPED', '2026-01-20', 'status', 'To Do', 'Dropped')
+    _change(con, 'BOUNDARY', '2026-01-21', 'status', 'To Do', 'Done')
+    _change(con, 'REOPENED', '2026-01-18', 'status', 'To Do', 'Done')
+    _change(con, 'REOPENED', '2026-01-22', 'status', 'Done', 'To Do', 3)
+    _change(con, 'ADDED', '2026-01-20 12:00', 'status', 'To Do', 'Done')
+    assert _rows(con) == [{
+        'sprint': 'Sprint A', 'original_delivered': 2, 'original_unfinished': 1,
+        'original_removed': 1, 'original_dropped': 1, 'added': 1,
+        'added_delivered': 1, 'unknown': 0,
+    }]
+    con.close()
+
+
+def test_early_close_and_missing_completion_use_distinct_cutoffs():
+    con = _db()
+    _ticket(con, 'EARLY')
+    _change(con, 'EARLY', '2026-01-18', 'status', 'To Do', 'Done')
+    con.execute("UPDATE issue_sprints_all SET completed_at = '2026-01-17', "
+                "\"end\" = '2099-01-19'")
+    assert _rows(con)[0]['original_unfinished'] == 1
+    assert _rows(con)[0]['sprint'] == 'Sprint A'
+    con.execute("UPDATE issue_sprints_all SET completed_at = NULL, "
+                "\"end\" = '2026-01-19'")
+    assert _rows(con)[0]['original_delivered'] == 1
+    assert _rows(con)[0]['sprint'] == '[scheduled end fallback] Sprint A'
+    assert 'scheduled end fallback' in ''.join(urd.render_sections(con)[2][1])
+    for state in ('active', 'future'):
+        con.execute('UPDATE issue_sprints_all SET state = ?', [state])
+        assert _rows(con) == []
+    con.close()
+
+
+def test_latest_completion_survives_stale_and_filtered_snapshots():
+    con = _db()
+    _ticket(con, 'SCOPED')
+    _ticket(con, 'OTHER')
+    con.execute("UPDATE issues_all SET components = ['OTHER'] WHERE key = 'OTHER'")
+    con.execute("UPDATE issue_sprints_all SET completed_at = '2026-01-20'")
+    con.execute("UPDATE issue_sprints_all SET completed_at = '2026-01-22' "
+                "WHERE key = 'OTHER'")
+    _change(con, 'SCOPED', '2026-01-21', 'status', 'To Do', 'Done')
+    urd.set_report_components(con, ['TEAM'])
+    assert _rows(con)[0]['original_delivered'] == 1
+    con.execute("UPDATE issue_sprints_all SET fetched_at = '2026-01-24' WHERE key = 'OTHER'")
+    con.execute("UPDATE issue_sprints_all SET state = 'active', completed_at = NULL, "
+                "fetched_at = '2026-01-23' WHERE key = 'SCOPED'")
+    assert _rows(con)[0]['original_delivered'] == 1
+    con.close()
+
+
+def test_reopened_sprint_uses_freshest_global_state():
+    con = _db()
+    _ticket(con, 'OLD')
+    _ticket(con, 'FRESH')
+    con.execute("UPDATE issue_sprints_all SET fetched_at = '2026-01-21'")
+    con.execute("UPDATE issue_sprints_all SET fetched_at = '2026-01-22' WHERE key = 'FRESH'")
+    con.execute("UPDATE issue_sprints_all SET completed_at = '2026-01-20'")
+    con.execute("UPDATE issue_sprints_all SET state = 'active', completed_at = NULL "
+                "WHERE key = 'FRESH'")
+    con.execute("UPDATE issues_all SET components = ['OTHER'] WHERE key = 'FRESH'")
+    urd.set_report_components(con, ['TEAM'])
+    assert _rows(con) == [], 'stale closed metadata finalized a reopened sprint'
+    # The reverse transition must also work: an older active snapshot cannot
+    # hide a newly closed sprint, even when its latest member is filtered out.
+    con.execute("UPDATE issue_sprints_all SET state = 'active' WHERE key = 'OLD'")
+    con.execute("UPDATE issue_sprints_all SET state = 'closed', completed_at = '2026-01-23' "
+                "WHERE key = 'FRESH'")
+    assert _rows(con)[0]['original_unfinished'] == 1
+    # Equal-time conflicting states cannot establish closure.
+    con.execute("UPDATE issue_sprints_all SET fetched_at = '2026-01-22'")
+    assert _rows(con) == []
+    con.close()
+
+
+def test_fallback_warning_remains_visible_for_long_sprint_names():
+    con = _db()
+    _ticket(con, 'FALLBACK')
+    con.execute("UPDATE issue_sprints_all SET sprint_name = "
+                "'Quarterly Infrastructure Delivery Sprint 2026-01'")
+    chart = next(c for c in charts.CHARTS if c.key == 'sprint_scope_changes')
+    svg = ET.fromstring(render.hbars(_rows(con), **chart.options))
+    visible_labels = [node.text or '' for node in svg.iter()
+                      if node.tag.rsplit('}', 1)[-1] == 'text']
+    assert any(label.startswith('[scheduled end fallback] ') for label in visible_labels)
     con.close()
 
 
