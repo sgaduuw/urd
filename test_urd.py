@@ -4184,7 +4184,8 @@ def test_commitment_charts_are_all_present():
     keys = {c.key for c in chart_specs.CHARTS if c.section == "Commitments"}
     assert keys == {"sprint_scope_changes", "flow_per_sprint", "per_fix_version",
                     "per_epic", "carry_over", "subtasks_by_parent", "issue_classification",
-                    "active_sprint_scope", "active_sprint_tickets"}
+                    "active_sprint_scope", "active_sprint_tickets", "epic_scope_trend",
+                    "epic_scope_by_week", "epic_history_coverage"}
 
 
 def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
@@ -4847,6 +4848,11 @@ def test_every_chart_respects_the_report_window():
     for chart in chart_specs.CHARTS:
         exempt = chart.key in chart_specs.WINDOW_EXEMPT
         used = "in_window(" in chart.sql
+        if chart.key == "epic_history_coverage":
+            # Dated events follow the window; current relationship gaps do not.
+            # test_epic_scope pins both populations on actual data.
+            assert used and exempt
+            continue
         assert used != exempt, (
             f"{chart.key}: exempt={exempt} but "
             f"{'uses' if used else 'ignores'} the window")
@@ -4862,7 +4868,7 @@ def test_no_chart_reaches_around_the_scope_views():
     another component can be the sole remaining source of a removed sprint's dates.
     test_team_report also checks component and epic isolation on actual counts."""
     for chart in chart_specs.CHARTS:
-        for table in ("issues_all", "changes_all", "issue_sprints_all"):
+        for table in ("issues_all", "changes_all", "issue_sprints_all", "epic_events_all"):
             for sql in (chart.sql, chart.coverage or ""):
                 if (chart.key in ("sprint_scope_changes", "active_sprint_scope",
                                   "active_sprint_tickets") and table == "issue_sprints_all"

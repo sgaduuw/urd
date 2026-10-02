@@ -206,9 +206,37 @@ and subtasks. If raw metadata is missing, derivation preserves that uncertainty.
 - New, delivered and dropped per sprint: events attributed to the sprint running at the time.
 - Delivered versus open, per version: one bar pair per tagged version.
 - Progress per epic: delivered, dropped and open non-subtask children per parent.
+- Epic scope and completions per week: recorded additions, removals, delivery and dropped work.
+- Epic scope by week: linked epic breakdown of those events and net scope change.
+- Epic history coverage: attributed events and missing or uncertain relationship evidence.
 - Subtasks by parent: separate completion, dropped and open counts under actual direct parents.
 - Issue classification coverage: counts of non-subtasks, subtasks and unknowns across all scoped tickets, independent of the report period.
 - Carried into each sprint: tickets with earlier sprint memberships.
+
+Epic scope charts count confirmed non-subtask events under parents whose stored
+hierarchy metadata identifies them as epics. Moving a ticket from one epic to
+another records a removal and an addition. Completion belongs to the epic recorded
+at that event, not the current parent. Reclosures and repeated additions count
+again. Delivery and dropped work do not remove scope; net scope is added minus
+removed. These event totals complement the current distinct-ticket progress chart.
+
+Modern and legacy parent changes are normalized without counting duplicate aliases
+or parent-side child records twice. A simultaneous parent/status edit uses the
+resulting parent. Missing ordering, broken history, unresolved parents and unknown
+parent types remain unattributed. Current parent alone never establishes an initial
+assignment or historical membership. The coverage table exposes these limits,
+including parent relationships without change history and broken or unordered
+histories even when no work has completed. Unknown issue types
+and subtasks are excluded from confirmed counts; hierarchy and classification use
+mirrored metadata rather than reconstructed historical issue types.
+
+Event dates respect `--since`; current relationship gaps remain visible regardless
+of it. Component and epic exclusions apply, including historical epic keys after
+a ticket has moved elsewhere. The weekly graph shows zero observed events in quiet
+weeks, not a guarantee of complete history. The existing coverage threshold applies
+to the graph and weekly table. No opening scope or backlog balance is inferred.
+Run `derive` offline or Refresh after upgrading to build the new epic history.
+Charts use the same dated snapshot rules as the active sprint tables below.
 
 Active sprint tables describe the mirrored snapshot, with its source sync timestamp
 shown beside each table. That cutoff is saved with the derived data, so a completed

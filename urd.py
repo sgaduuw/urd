@@ -928,6 +928,149 @@ def derive_changes(con):
     return len(rows)
 
 
+def derive_epic_events(con):
+    """Normalize parent evidence and attribute closures without backdating membership."""
+    identities, levels, current = {}, {}, {}
+
+    def remember(mapping, key, value, fetched):
+        if key is None:
+            return
+        stamp = fetched or datetime.min
+        previous = mapping.get(key)
+        if previous is None or stamp > previous[0]:
+            mapping[key] = (stamp, {value})
+        elif stamp == previous[0]:
+            previous[1].add(value)
+
+    for key, fetched, blob in con.execute(
+            'SELECT key, fetched_at, json FROM raw_issues').fetchall():
+        raw = json.loads(blob)
+        parent = raw['fields'].get('parent') or {}
+        current[key] = parent
+        for obj in ({**raw, 'key': key}, parent):
+            name = obj.get('key')
+            if not name:
+                continue
+            if obj.get('id') is not None:
+                remember(identities, str(obj['id']), name, fetched)
+            level = ((obj.get('fields') or {}).get('issuetype') or {}).get('hierarchyLevel')
+            remember(levels, name, level, fetched)
+
+    def endpoint(identity, label):
+        if not identity and not label:
+            return (None, None, 'No epic at event')
+        candidates = identities.get(str(identity), (None, set()))[1]
+        if len(candidates) == 1:
+            parent = next(iter(candidates))
+        elif not candidates:
+            parent = next((v for v in (label, identity)
+                           if isinstance(v, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*-[0-9]+', v)),
+                          None)
+        else:
+            parent = None
+        if parent is None:
+            return (str(identity or label), None, 'Unresolved parent')
+        evidence = levels.get(parent, (None, set()))[1]
+        level = next(iter(evidence)) if len(evidence) == 1 else None
+        reason = 'Epic' if level == 1 else ('Non-epic parent' if level is not None
+                                          else 'Unknown parent type')
+        return (parent, parent, reason)
+
+    histories = {}
+    for key, ts, hid, before, before_str, after, after_str in con.execute("""
+        SELECT key, ts, history_id, from_id, from_str, to_id, to_str FROM changes_all
+        WHERE field IN ('IssueParentAssociation', 'Parent', 'Epic Link', 'Parent Link')
+    """).fetchall():
+        pair = (endpoint(before, before_str), endpoint(after, after_str))
+        histories.setdefault(key, {}).setdefault((ts, hid), set()).add(pair)
+
+    timelines, rows = {}, []
+    known_parent = ('Epic', 'Non-epic parent', 'No epic at event', 'Unknown parent type')
+    for key, groups in histories.items():
+        timeline = []
+        orders = {}
+        for ts, hid in groups:
+            orders.setdefault(ts, []).append(hid)
+        unordered = {ts for ts, ids in orders.items() if len(ids) > 1 and None in ids}
+        for (ts, hid), pairs in sorted(groups.items(),
+                                      key=lambda item: (item[0][0] or datetime.min,
+                                                        item[0][1] or 0)):
+            if len(pairs) == 1:
+                before, after = next(iter(pairs))
+            else:
+                before = after = (None, None, 'Conflicting parent changes')
+            timeline.append((ts, hid, before, after))
+            # Alias duplicates and same-parent edits are not new scope.
+            if len(pairs) > 1 or before[0] != after[0]:
+                for kind, value in (('removed', before), ('added', after)):
+                    if value[2] != 'No epic at event':
+                        rows.append((key, ts, value[1], kind,
+                                     value[2] if ts is not None else 'Undated parent history'))
+        spans, gaps = [], set()
+        for index, (ts, hid, _, after) in enumerate(timeline):
+            state = after
+            following = (timeline[index + 1][2] if index + 1 < len(timeline)
+                         else endpoint(current[key].get('id'), current[key].get('key')))
+            next_unordered = index + 1 < len(timeline) and timeline[index + 1][0] in unordered
+            if ts in unordered or next_unordered:
+                state = (None, None, 'Ambiguous event order')
+            elif after[2] in known_parent:
+                if following[2] not in known_parent:
+                    state = (None, None, following[2])
+                elif following[0] != after[0]:
+                    state = (after[0], after[1], 'Broken parent history')
+            if state != after:
+                gaps.add(state[2])
+            # The edit establishes its immediate result; missing changes make the
+            # subsequent interval uncertain, including an uncertain next boundary.
+            # Scope endpoints remain observed facts.
+            spans.append((ts, hid, after, state))
+        timelines[key] = spans
+        for reason in sorted(gaps):
+            rows.append((key, None, None, 'history_gap', reason))
+
+    for key, parent in current.items():
+        if key not in timelines and parent:
+            value = endpoint(parent.get('id'), parent.get('key'))
+            if value[2] != 'Non-epic parent':
+                rows.append((key, None, value[1], 'history_gap', 'No recorded parent changes'))
+
+    for key, ts, hid, dropped in con.execute("""
+        SELECT c.key, c.ts, c.history_id,
+               c.to_str IN (SELECT status FROM abandoned_status)
+        FROM changes_all c JOIN statuses s ON s.name = c.to_str
+        WHERE c.field = 'status' AND s.category = 'done'
+    """).fetchall():
+        timeline = timelines.get(key, [])
+        value = (None, None, 'Parent unknown at completion')
+        # Missing history IDs cannot order separate edits at the same instant.
+        ambiguous = any(t == ts and (h is None or hid is None) for t, h, _, _ in timeline)
+        undated = any(t is None for t, _, _, _ in timeline)
+        if ts is not None and not ambiguous and not undated:
+            for changed, history_id, immediate, interval in timeline:
+                if changed is None or (changed, history_id or 0) > (ts, hid or 0):
+                    continue
+                value = immediate if (changed, history_id) == (ts, hid) else interval
+        if ambiguous:
+            value = (None, None, 'Ambiguous event order')
+        if undated:
+            value = (None, None, 'Undated parent history')
+        rows.append((key, ts, value[1], 'dropped' if dropped else 'delivered', value[2]))
+
+    con.execute("""
+        CREATE OR REPLACE TABLE epic_events_all (
+            key VARCHAR, ts TIMESTAMP, parent VARCHAR, kind VARCHAR, reason VARCHAR
+        )
+    """)
+    if rows:
+        con.executemany('INSERT INTO epic_events_all VALUES (?, ?, ?, ?, ?)', rows)
+    con.execute("""
+        CREATE OR REPLACE VIEW epic_events AS
+        SELECT e.*, i.is_subtask FROM epic_events_all e JOIN issues i USING (key)
+        WHERE e.parent IS NULL OR e.parent NOT IN (SELECT key FROM excluded_epics)
+    """)
+
+
 # Attribute a ticket mutation to the sprint that was RUNNING when it happened,
 # rather than to a calendar week or to the ticket's own sprint. Two steps, and
 # nothing is guessed:
@@ -1362,6 +1505,7 @@ def derive(con, status_order, start_status, review_status, abandoned_status=None
         sprints = derive_sprints(con)
         con.execute(VIEWS_METRICS)
         con.execute(VIEWS_SPRINT_ATTRIBUTION)
+        derive_epic_events(con)
         # Sync may finish before derive starts. Date these tables atomically,
         # so a report during refresh keeps the previous snapshot's cutoff.
         # An interrupted sync can change or delete source rows. The timestamp
@@ -1506,7 +1650,11 @@ def run_chart(con, chart, tiers=None):
     tiers = chart_specs.THRESHOLDS if tiers is None else tiers
     subtitle = chart.caption
     scope = load_scope(con)
-    if chart.key in chart_specs.ACTIVE_SPRINT_CHARTS:
+    if chart.key in chart_specs.EPIC_SCOPE_CHARTS and not con.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'epic_events'"
+    ).fetchone()[0]:
+        return render.figure(chart, [], "Epic history unavailable. Run derive or Refresh.", con)
+    if chart.key in chart_specs.ACTIVE_SPRINT_CHARTS + chart_specs.EPIC_SCOPE_CHARTS:
         snapshot = scope["derived_sync_at"]
         if not snapshot:
             return render.figure(chart, [],

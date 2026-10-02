@@ -61,6 +61,7 @@ WINDOW_EXEMPT = {
     "aging_wip": "always current, so the window would hide the oldest work it exists to find",
     "carried_sprints": "a carried ticket is old by definition, so a window hides the worst of them",
     "issue_classification": "all scoped tickets, including older open work excluded from totals",
+    "epic_history_coverage": "current relationship gaps; dated event coverage follows the window",
 }
 
 
@@ -197,6 +198,26 @@ ACTIVE_SPRINT_SQL = """
 """
 
 ACTIVE_SPRINT_CHARTS = ("active_sprint_scope", "active_sprint_tickets")
+EPIC_SCOPE_CHARTS = ("epic_scope_trend", "epic_scope_by_week", "epic_history_coverage")
+
+EPIC_EVENTS_SQL = """
+    WITH events AS (
+        SELECT * FROM epic_events
+        WHERE is_subtask = FALSE AND (
+            kind = 'history_gap' OR ts IS NULL OR (
+                in_window(ts) AND ts <= (
+                    SELECT try_cast(derived_sync_at AS TIMESTAMPTZ) AT TIME ZONE 'UTC'
+                    FROM sync_state
+                )
+            )
+        )
+    )
+"""
+EPIC_COVERAGE_SQL = EPIC_EVENTS_SQL + """
+    SELECT count(*) FILTER (WHERE reason IN ('Epic', 'No epic at event', 'Non-epic parent')
+                                  AND ts IS NOT NULL), count(*)
+    FROM events WHERE kind <> 'history_gap'
+"""
 
 CHARTS = [
     Chart(
@@ -717,6 +738,89 @@ CHARTS = [
             -- arbitrary order and two renders of one database did not diff.
             ORDER BY count(*) DESC, 1
             LIMIT 40
+        """,
+    ),
+    Chart(
+        key="epic_scope_trend",
+        section="Commitments",
+        title="Epic scope and completions per week",
+        kind="lines",
+        caption="Confirmed non-subtask events under known epic parents. Additions and removals "
+                "count recorded parent changes; completion does not remove scope. Returns and "
+                "reclosures count again. Dropped work is separate from delivery. Counts are "
+                "observed history, not a reconstructed opening scope or backlog. Missing "
+                "parent history can understate them; see Epic history coverage. Quiet weeks "
+                "are zero observed events, not proof of complete history.",
+        options={"x": "week", "series": ["added", "removed", "delivered", "dropped"],
+                 "interactive": True, "unit": "events with known parentage"},
+        coverage=EPIC_COVERAGE_SQL,
+        sql=EPIC_EVENTS_SQL + """,
+            weeks AS (
+                SELECT unnest(generate_series(date_trunc('week', min(ts)),
+                              date_trunc('week', max(ts)), INTERVAL 1 WEEK))::DATE AS week
+                FROM events WHERE kind <> 'history_gap'
+            ),
+            counts AS (
+                SELECT date_trunc('week', ts)::DATE AS week,
+                       count(*) FILTER (WHERE kind = 'added') AS added,
+                       count(*) FILTER (WHERE kind = 'removed') AS removed,
+                       count(*) FILTER (WHERE kind = 'delivered') AS delivered,
+                       count(*) FILTER (WHERE kind = 'dropped') AS dropped
+                FROM events WHERE reason = 'Epic' AND ts IS NOT NULL GROUP BY 1
+            )
+            SELECT week, coalesce(added, 0) AS added, coalesce(removed, 0) AS removed,
+                   coalesce(delivered, 0) AS delivered, coalesce(dropped, 0) AS dropped
+            FROM weeks LEFT JOIN counts USING (week) ORDER BY week
+        """,
+    ),
+    Chart(
+        key="epic_scope_by_week",
+        section="Commitments",
+        title="Epic scope by week",
+        kind="table",
+        caption="The same confirmed events, by epic and week. Net scope is added minus removed; "
+                "delivery and dropped outcomes do not change membership. Parentage is evaluated "
+                "at each event, using the resulting parent for a simultaneous status/parent edit. "
+                "Current parent alone never supplies historical membership. Issue classification "
+                "and parent hierarchy use mirrored metadata. Subtasks are excluded. No rows "
+                "are truncated; report component and excluded-epic filters apply.",
+        options={"headers": ["week", "epic", "summary", "added", "removed", "net_scope",
+                             "delivered", "dropped"], "sortable": True, "links": ["epic"],
+                 "unit": "events with known parentage"},
+        coverage=EPIC_COVERAGE_SQL,
+        sql=EPIC_EVENTS_SQL + """
+            SELECT date_trunc('week', e.ts)::DATE AS week, e.parent AS epic,
+                   max(i.summary) AS summary,
+                   count(*) FILTER (WHERE kind = 'added') AS added,
+                   count(*) FILTER (WHERE kind = 'removed') AS removed,
+                   added - removed AS net_scope,
+                   count(*) FILTER (WHERE kind = 'delivered') AS delivered,
+                   count(*) FILTER (WHERE kind = 'dropped') AS dropped
+            FROM events e LEFT JOIN issues i ON i.key = e.parent
+            WHERE reason = 'Epic' AND e.ts IS NOT NULL
+            GROUP BY week, e.parent ORDER BY week DESC, epic
+        """,
+    ),
+    Chart(
+        key="epic_history_coverage",
+        section="Commitments",
+        title="Epic history coverage",
+        kind="table",
+        caption="Events use the report period and snapshot cutoff. Missing, inconsistent or "
+                "unordered parent histories are ticket counts independent of the period. Missing "
+                "or contradictory evidence is not assigned to an epic. Known non-epic parents "
+                "and known absence of a parent are separate from unknown parentage. Unknown "
+                "issue classifications are excluded from confirmed event totals. Even complete "
+                "stored changelogs cannot establish changes that Jira never recorded.",
+        options={"headers": ["reason", "unit", "count"], "sortable": True},
+        sql=EPIC_EVENTS_SQL + """
+            SELECT reason, CASE WHEN kind = 'history_gap' THEN 'tickets' ELSE 'events' END AS unit,
+                   count(*) AS count FROM events GROUP BY reason, unit
+            UNION ALL
+            SELECT 'Unknown issue classification', 'tickets', count(DISTINCT key)
+            FROM epic_events WHERE is_subtask IS NULL
+            HAVING count(DISTINCT key) > 0
+            ORDER BY unit, reason
         """,
     ),
     Chart(
