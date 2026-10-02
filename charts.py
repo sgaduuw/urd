@@ -82,15 +82,16 @@ CHARTS = [
         section="Commitments",
         title="Sprint scope changes",
         kind="hbars",
-        caption="Ticket counts at the scheduled sprint end, for sprints whose end has passed. "
+        caption="Ticket counts just before actual closure, for closed sprints. "
+                "Sprints missing a close time are labelled scheduled end fallback. "
                 "Original work is split into delivered, unfinished, removed and dropped. "
                 "Added counts work first added after the start, including later removals; "
                 "added_delivered is the subset still in the sprint and done at its end. "
                 "Unknown counts uncertain start membership or unknown end status; "
                 "known additions with unknown outcomes still count as added. "
                 "Dropped work is not delivery; sprints absent from the mirror cannot be shown. "
-                "Conflicting snapshots use the earliest start and latest end; "
-                "scheduled end dates may differ from actual sprint close times.",
+                "Conflicting snapshots use the earliest start and latest close time "
+                "(latest scheduled end when no close time is available).",
         options={"labels": "sprint", "series": [
             "original_delivered", "original_unfinished", "original_removed",
             "original_dropped", "added", "added_delivered", "unknown",
@@ -98,13 +99,18 @@ CHARTS = [
         sql="""
             WITH windows AS (
                 SELECT sprint_id, max(sprint_name) AS sprint_name,
-                       min(start) AS start, max("end") AS finish
+                       min(start) AS start,
+                       coalesce(max(completed_at), max("end")) AS finish,
+                       max(completed_at) IS NULL AS scheduled_fallback
                 -- Dates belong to the sprint, even when the selected team's
                 -- tickets were all removed and only another team retains it.
                 FROM issue_sprints_all
-                WHERE start IS NOT NULL AND "end" IS NOT NULL
                 GROUP BY sprint_id
-                HAVING max("end") <= now() AT TIME ZONE 'UTC'
+                -- Freshest state wins; conflicting ties do not establish closure.
+                HAVING first(coalesce(state, '') ORDER BY fetched_at DESC NULLS LAST,
+                             coalesce(state, '') = 'closed', key, ordinal) = 'closed'
+                   AND min(start) IS NOT NULL
+                   AND coalesce(max(completed_at), max("end")) <= now() AT TIME ZONE 'UTC'
             ),
             sprint_changes AS (
                 SELECT key, ts, history_id,
@@ -191,7 +197,8 @@ CHARTS = [
                 LEFT JOIN statuses s ON s.name = d.status
                 WHERE m.committed OR m.added OR m.committed IS NULL
             )
-            SELECT sprint_name AS sprint,
+            SELECT CASE WHEN scheduled_fallback THEN '[scheduled end fallback] '
+                        ELSE '' END || sprint_name AS sprint,
                    count(*) FILTER (WHERE committed AND retained AND done
                                     AND NOT dropped) AS original_delivered,
                    count(*) FILTER (WHERE committed AND retained AND NOT done)
@@ -206,7 +213,7 @@ CHARTS = [
                    count(*) FILTER (WHERE committed IS NULL OR (retained AND done IS NULL))
                        AS unknown
             FROM outcomes
-            GROUP BY sprint_id, sprint_name, start
+            GROUP BY sprint_id, sprint_name, start, scheduled_fallback
             ORDER BY start DESC, sprint_id
         """,
     ),

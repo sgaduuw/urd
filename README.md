@@ -180,10 +180,16 @@ The scope-change chart uses ticket counts, including unestimated work. Original
 membership is reconstructed from recorded sprint changes. When the first
 record already places an older ticket in the sprint, its start membership is
 unknown; a later return does not count as added work. Conflicting sprint
-snapshots use the earliest start and latest
-end. Outcomes are measured just before the scheduled sprint end, and
-only sprints whose scheduled end has passed are shown. Actual sprint close times
-are not stored. A ticket reopened after the cutoff retains its earlier outcome;
+snapshots use the earliest start and latest actual close time. Sprint state comes
+from the most recently fetched snapshot across the whole mirror; equally fresh
+snapshots that disagree do not establish closure. Only closed
+sprints are shown, with outcomes measured just before actual closure. When no
+close time is stored, the latest scheduled end is used and that sprint is labelled
+`[scheduled end fallback]` before its name, so truncation keeps the warning visible. Sprints whose chosen cutoff is still in the future are
+omitted. After upgrading, run `derive` to recover close times from stored raw
+issues; this works offline. If the stored snapshots lack closure metadata, a
+normal refresh may provide it when those issues are fetched again.
+A ticket reopened after the cutoff retains its earlier outcome;
 a ticket reopened before it is unfinished. A removed ticket re-added before the
 cutoff is retained. Added work counts each ticket once, even if removed later;
 its delivered subset includes only tickets retained and done at the cutoff.
