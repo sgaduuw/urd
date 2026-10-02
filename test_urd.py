@@ -1220,7 +1220,7 @@ def test_a_changed_field_set_refetches_everything():
 
 def test_sync_errors_are_pruned_for_keys_leaving_scope():
     """Keys that have left the scope are removed from sync_errors, but errors
-    for keys still in scope survive the prune even if not refetched."""
+    for keys still in scope survive if their retry also fails."""
     con = urd.open_db(_tmpdb())
     urd.save_scope(con, site="example.invalid", email="a@b.c", project="PROJ",
                    earliest_since="2026-01-01")
@@ -1244,8 +1244,8 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
 
     # First sync: PROJ-2 and PROJ-3 fail, PROJ-1 succeeds
     urd.sync(con, FirstSync())
-    # Manually insert PROJ-2 and PROJ-3 into raw_issues so they won't be wanted
-    # in the second sync (same timestamp means no fetch)
+    # Seed cached copies with matching timestamps. Their outstanding errors
+    # must still trigger a retry when they remain in scope.
     con.execute(
         "INSERT INTO raw_issues VALUES (?, ?, ?, ?) "
         "ON CONFLICT (key) DO UPDATE SET updated = excluded.updated",
@@ -1267,8 +1267,8 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
             yield "PROJ-2", "u2"  # unchanged, still in scope
 
         def issue(self, key, fields):
-            # Nothing should be fetched; all are unchanged
-            raise AssertionError(f"unexpected fetch of {key}")
+            assert key == "PROJ-2", f"unexpected fetch of {key}"
+            raise SystemExit("retry still failing")
 
         def fields(self):
             return []
@@ -1278,7 +1278,7 @@ def test_sync_errors_are_pruned_for_keys_leaving_scope():
 
     urd.sync(con, SecondSync())
     # PROJ-3 error should be pruned (out of scope), PROJ-2 error should survive
-    # (still in scope, not refetched)
+    # (still in scope, retry failed)
     errors = con.execute("SELECT key FROM sync_errors ORDER BY key").fetchall()
     assert [r[0] for r in errors] == ["PROJ-2"]
 
