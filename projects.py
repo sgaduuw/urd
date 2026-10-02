@@ -148,7 +148,7 @@ def start_refresh(project, jira_factory=None):
             urd.sync(project.con, factory(scope))
             project.job.progress = "deriving"
             urd.derive(project.con, scope["status_order"], scope["start_status"],
-                       scope["review_status"], scope["abandoned_status"])
+                       scope["review_status"], scope["abandoned_status"], scope["parked_status"])
             project.job.state = "idle"
             project.job.progress = ""
         except BaseException as exc:      # noqa: BLE001 - SystemExit included

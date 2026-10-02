@@ -196,20 +196,36 @@ def test_a_null_status_category_in_the_project_response_has_no_category():
     assert by_name["Odd"] == ""
 
 
-def test_a_repeated_status_name_keeps_its_first_categorys_answer():
-    """The regression this whole fix is about. On a real instance the same
-    status name can appear under more than one issue type with a different
-    statusCategory each time. A name-keyed map such as {name: category} would
-    let the later occurrence overwrite the earlier one, and which one is later
-    is not something this code controls. discover must not build one, and the
-    dedup-by-name here must keep the first answer rather than the last."""
+def test_a_repeated_status_name_preserves_category_conflicts():
+    """Parking validation needs every category, regardless of response order."""
     workflow = [
         {"statuses": [{"name": "Blocked", "statusCategory": {"key": "new"}}]},
-        {"statuses": [{"name": "Blocked", "statusCategory": {"key": "indeterminate"}}]},
+        {"statuses": [{"name": "Blocked", "statusCategory": {"key": "done"}}]},
     ]
     found = wizard.discover(_proposal(), "tok",
                             opener=_discovery_opener(workflow=workflow))
-    assert [s.category for s in found.statuses if s.name == "Blocked"] == ["new"]
+    assert [s.category for s in found.statuses if s.name == "Blocked"] == ['new', 'done']
+    assert wizard.propose(found.statuses)['status_order'] == 'Blocked'
+
+
+def test_category_conflicts_are_excluded_from_workflow_guesses():
+    statuses = [wizard.Status('Cancelled', 'indeterminate'),
+                wizard.Status('Cancelled', 'done'),
+                wizard.Status('Review', 'indeterminate'),
+                wizard.Status('Review', 'new')]
+    for ambiguous in (statuses, list(reversed(statuses))):
+        proposal = wizard.propose(ambiguous)
+        assert set(proposal['status_order'].split(',')) == {'Cancelled', 'Review'}
+        assert len(proposal['status_order'].split(',')) == 2
+        assert proposal['start_status'] == ''
+        assert proposal['review_status'] == ''
+        assert proposal['abandoned_status'] == ''
+        proposal = wizard.propose(ambiguous + [wizard.Status('Doing', 'indeterminate'),
+                                             wizard.Status('Peer Review', 'indeterminate'),
+                                             wizard.Status('Rejected', 'done')])
+        assert proposal['start_status'] == 'Doing'
+        assert proposal['review_status'] == 'Peer Review'
+        assert proposal['abandoned_status'] == 'Rejected'
 
 
 def test_discovery_reports_a_refusal_instead_of_raising():

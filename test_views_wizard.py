@@ -339,6 +339,68 @@ def test_the_guessed_fields_are_marked_in_the_form():
     assert "status order (guess)" not in body, "status order is derived, not guessed"
 
 
+def test_setup_parking_is_explicit_and_validated():
+    monkey = {}
+    _patched(monkey)
+    try:
+        for extra, expected in (({}, None), ({"no_parked": "yes"}, ""),
+                                ({"parked_status": " To Do "}, "To Do")):
+            registry = test_helpers.registry()
+            response = test_helpers.client(registry).post("/setup", data={
+                **_SCOPE, "slug": "alpha", "confirm": "yes",
+                "status_order": "To Do,In Progress,Done", "start_status": "In Progress",
+                **extra,
+            })
+            assert response.status_code == 302
+            assert urd.load_scope(registry.get("alpha").con)["parked_status"] == expected
+        for extra in ({"parked_status": "Typo"},
+                      {"parked_status": "To Do", "no_parked": "yes"}):
+            registry = test_helpers.registry()
+            response = test_helpers.client(registry).post("/setup", data={
+                **_SCOPE, "slug": "alpha", "confirm": "yes",
+                "status_order": "To Do,In Progress,Done", "start_status": "In Progress",
+                **extra,
+            })
+            assert response.status_code == 200
+            assert registry.get("alpha") is None
+    finally:
+        _restore(monkey)
+
+
+def test_setup_rejects_done_parking_before_creating_project():
+    monkey = {}
+    _patched(monkey)
+    try:
+        registry = test_helpers.registry()
+        response = test_helpers.client(registry).post('/setup', data={
+            **_SCOPE, 'slug': 'alpha', 'confirm': 'yes',
+            'status_order': 'To Do,Done', 'start_status': 'To Do',
+            'parked_status': 'Done',
+        })
+        assert response.status_code == 200
+        assert registry.get('alpha') is None
+    finally:
+        _restore(monkey)
+
+
+def test_setup_parking_preserves_ambiguous_and_missing_evidence():
+    for found in (_found([('Hold', 'new'), ('Hold', 'done')]),
+                  wizard_mod.Discovery([], 'lookup unavailable')):
+        monkey = {}
+        _patched(monkey, discover=lambda *args, result=found: result)
+        try:
+            registry = test_helpers.registry()
+            response = test_helpers.client(registry).post('/setup', data={
+                **_SCOPE, 'slug': 'alpha', 'confirm': 'yes',
+                'status_order': 'Hold,Done', 'start_status': 'Hold',
+                'parked_status': 'Hold',
+            })
+            assert response.status_code == 200
+            assert registry.get('alpha') is None
+        finally:
+            _restore(monkey)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

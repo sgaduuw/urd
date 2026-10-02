@@ -21,7 +21,7 @@ bp = flask.Blueprint("wizard", __name__)
 
 _SCOPE_FIELDS = ("site", "email", "project", "component", "since")
 _WORKFLOW_FIELDS = ("slug", "status_order", "start_status", "review_status",
-                    "abandoned_status")
+                    "abandoned_status", "parked_status")
 # Derived from the names, not asked for, so the page marks them as guesses
 # where the operator is actually looking rather than only in prose above the
 # form. status_order and slug are not here: one is a derived listing, the
@@ -94,6 +94,9 @@ def _workflow_page(values, found, message=""):
         lines.append("Ordering inside a category needs the transition graph, which "
                      "needs admin rights, so derive prints a better order to the "
                      "terminal running urd serve after the first sync.")
+    lines.append("Parked status lists deliberately deferred open statuses, comma separated. "
+                 "Leave it blank to keep classification unconfirmed, or confirm "
+                 "no parked statuses below.")
     table = ""
     if found is not None and found.statuses:
         rows = "".join(
@@ -107,6 +110,9 @@ def _workflow_page(values, found, message=""):
     return _page(
         "Confirm the workflow", lines,
         table + _inputs(_WORKFLOW_FIELDS, values, guesses=_GUESSED_FIELDS)
+        + '<label><input type="checkbox" name="no_parked" value="yes"'
+        + (' checked' if values.get("no_parked") else '')
+        + '> No parked statuses</label>'
         + _hidden(_SCOPE_FIELDS, values)
         + '<input type="hidden" name="confirm" value="yes">'
         + '<button type="submit">Confirm and add</button>',
@@ -122,6 +128,8 @@ def _proposal_from(values):
         start_status=values.get("start_status", ""),
         review_status=values.get("review_status", ""),
         abandoned_status=values.get("abandoned_status", ""),
+        parked_status=(values.get("parked_status") or
+                       ("" if values.get("no_parked") else None)),
     )
 
 
@@ -135,6 +143,7 @@ def submit():
     registry = flask.current_app.config["REGISTRY"]
     fields = _SCOPE_FIELDS + _WORKFLOW_FIELDS
     values = {name: (flask.request.form.get(name) or "").strip() for name in fields}
+    values["no_parked"] = flask.request.form.get("no_parked") == "yes"
     try:
         token = urd.token()
     except SystemExit as exc:
@@ -175,6 +184,21 @@ def submit():
             values, None,
             f'the slug "{values["slug"]}" is already in use by another '
             "project; edit it below and confirm again")
+
+    try:
+        if values["no_parked"] and values["parked_status"]:
+            raise SystemExit("Choose parked statuses or confirm none, not both")
+        done = set()
+        if values["parked_status"]:
+            found = wizard.discover(_proposal_from(values), token)
+            if found.problem or not found.statuses:
+                raise SystemExit("Could not verify parked statuses. Retry workflow discovery "
+                                 "or leave parking unconfirmed.")
+            done = {s.name for s in found.statuses if s.category == "done"}
+        values["parked_status"] = urd.validate_parked(
+            values["status_order"], _proposal_from(values).parked_status, done) or ""
+    except SystemExit as exc:
+        return _workflow_page(values, None, str(exc))
 
     try:
         project = registry.add(values["slug"])

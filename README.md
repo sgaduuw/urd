@@ -479,6 +479,36 @@ guards the repository itself: it scans every file that could be published,
 every commit message and the commit author identity for anything
 employer-specific, and must pass before every commit.
 
+### Active and parked work
+
+Attention today separates active / available work, deliberately parked work, and
+unclassified work. Active means eligible for attention, not necessarily in progress.
+Counts cover every open ticket in the report scope; each aging and carried-sprint
+table shows up to 40 tickets within its own group. These views ignore `report --since`
+so old open tickets remain visible. Component and excluded-epic filters still apply.
+
+Configure parking explicitly with the existing workflow settings:
+
+```sh
+uv run --isolated --with-requirements requirements.txt python urd.py derive --parked-status "Deferred"
+# Confirm that this workflow has no deliberately parked statuses, or clear a previous list:
+uv run --isolated --with-requirements requirements.txt python urd.py derive --parked-status ""
+```
+
+Use a comma-separated list of open statuses in `--status-order`. The setting is
+remembered, including an explicitly empty list. Setup offers the same list and a
+“No parked statuses” checkbox. Leaving both blank keeps parking unconfirmed.
+Existing databases start unconfirmed: their open work appears under Unclassified
+until configured. No resync is needed. Unknown statuses or status categories also
+remain unclassified. Age, workflow position and names such as “Blocked” never imply
+parking; only the configured list does.
+
+Setup verifies nonempty parking lists against the project's workflow before saving.
+If discovery is unavailable, retry or leave parking unconfirmed. Offline derive checks
+current status categories in mirrored tickets, not instance-wide status names; it
+cannot validate categories for statuses absent from the mirror. A selected name with
+any scoped done-category evidence is rejected, including conflicting open/done names.
+
 ## Licence
 
 MIT. See `LICENSE`.
