@@ -155,32 +155,60 @@ everything already held is left alone.
 
 ## The charts
 
-**Flow health**
-- Aging work in progress: open tickets by days in their current status, with each ticket's title beside its key.
-- Created versus closed per week: where created and delivered diverge, the
-  backlog is growing. Dropped work is a third line, counted separately.
-- New versus done, four week trend: the same counts smoothed, with net weekly
-  change as bars on the same axis. Above zero the backlog grew that week.
-- Open tickets over time: counted from the status history rather than created
-  minus closed.
-- New, delivered and dropped per sprint: every mutation attributed to the sprint
-  that was running when it happened, rather than to a calendar week.
-- Cumulative flow: tickets per status, sampled once a week. A widening band is a queue.
-- Cycle time: one point per closed ticket. The 85th percentile is the number you can promise, the median is the one you'll be asked for.
-- Median days in status, by issue type: where the weeks actually go, review queues show up here first.
+**Attention today**
 
-**Retro**
-- Rework per sprint: transitions that moved a ticket backwards through the workflow.
-- Carried into each sprint: tickets already in an earlier sprint. Persistent carry-over means the sprint is being planned optimistically.
-- Open tickets by sprints carried: which tickets those are, worst first, and since when. It does not know why: work parked by agreement looks the same as work quietly rolling.
-- Cycle time per sprint: median and 85th percentile days per sprint. Tightening is the thing to look for, not the absolute value.
-- Story points versus actual cycle time: whether the estimates carry information. A flat cloud means the points are ritual.
-- Story points closed per sprint: credited to the sprint that was running at close. Sprint lengths differ, so these are totals and not a velocity to plan against.
+- Aging work in progress: open tickets by days in their current status, with owner and ticket link.
+- Open tickets by sprints carried: repeatedly carried tickets, worst first. Age and carry-over prompt a conversation; they do not establish why work has stalled.
 
-**Reporting outward**
-- Delivered versus open, per version: one bar pair per version a ticket is tagged with.
-- Progress per epic: tickets done and still open, per parent. Parents outside the scope of this report appear by key alone.
-- Ticket type mix per month: how much of each month was planned work, a growing bug or incident band is the interesting case.
+**Flow over time**
+
+- Created versus closed per week: arrivals, delivery and dropped work counted separately.
+- New versus done, four week trend: smoothed counts and net weekly change.
+- Cumulative flow: weekly tickets per status. A widening band is a queue.
+- Open tickets over time: counted from status history.
+- Cycle time: one point per closed ticket, with historical median and 85th percentile. These describe past delivery, not a promise about future work.
+
+**Commitments**
+
+- Sprint scope changes: original work split into delivered, unfinished, removed and dropped tickets, alongside added work and its delivered subset.
+- New, delivered and dropped per sprint: events attributed to the sprint running at the time.
+- Delivered versus open, per version: one bar pair per tagged version.
+- Progress per epic: delivered, dropped and open children per parent.
+- Carried into each sprint: tickets with earlier sprint memberships.
+
+The scope-change chart uses ticket counts, including unestimated work. Original
+membership is reconstructed from recorded sprint changes. When the first
+record already places an older ticket in the sprint, its start membership is
+unknown; a later return does not count as added work. Conflicting sprint
+snapshots use the earliest start and latest
+end. Outcomes are measured just before the scheduled sprint end, and
+only sprints whose scheduled end has passed are shown. Actual sprint close times
+are not stored. A ticket reopened after the cutoff retains its earlier outcome;
+a ticket reopened before it is unfinished. A removed ticket re-added before the
+cutoff is retained. Added work counts each ticket once, even if removed later;
+its delivered subset includes only tickets retained and done at the cutoff.
+For work created during the sprint, the first recorded Sprint change supplies
+its prior membership, so later changes do not erase assignment at creation.
+Dropped statuses use `--abandoned-status` and never count as delivery.
+The `unknown` bar counts tickets with uncertain start membership or retained
+tickets whose status category at the cutoff is missing. These never count as
+confirmed delivered or unfinished work. Known additions with unknown outcomes
+still count as added, so the unknown bar overlaps that scope count.
+
+All counts describe the mirrored, filtered scope. Sprint dates come from the
+whole mirror, so filtering out its remaining members does not hide removed work.
+A sprint with no remaining membership anywhere in the mirror has no stored dates
+and cannot appear. The report's period filter applies to sprint start dates.
+
+**Retrospective**
+
+- Median days in status, by issue type: where time goes.
+- Ticket type mix per month: type does not establish whether work was planned or an interruption.
+- Rework per sprint: backwards workflow transitions.
+- Cycle time per sprint: median and 85th percentile days.
+- Story points committed versus closed: the original estimate total beside closure points.
+- Story points versus actual cycle time: whether estimates carry information.
+- Tickets landing inside one sprint, by story point: delivery shares per estimate.
 
 ## Finding the status names
 

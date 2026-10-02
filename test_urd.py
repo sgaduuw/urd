@@ -3470,10 +3470,9 @@ def test_the_trend_at_a_window_edge_uses_the_weeks_before_it():
     urd.set_report_window(con, None)
 
 
-def test_flow_health_charts_are_all_present():
-    keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow health"}
-    assert keys == {"aging_wip", "created_vs_closed", "flow_trend", "net_open",
-                    "flow_per_sprint", "cfd", "cycle_scatter", "time_in_status"}
+def test_flow_charts_are_all_present():
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "Flow over time"}
+    assert keys == {"created_vs_closed", "flow_trend", "net_open", "cfd", "cycle_scatter"}
 
 
 def test_aging_lists_only_open_tickets_worst_first():
@@ -3684,25 +3683,25 @@ def test_a_chart_just_below_its_threshold_strips():
 def test_sections_render_in_a_fixed_order():
     con = _derived("reopened", "skipped_progress", "two_sprints")
     titles = [title for title, _ in urd.render_sections(con)]
-    assert titles[0] == "Flow health"
+    assert titles[0] == "Attention today"
     # Only one section holds charts until Task 11, so asserting the real list is
     # in SECTIONS order is vacuous: a one-element list is sorted every way at
     # once, and reversing SECTIONS leaves this green. Order is therefore checked
     # against a stand-in chart list, declared deliberately back to front.
-    spare = [s for s in chart_specs.SECTIONS if s != "Flow health"][0]
+    spare = "Commitments"
     stub = {"headers": ["n"]}
     original = chart_specs.CHARTS
     try:
         chart_specs.CHARTS = [
             chart_specs.Chart(key="second", section=spare, title="B", kind="table",
                               caption="c", sql="SELECT 1 AS n", options=stub),
-            chart_specs.Chart(key="first", section="Flow health", title="A", kind="table",
+            chart_specs.Chart(key="first", section="Flow over time", title="A", kind="table",
                               caption="c", sql="SELECT 1 AS n", options=stub),
         ]
         ordered = [title for title, _ in urd.render_sections(con)]
     finally:
         chart_specs.CHARTS = original
-    assert ordered == ["Flow health", spare], "sections follow CHARTS order, not SECTIONS"
+    assert ordered == ["Flow over time", spare], "sections follow CHARTS order, not SECTIONS"
 
 
 def test_no_chart_axis_label_carries_a_midnight_timestamp():
@@ -3743,7 +3742,7 @@ def test_figure_draws_a_scatter_with_its_percentile_guides():
     """The fixtures always take the coverage-strip path for the only scatter, so
     the renderer branch is exercised directly or not at all."""
     chart = chart_specs.Chart(
-        key="k", section="Flow health", title="T", kind="scatter",
+        key="k", section="Flow over time", title="T", kind="scatter",
         caption="c", options={"x": "resolved", "y": "cycle_days",
                               "guides_sql": "SELECT 1.0, 4.0"},
         sql="SELECT 1",
@@ -3757,7 +3756,7 @@ def test_figure_draws_a_scatter_with_its_percentile_guides():
 
 
 def test_figure_refuses_a_kind_no_renderer_handles():
-    chart = chart_specs.Chart(key="k", section="Flow health", title="T", kind="sunburst",
+    chart = chart_specs.Chart(key="k", section="Flow over time", title="T", kind="sunburst",
                               caption="c", sql="SELECT 1")
     try:
         render.figure(chart, [], "sub", None)
@@ -3776,12 +3775,12 @@ def _header(**over):
 
 def test_the_page_states_the_scope_it_covers():
     """A report must never be mistaken for one covering a different slice."""
-    html = render.page(_header(), [("Flow health", ["<p>chart</p>"])])
+    html = render.page(_header(), [("Flow over time", ["<p>chart</p>"])])
     # The composed scope, not two substrings that could each appear anywhere.
     assert "PROJ / TEAM" in html
     assert "2026-01-01" in html
     assert "2026-08-13T17:00:00" in html
-    assert "Flow health" in html
+    assert "Flow over time" in html
     assert html.count("<p>chart</p>") == 1
     assert "<title>" in html and html.rstrip().endswith("</html>")
 
@@ -4108,9 +4107,10 @@ def test_the_report_header_reflects_the_database_it_read():
     assert f"{expected} tickets" in html
 
 
-def test_outward_reporting_charts_are_all_present():
-    keys = {c.key for c in chart_specs.CHARTS if c.section == "Reporting outward"}
-    assert keys == {"per_fix_version", "per_epic", "type_mix"}
+def test_commitment_charts_are_all_present():
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "Commitments"}
+    assert keys == {"sprint_scope_changes", "flow_per_sprint", "per_fix_version",
+                    "per_epic", "carry_over"}
 
 
 def test_fix_version_chart_counts_a_ticket_in_every_version_it_carries():
@@ -4241,31 +4241,18 @@ def test_dropped_work_never_counts_as_delivered_in_any_chart():
 
 
 def test_the_real_section_list_leads_in_the_declared_order():
-    """The stand-in list in test_sections_render_in_a_fixed_order proves the
-    ordering rule; this one proves the real charts obey it.
-
-    It asserts a prefix rather than the whole list on purpose: pinning the exact
-    list means every task that populates a new section breaks this test and gets
-    it "fixed" by pasting in the new answer, which is how a test stops being read.
-    Comparing against a rebuild of render_sections' own filter would be worse
-    still, since reversing SECTIONS would reorder both sides and prove nothing.
-
-    Retro moved ahead of Reporting outward deliberately, so this expectation was
-    edited as the decision rather than to make the suite pass: the two sections
-    the team reads about itself now sit together, instead of with a stakeholder
-    section between them."""
+    """Daily attention comes before historical trends in the populated report."""
     con = _derived("reopened", "skipped_progress", "two_sprints")
     titles = [title for title, _ in urd.render_sections(con)]
     assert len(titles) >= 2, "needs two populated sections to say anything about order"
-    assert titles[:2] == ["Flow health", "Retro"]
+    assert titles[:2] == ["Attention today", "Flow over time"]
     assert set(titles) <= set(chart_specs.SECTIONS)
 
 
 def test_retro_charts_are_all_present():
-    keys = {c.key for c in chart_specs.CHARTS if c.section == "Retro"}
-    assert keys == {"rework_per_sprint", "carry_over", "cycle_per_sprint",
-                    "points_vs_cycle", "carried_sprints", "points_committed_vs_closed",
-                    "sprint_landing_rate"}
+    keys = {c.key for c in chart_specs.CHARTS if c.section == "Retrospective"}
+    assert keys == {"rework_per_sprint", "time_in_status", "type_mix", "cycle_per_sprint",
+                    "points_vs_cycle", "points_committed_vs_closed", "sprint_landing_rate"}
 
 
 def test_a_mutation_lands_in_at_most_one_sprint():
@@ -4785,11 +4772,18 @@ def test_every_chart_respects_the_report_window():
 def test_no_chart_reaches_around_the_scope_views():
     """Every report-time filter lives in the views: the epic exclusion and the
     component slice both narrow excluded_tickets, which issues, changes and
-    issue_sprints read. A chart reading a base table would ignore both and say
-    nothing about it, which is the one way the inheritance can be lost."""
+    issue_sprints read. Ticket counts must never bypass those views.
+    Sprint scope changes may read unfiltered dates in its windows CTE only:
+    another component can be the sole remaining source of a removed sprint's dates.
+    test_team_report also checks component and epic isolation on actual counts."""
     for chart in chart_specs.CHARTS:
         for table in ("issues_all", "changes_all", "issue_sprints_all"):
             for sql in (chart.sql, chart.coverage or ""):
+                if (chart.key == "sprint_scope_changes" and table == "issue_sprints_all"
+                        and sql == chart.sql):
+                    metadata, counts = sql.split("sprint_changes AS (", 1)
+                    assert table in metadata and table not in counts
+                    continue
                 assert table not in sql, f"{chart.key} reads {table} directly"
     stray = set(chart_specs.WINDOW_EXEMPT) - {c.key for c in chart_specs.CHARTS}
     assert not stray, f"exemption for a chart that no longer exists: {stray}"
