@@ -173,7 +173,7 @@ def report_ready(project, con=None):
     return bool(scope["last_sync_at"]) and _has_issues_view(con)
 
 
-def project_page(project, tiers=None, con=None):
+def project_page(project, tiers=None, con=None, section="attention", tabs=""):
     """The report, or a notice explaining why there is not one yet.
 
     Every state here is a page rather than an exception, because these are all
@@ -226,4 +226,4 @@ def project_page(project, tiers=None, con=None):
             actions=[("Refresh", f"/{project.slug}/refresh", "post"),
                      ("Capacity", f"/{project.slug}/capacity/", "get")],
         )
-    return urd.report_html(con, tiers)
+    return urd.report_html(con, tiers, section, tabs)

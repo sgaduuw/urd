@@ -253,6 +253,13 @@ figcaption {
   font-size: 13px;
 }
 .warn-inline { color: var(--s2); font-weight: 600; }
+nav.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 16px 0;
+  border-bottom: 1px solid var(--border); }
+nav.tabs a { padding: 8px 12px; color: var(--text-secondary); text-decoration: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+nav.tabs a:hover { color: var(--text-primary); }
+nav.tabs a[aria-current="page"] { color: var(--text-primary); border-bottom-color: var(--s1);
+  font-weight: 600; }
 """
 
 CSS = (
@@ -312,7 +319,12 @@ def coverage_strip(title, numerator, denominator, threshold, unit="tickets"):
     )
 
 
-def page(header, sections):
+def report_body(tabs, title, content):
+    """The inner HTML of #report: the same bytes for the page and the fragment."""
+    return f"{tabs}<h2>{esc(title)}</h2>{content}"
+
+
+def page(header, body):
     scope = header["project"] + (f" / {header['component']}" if header["component"] else "")
     errors = header["errors"]
     warn = (f'<span class="warn-inline">{errors} sync error(s) outstanding</span>'
@@ -343,9 +355,6 @@ def page(header, sections):
                   f"{esc(', '.join(exempt))}, which use current mirrored data.</strong> ")
     else:
         window = f"<strong>Every chart covers {esc(header['window'])} onward.</strong> "
-    body = "".join(
-        f"<h2>{esc(title)}</h2>" + "".join(charts) for title, charts in sections
-    )
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -355,7 +364,7 @@ def page(header, sections):
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
         f"{esc(header['since'])}. Synced {esc(header['synced'])}. "
         f"{showing}{dropped}{window}{warn}</p></header>"
-        + body
+        + f'<div id="report">{body}</div>'
         + SCRIPTS + "</body></html>\n"
     )
 

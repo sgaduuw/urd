@@ -6,6 +6,7 @@ sync_state, so two browser tabs never fight over each other's window and the
 CLI stays the way a default is changed.
 """
 import threading
+import urllib.parse
 
 import flask
 
@@ -113,7 +114,33 @@ def _component_boxes(flags):
     return f'<span class="boxes">component {boxes}</span>'
 
 
-def _controls(project, flags, others):
+def _section(args):
+    section = args.get("section", "attention")
+    return section if section in urd.SECTION_TITLES else "attention"
+
+
+def _filters_query(args):
+    """The current filters as a query string, without the tab, so a tab switch
+    keeps them. Multi-valued keys keep every value."""
+    return urllib.parse.urlencode(
+        [(k, v) for k, v in args.items(multi=True) if k != "section"])
+
+
+def _tabs(slug, active, query):
+    base = f"/{urllib.parse.quote(slug)}"
+    links = []
+    for key, title in urd.SECTION_TABS:
+        page_url = f"{base}/?" + (f"{query}&" if query else "") + f"section={key}"
+        fragment_url = f"{base}/sections/{key}" + (f"?{query}" if query else "")
+        current = ' aria-current="page"' if key == active else ""
+        links.append(
+            f'<a href="{render.esc(page_url)}" hx-get="{render.esc(fragment_url)}"'
+            f' hx-target="#report" hx-push-url="{render.esc(page_url)}"{current}>'
+            f"{render.esc(title)}</a>")
+    return f'<nav class="tabs" aria-label="Report sections">{"".join(links)}</nav>'
+
+
+def _controls(project, flags, others, section):
     switcher = " ".join(
         f'<a href="/{render.esc(p.slug)}/">{render.esc(p.slug)}</a>' for p in others
         if p.slug != project.slug
@@ -121,7 +148,7 @@ def _controls(project, flags, others):
     problems = "".join(
         f'<p class="warn">{render.esc(p)}</p>' for p in flags["problems"])
     return (
-        f'<p><a href="/{render.esc(project.slug)}/capacity/">Capacity</a></p>'
+        f'<p><a href="/{render.esc(project.slug)}/capacity/">Plan capacity</a></p>'
         f'<form method="get" action="/{render.esc(project.slug)}/" class="controls">'
         f'<label>since <input name="since" value="{render.esc(flags["since"] or "")}"'
         f' placeholder="YYYY-MM-DD"></label>'
@@ -129,6 +156,7 @@ def _controls(project, flags, others):
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
         f'<label>threshold <input name="threshold" placeholder="default=0.40"></label>'
         f'{_component_boxes(flags)}'
+        f'<input type="hidden" name="section" value="{render.esc(section)}">'
         f'<button type="submit">Apply</button></form>'
         f'<form method="post" action="/{render.esc(project.slug)}/refresh">'
         f'<button type="submit">Refresh</button></form>'
@@ -165,6 +193,7 @@ def project(slug):
     # on a render that raises, which a bare apply/render/restore sequence
     # would not. None of that stops two overlapping renders from both writing
     # report_window's one row, which is what the lock is for.
+    section = _section(flask.request.args)
     con = found.con.cursor()
     with _RENDER_LOCK:
         con.execute("BEGIN")
@@ -177,11 +206,31 @@ def project(slug):
                 # nothing without a report under it.
                 return webapp.project_page(found, con=con)
             flags = flags_from(flask.request, found, con)
-            page = webapp.project_page(found, flags["tiers"], con)
+            tabs = _tabs(slug, section, _filters_query(flask.request.args))
+            page = webapp.project_page(found, flags["tiers"], con, section, tabs)
         finally:
             con.execute("ROLLBACK")
 
-    controls = _controls(found, flags, registry.projects())
+    controls = _controls(found, flags, registry.projects(), section)
     # Injected after <body> so the controls precede the report without the report
     # needing to know they exist.
     return page.replace("<body>", "<body>" + controls, 1)
+
+
+@bp.get("/<slug>/sections/<section>")
+def section_fragment(slug, section):
+    registry = flask.current_app.config["REGISTRY"]
+    found = webapp.slug_or_404(registry, slug)
+    if section not in urd.SECTION_TITLES or found.con is None or not found.configured():
+        flask.abort(404)
+    con = found.con.cursor()
+    with _RENDER_LOCK:
+        con.execute("BEGIN")
+        try:
+            if not webapp.report_ready(found, con):
+                flask.abort(404)
+            flags = flags_from(flask.request, found, con)
+            tabs = _tabs(slug, section, _filters_query(flask.request.args))
+            return urd.report_body(con, flags["tiers"], section, tabs)
+        finally:
+            con.execute("ROLLBACK")

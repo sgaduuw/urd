@@ -1648,16 +1648,9 @@ def refresh_chart_views(con):
     return True
 
 
-def report_html(con, tiers=None):
-    """The report as a string. `report` writes this to a file.
-
-    One rendering path, not two: the served page and the archived file are the
-    same bytes, so a chart cannot look different depending on how it was asked
-    for.
-    """
-    refresh_chart_views(con)
+def report_header(con):
     scope = load_scope(con)
-    header = {
+    return {
         "project": scope["project"] or "unknown",
         "component": scope["component"],
         "since": scope["earliest_since"] or "unknown",
@@ -1670,11 +1663,20 @@ def report_html(con, tiers=None):
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
-    sections = render_sections(con, tiers)
-    planning = capacity.report_section(con)
-    if planning:
-        sections.append(("Sprint capacity", [planning]))
-    return render.page(header, sections)
+
+
+def report_body(con, tiers=None, section="attention", tabs=""):
+    refresh_chart_views(con)
+    return render.report_body(tabs, SECTION_TITLES[section],
+                              section_html(con, tiers, section))
+
+
+def report_html(con, tiers=None, section="attention", tabs=""):
+    """The served report page with one section. `report` writes this to a file.
+    The fragment route returns report_body alone, so the page and a tab switch
+    show the same bytes."""
+    body = report_body(con, tiers, section, tabs)
+    return render.page(report_header(con), body)
 
 
 def report(con, path="report.html", tiers=None):
@@ -1756,6 +1758,22 @@ def run_chart(con, chart, tiers=None):
     site = scope["site"]
     link_base = f"https://{site}/browse/" if site else None
     return render.figure(chart, rows, subtitle, con, link_base)
+
+
+# Tab order and URL slugs. The chart tabs must match chart_specs.SECTIONS,
+# which a test checks.
+SECTION_TABS = (("attention", "Attention today"), ("flow", "Flow over time"),
+                ("commitments", "Commitments"), ("retrospective", "Retrospective"),
+                ("capacity", "Capacity"))
+SECTION_TITLES = dict(SECTION_TABS)
+
+
+def section_html(con, tiers, section):
+    """One tab's content. Only that section's charts are computed."""
+    if section == "capacity":
+        return capacity.report_section(con) or "<p>No confirmed capacity plans.</p>"
+    title = SECTION_TITLES[section]
+    return "".join(run_chart(con, c, tiers) for c in chart_specs.CHARTS if c.section == title)
 
 
 def render_sections(con, tiers=None):

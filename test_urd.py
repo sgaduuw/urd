@@ -3183,8 +3183,8 @@ def test_the_page_loads_its_scripts_from_served_files():
     chart, rows = _flow_rows(con, "created_vs_closed")
     island = render.figure(chart, rows, "sub", con)
     assert 'type="application/json" class="plot-data"' in island, "no data island to guard"
-    html = render.page(_header(), [("S", [render.table(_epic_rows(2), headers=["epic"],
-                                                       sortable=True), island])])
+    html = render.page(_header(), render.report_body(
+        "", "S", render.table(_epic_rows(2), headers=["epic"], sortable=True) + island))
     assert 'class="plot-data"' in html
     assert _EXECUTABLE_INLINE.search("<script>alert(1)</script>")
     assert _EXECUTABLE_INLINE.search("<script type='text/javascript'>x</script>")
@@ -3858,7 +3858,7 @@ def _header(**over):
 
 def test_the_page_states_the_scope_it_covers():
     """A report must never be mistaken for one covering a different slice."""
-    html = render.page(_header(), [("Flow over time", ["<p>chart</p>"])])
+    html = render.page(_header(), render.report_body("", "Flow over time", "<p>chart</p>"))
     # The composed scope, not two substrings that could each appear anywhere.
     assert "PROJ / TEAM" in html
     assert "2026-01-01" in html
@@ -3869,7 +3869,7 @@ def test_the_page_states_the_scope_it_covers():
 
 
 def test_a_scope_with_no_component_says_so_without_a_stray_separator():
-    html = render.page(_header(component=None), [])
+    html = render.page(_header(component=None), "")
     assert "PROJ" in html
     assert "/" not in html[html.index("<h1>"):html.index("</h1>")]
 
@@ -3879,8 +3879,8 @@ def test_a_scope_containing_markup_is_escaped_not_injected():
     against a fixed number tests the page's structure rather than its escaping.
     The question is whether DATA can add one, so the same page is rendered with
     and without a hostile value and the counts must match."""
-    hostile = render.page(_header(project="P&D", component="<script>x</script>"), [])
-    benign = render.page(_header(project="P&D", component="TEAM"), [])
+    hostile = render.page(_header(project="P&D", component="<script>x</script>"), "")
+    benign = render.page(_header(project="P&D", component="TEAM"), "")
     assert "<script>x</script>" not in hostile, "the scope value was injected raw"
     assert "&lt;script&gt;x&lt;/script&gt;" in hostile, "the scope value was not escaped"
     assert hostile.count("<script") == benign.count("<script"), "data added a script element"
@@ -3889,10 +3889,10 @@ def test_a_scope_containing_markup_is_escaped_not_injected():
 
 def test_outstanding_sync_errors_are_visible_in_the_header():
     """41 tickets and 3 errors: the 3 has to be the error count, not the ticket count."""
-    html = render.page(_header(errors=3), [])
+    html = render.page(_header(errors=3), "")
     assert "3 sync error" in html
     # And the warning is conditional, not decoration that is always on.
-    assert "sync error" not in render.page(_header(errors=0), [])
+    assert "sync error" not in render.page(_header(errors=0), "")
 
 
 def test_a_chart_below_its_threshold_becomes_a_warning_not_a_plot():
@@ -3910,7 +3910,7 @@ def test_a_coverage_strip_with_no_tickets_at_all_does_not_divide_by_zero():
 
 def test_every_class_the_page_emits_is_styled():
     """An unstyled warning is an invisible warning, which is the failure this guards."""
-    emitted = render.page(_header(errors=3), []) + render.coverage_strip("X", 1, 10, 0.5)
+    emitted = render.page(_header(errors=3), "") + render.coverage_strip("X", 1, 10, 0.5)
     classes = set(re.findall(r'class="([\w-]+)"', emitted))
     assert classes, "no classes found: the regex, not the page, is what broke"
     for cls in classes:
@@ -4844,19 +4844,19 @@ def test_the_components_on_offer_survive_their_own_filter():
 def test_the_page_names_the_epics_it_left_out():
     """A report with a trash epic removed and one without look identical, and they
     say different things about every total."""
-    html = render.page(_header(excluded=["PROJ-100"]), [])
+    html = render.page(_header(excluded=["PROJ-100"]), "")
     assert "PROJ-100" in html
     assert "excluded" in html.lower()
-    assert "excluded" not in render.page(_header(), []).lower()
+    assert "excluded" not in render.page(_header(), "").lower()
 
 
 def test_the_page_names_the_components_it_was_filtered_to():
     """Two slices of one project look identical and say different things about
     every total, the same reason the excluded epics are named."""
-    html = render.page(_header(components=["TEAM", "OTHER"]), [])
+    html = render.page(_header(components=["TEAM", "OTHER"]), "")
     assert "TEAM, OTHER" in html
     assert "showing" in html.lower()
-    assert "showing" not in render.page(_header(), []).lower()
+    assert "showing" not in render.page(_header(), "").lower()
 
 
 def test_every_chart_respects_the_report_window():
@@ -4937,13 +4937,13 @@ def test_the_page_states_the_window_every_chart_obeys():
     """A windowed report and a whole-history one look identical otherwise, and
     they say different things. It matters most where the window changes a chart's
     meaning rather than just its length."""
-    windowed = render.page(_header(window="2026-03-01"), [])
+    windowed = render.page(_header(window="2026-03-01"), "")
     assert "2026-03-01 onward" in windowed
-    assert "onward" not in render.page(_header(), [])
+    assert "onward" not in render.page(_header(), "")
     # "Every chart" stopped being true the moment one was exempted, and a header
     # that overclaims is worse than one that says nothing: a reader quotes the
     # aging table as if it covered the window.
-    named = render.page(_header(window="2026-03-01", exempt=["Aging work in progress"]), [])
+    named = render.page(_header(window="2026-03-01", exempt=["Aging work in progress"]), "")
     assert "Every chart" not in named, named[named.index("<header>"):][:400]
     assert "Aging work in progress" in named
 
@@ -5014,9 +5014,8 @@ def test_no_chart_measures_an_individual():
 
 def test_the_whole_report_renders_end_to_end():
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    out = os.path.join(tempfile.mkdtemp(), "report.html")
-    urd.report(con, out)
-    html = pathlib.Path(out).read_text()
+    # The page shows one section at a time, so the whole report is every tab.
+    html = "".join(urd.report_body(con, None, slug) for slug, _ in urd.SECTION_TABS)
     for chart in chart_specs.CHARTS:
         # A chart below its coverage threshold still names itself, in the strip.
         assert chart.title in html, f"{chart.key} missing from the page"

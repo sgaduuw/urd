@@ -1,3 +1,6 @@
+import re
+
+import charts as chart_specs
 import test_helpers
 import urd
 
@@ -160,6 +163,93 @@ def test_a_never_synced_project_gets_no_duplicate_controls():
     body = test_helpers.client(registry).get("/alpha/").get_data(as_text=True)
     assert body.count('action="/alpha/refresh"') == 1
     assert 'name="since"' not in body
+
+
+def test_each_tab_renders_only_its_own_section():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    browser = test_helpers.client(registry)
+    seen = []
+    real = urd.run_chart
+
+    def recording(con, chart, tiers=None):
+        seen.append(chart.section)
+        return real(con, chart, tiers)
+
+    urd.run_chart = recording
+    try:
+        for slug, title in urd.SECTION_TABS:
+            seen.clear()
+            response = browser.get(f"/alpha/?section={slug}")
+            assert response.status_code == 200, slug
+            assert f"<h2>{title}</h2>" in response.get_data(as_text=True), slug
+            if slug != "capacity":
+                assert seen and set(seen) == {title}, (slug, set(seen))
+    finally:
+        urd.run_chart = real
+
+
+def test_tab_titles_match_the_chart_sections():
+    chart_tabs = [title for slug, title in urd.SECTION_TABS if slug != "capacity"]
+    assert tuple(chart_tabs) == chart_specs.SECTIONS
+
+
+def test_the_page_contains_exactly_the_fragment():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    browser = test_helpers.client(registry)
+    for slug, _ in urd.SECTION_TABS:
+        query = f"since=2026-01-01&section={slug}"
+        page = browser.get(f"/alpha/?{query}").get_data(as_text=True)
+        fragment = browser.get(f"/alpha/sections/{slug}?since=2026-01-01")
+        assert fragment.status_code == 200
+        assert f'<div id="report">{fragment.get_data(as_text=True)}</div>' in page, slug
+
+
+def test_unknown_sections_fall_back_on_the_page_and_404_as_a_fragment():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    browser = test_helpers.client(registry)
+    page = browser.get("/alpha/?section=nope").get_data(as_text=True)
+    assert "<h2>Attention today</h2>" in page
+    assert browser.get("/alpha/sections/nope").status_code == 404
+
+
+def test_tabs_carry_every_filter_value():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    browser = test_helpers.client(registry)
+    page = browser.get("/alpha/?component=A&component=B&since=2026-01-01&section=flow")
+    body = page.get_data(as_text=True)
+    tab = re.search(r'<a href="([^"]*section=commitments[^"]*)"', body).group(1)
+    assert "component=A&amp;component=B" in tab, tab
+    assert "since=2026-01-01" in tab, tab
+    fragment = re.search(r'hx-get="([^"]*sections/commitments[^"]*)"', body).group(1)
+    assert "component=A&amp;component=B" in fragment and "section=" not in fragment, fragment
+    assert 'aria-current="page"' in re.search(r"<a [^>]*section=flow[^>]*>", body).group(0)
+
+
+def test_history_restore_gets_the_full_page():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    response = test_helpers.client(registry).get(
+        "/alpha/?section=flow", headers={"HX-History-Restore-Request": "true"})
+    assert response.get_data(as_text=True).startswith("<!doctype html>")
+
+
+def test_the_controls_keep_the_selected_tab():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    body = test_helpers.client(registry).get("/alpha/?section=flow").get_data(as_text=True)
+    assert '<input type="hidden" name="section" value="flow">' in body
+
+
+def test_a_section_fragment_does_not_change_the_stored_default():
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    before = urd.load_scope(project.con)["report_since"]
+    test_helpers.client(registry).get("/alpha/sections/flow?since=2030-01-01")
+    assert urd.load_scope(project.con)["report_since"] == before
 
 
 if __name__ == "__main__":
