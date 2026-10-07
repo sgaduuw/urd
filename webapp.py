@@ -66,9 +66,11 @@ def create_app(registry):
     # starts. Deferring to call time (create_app always runs after every
     # module has finished loading) sidesteps that without either side having
     # to import lazily inside a function body.
+    import views_capacity
     import views_jobs
     import views_report
     import views_wizard
+    app.register_blueprint(views_capacity.bp)
     app.register_blueprint(views_report.bp)
     app.register_blueprint(views_jobs.bp)
     app.register_blueprint(views_wizard.bp)
@@ -177,7 +179,8 @@ def project_page(project, tiers=None, con=None):
             lines.append(message)
         return render.notice(
             f"{project.slug}: never synced", lines,
-            actions=[("Refresh", f"/{project.slug}/refresh", "post")],
+            actions=[("Refresh", f"/{project.slug}/refresh", "post"),
+                     ("Capacity", f"/{project.slug}/capacity/", "get")],
         )
     if not _has_issues_view(con):
         # Reachable only by a CLI user who synced without deriving; the Refresh
@@ -189,6 +192,7 @@ def project_page(project, tiers=None, con=None):
             lines.append(message)
         return render.notice(
             f"{project.slug}: synced but not derived", lines,
-            actions=[("Refresh", f"/{project.slug}/refresh", "post")],
+            actions=[("Refresh", f"/{project.slug}/refresh", "post"),
+                     ("Capacity", f"/{project.slug}/capacity/", "get")],
         )
     return urd.report_html(con, tiers)

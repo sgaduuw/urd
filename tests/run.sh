@@ -5,7 +5,9 @@ cd "$(dirname "$0")/.."
 unset PYTHONOPTIMIZE
 for f in test_urd.py test_projects.py test_wizard.py test_container.py test_webapp.py \
 	test_views_report.py test_views_jobs.py test_views_wizard.py \
-	test_security.py test_sync_safety.py test_checks.py; do
+	test_security.py test_sync_safety.py test_checks.py \
+	test_capacity.py test_capacity_history.py test_capacity_catalogue.py \
+	test_views_capacity.py test_capacity_report.py; do
 	[ -f "$f" ] || { echo "Missing required test: $f" >&2; exit 1; }
 done
 uv tool run ruff==0.16.8 check .

@@ -121,6 +121,7 @@ def _controls(project, flags, others):
     problems = "".join(
         f'<p class="warn">{render.esc(p)}</p>' for p in flags["problems"])
     return (
+        f'<p><a href="/{render.esc(project.slug)}/capacity/">Capacity</a></p>'
         f'<form method="get" action="/{render.esc(project.slug)}/" class="controls">'
         f'<label>since <input name="since" value="{render.esc(flags["since"] or "")}"'
         f' placeholder="YYYY-MM-DD"></label>'

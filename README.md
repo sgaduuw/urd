@@ -106,7 +106,7 @@ docker compose up -d
 Build the new image first with `docker compose build`. The ownership command
 preserves the database contents. Bind-mounted directories need the same ownership.
 Keep `URD_JIRA_HOST` set when restarting. The next sync refetches issues once because
-unused worklog data is no longer requested; no report data depends on that field.
+child inventories are now requested for historical capacity coverage.
 
 ### It has no authentication
 
@@ -578,3 +578,89 @@ any scoped done-category evidence is rejected, including conflicting open/done n
 ## Licence
 
 MIT. See `LICENSE`.
+
+## Sprint capacity
+
+Open **Capacity** on a configured project's page. Discover Scrum boards, add a
+team with component mappings and a timezone, and enter each person's normal
+seven-day Work and Meeting hours. Choose the team's boards and refresh their sprint catalogue.
+Empty future sprints are supported; undated sprints need local planning dates.
+
+Each team and sprint has its own grid. Enter Work and Meetings in each day's
+cell. Work excludes meetings; total availability is Work plus Meetings. The
+sprint focus percentage applies only to Work, with no second meeting deduction.
+Blank means missing; enter zero explicitly where appropriate. Each day's sum
+must be at most 24 hours. These are planned hours, not measured time worked.
+
+Normal weekly patterns use the same daily split and seed new sprints. Changes
+to a weekly pattern do not rewrite saved sprint plans.
+
+Preview and explicitly confirm the plan. Confirmation is allowed before,
+during or after a sprint. A first confirmation after closure reconstructs the
+commitment at sprint start and labels the capacity retrospective. Subsequent
+adjustments require a reason and preserve the original. A mistaken confirmation
+can be voided with a reason, then replaced under the same or another team and
+sprint. An existing valid destination cannot be overwritten.
+
+Select previous team sprints for a capacity-weighted points-per-focus-hour
+rate, or enter a manual rate. Selected source values and revision numbers are
+frozen in the forecast. Later corrections and voids are visible without
+rewriting earlier forecasts. Missing or incomplete history never becomes a
+zero rate.
+
+Delivery uses actual sprint start inclusive and closure exclusive. A ticket
+must complete during that interval and remain Done, not dropped, in its own
+team and sprint scope. Subtasks count independently of their parent's status.
+Any estimated direct subtask, including an explicit zero or a subtask outside
+the selected scope, suppresses its parent's points. Parent fallback requires
+evidence that no direct subtask has an estimate. Missing historical facts are
+shown as partial coverage.
+
+Upgrade with a normal sync and derive before relying on historical coverage.
+Sync now requests child inventories and retains type, status and observation
+evidence. Older data can have gaps that a current metadata lookup cannot repair.
+A source mirror restricted by component, too narrow a date window, missing
+records or conflicting history can prevent a complete automatic rate.
+
+Catalogue refresh is an explicit read-only network operation using Jira
+Software's fixed board and sprint paths. Grid editing, saved plans, derivation
+and reports work offline. A stale tab or busy refresh retains entered values
+and asks for review or retry. Changed Jira dates require explicit reconciliation;
+hours outside the revised range remain available for inspection.
+
+The ordinary HTML report includes aggregate capacity. A plan's **Export HTML**
+action includes individual availability only when its checkbox is selected.
+Free-text revision reasons stay in the local application. Exported files remain
+read only. Spreadsheet import and Jira writes are not supported.
+
+### Back up and restore local plans
+
+Jira sync cannot recover locally entered availability, confirmations or forecasts.
+They live in the same project DuckDB files as the mirror.
+
+1. Locate the complete data volume: the directory supplied to `serve --volume`
+   or `URD_VOLUME`; inside the container it is `/var/lib/urd`.
+2. Stop URD cleanly and stop any CLI writers. For Compose, use
+   `docker compose stop urd`. Verify all database connections are closed;
+   on a host directory, `lsof +D ./urd-data` should list no open files.
+3. Copy the **entire directory**, including database companion files, into a
+   separate, new backup directory. Do not copy a live database file in isolation.
+   For a stopped container, copy all of `/var/lib/urd/.`, not the image layer.
+4. Restore the backup into another new directory or volume first. Open that
+   restored volume with URD and verify teams, grids, original confirmations,
+   revisions, voids, replacement links and saved forecast source values.
+   Re-run derive and restart URD, then verify those records again.
+5. Stop the restored instance. Only after verification, replace the working
+   volume while retaining the previous volume separately. Preserve the
+   ownership required by the runtime user, documented above.
+
+For a host directory, these commands refuse an existing destination:
+
+```sh
+test ! -e ./urd-backup && cp -Rp ./urd-data ./urd-backup
+test ! -e ./urd-restore-check && cp -Rp ./urd-backup ./urd-restore-check
+uv run --isolated --with-requirements requirements.txt python urd.py serve --volume ./urd-restore-check
+```
+
+`test_capacity_report.py` exercises closed-database copying, separate restore,
+derive and restart using synthetic confirmations, revisions, voids and forecasts.

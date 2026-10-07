@@ -111,6 +111,9 @@ Flat modules at the repo root, one concern each:
 - `render.py` SVG primitives for the report.
 - `webapp.py` the Flask app: wiring, and the states that are not a chart.
 - `views_report.py` `/` and `/<slug>/`, and the flag controls.
+- `capacity.py` durable local plans, validation, forecast provenance and aggregate exports.
+- `capacity_history.py` offline historical scope, completion and point evidence.
+- `views_capacity.py` local capacity forms and read-only exports.
 - `views_jobs.py` refresh.
 - `views_wizard.py` `/setup`: add a project after proving its scope works.
 
@@ -148,8 +151,8 @@ From the design, and settled rather than open:
 - Writing to Jira.
 - Any server, live query surface, or scheduled run.
 - Following people across projects. Scope is project plus component.
-- Burndown and velocity charts, which Jira already draws well.
-- Jira Server and Data Center. Cloud REST v3 only.
+- Burndown charts. Local team-and-sprint capacity and velocity comparisons are in scope.
+- Jira Server and Data Center. Use Cloud REST v3 and the fixed read-only Agile board/sprint paths.
 
 If a request implies one of these, say so rather than building it.
 
