@@ -17,18 +17,6 @@ import urd
 import webapp
 
 
-def test_report_html_returns_what_report_writes():
-    """One rendering path, not two. If these ever diverge, the served page and the
-    archived file stop being the same report."""
-    con = test_helpers.configured_db()
-    urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
-    path = os.path.join(tempfile.mkdtemp(), "r.html")
-    urd.report(con, path)
-    with open(path) as fh:
-        written = fh.read()
-    assert urd.report_html(con) == written
-
-
 def test_a_database_derived_before_a_view_existed_repairs_itself():
     """Defining the chart views only in `derive` breaks every database derived
     before a new one is added: the derived tables are current and the report
@@ -55,8 +43,7 @@ def test_rendering_a_current_database_writes_nothing_to_it():
 
 
 def test_report_html_writes_no_file():
-    """`report` defaults to writing report.html in the working directory. The
-    server calls this thousands of times, so it must not touch the disk at all."""
+    """The server calls this thousands of times, so it must not touch the disk."""
     con = test_helpers.configured_db()
     urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
     workdir = tempfile.mkdtemp()
@@ -694,7 +681,7 @@ def test_the_cli_reports_a_held_lock_as_such():
     held.execute("CREATE TABLE t (i INTEGER)")
     try:
         done = subprocess.run(
-            [sys.executable, "urd.py", "--db", path, "report"],
+            [sys.executable, "urd.py", "--db", path, "sql", "SELECT 1"],
             capture_output=True, text=True, timeout=60)
     finally:
         held.execute("ROLLBACK")
@@ -711,7 +698,7 @@ def test_a_bad_path_is_not_reported_as_a_held_lock():
     import subprocess
     bad_path = os.path.join(tempfile.mkdtemp(), "no-such-dir", "x.duckdb")
     done = subprocess.run(
-        [sys.executable, "urd.py", "--db", bad_path, "report"],
+        [sys.executable, "urd.py", "--db", bad_path, "sql", "SELECT 1"],
         capture_output=True, text=True, timeout=60)
     combined = done.stdout + done.stderr
     assert done.returncode != 0
@@ -734,7 +721,7 @@ def test_a_block_related_ioexception_does_not_collide_with_the_lock_phrase():
     urd.open_db = fake_open_db
     try:
         try:
-            urd.main(["--db", "irrelevant.duckdb", "report"])
+            urd.main(["--db", "irrelevant.duckdb", "sql", "SELECT 1"])
             raise AssertionError("expected SystemExit")
         except SystemExit as exc:
             message = str(exc)

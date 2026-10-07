@@ -2,8 +2,8 @@
 
 Flags are read from the query string and applied inside this request's own
 cursor, in a transaction that is always rolled back: the writes never reach
-sync_state, so two browser tabs never fight over each other's window and the
-CLI stays the way a default is changed.
+sync_state, so two browser tabs never fight over each other's window, and
+Save as default is the way a default is changed.
 """
 import threading
 import urllib.parse
@@ -35,7 +35,7 @@ bp = flask.Blueprint("report", __name__)
 _RENDER_LOCK = threading.Lock()
 
 
-def flags_from(request, project, con):
+def flags_from(args, project, con):
     """Query string over stored defaults, with the errors collected, not raised.
 
     urd's validators exit on bad input, which is right for a CLI and a 500 through
@@ -51,13 +51,13 @@ def flags_from(request, project, con):
     """
     problems = []
     stored_window = urd.load_scope(con)["report_since"]
-    since = request.args.get("since", stored_window)
-    epics = request.args.getlist("exclude_epic")
+    since = args.get("since", stored_window)
+    epics = args.getlist("exclude_epic")
     epics = [k.strip() for value in epics for k in value.split(",") if k.strip()]
-    if not epics and "exclude_epic" not in request.args:
+    if not epics and "exclude_epic" not in args:
         epics = urd.stored_excluded_epics(con)
-    components = request.args.getlist("component")
-    if not components and "component" not in request.args:
+    components = args.getlist("component")
+    if not components and "component" not in args:
         components = urd.stored_report_components(con)
     tiers = urd.stored_thresholds(con)
 
@@ -78,21 +78,9 @@ def flags_from(request, project, con):
     urd.set_report_components(con, components)
 
     try:
-        tiers = urd.parse_thresholds(request.args.getlist("threshold"), base=tiers)
+        tiers = urd.parse_thresholds(args.getlist("threshold"), base=tiers)
     except SystemExit as exc:
         problems.append(str(exc))
-
-    # The job's own state, not a query-string marker: start_refresh can return
-    # False for three different reasons (already running, no scope, the
-    # database would not open), and collapsing all three onto one marker meant
-    # this text was wrong two times out of three. Reading job.state directly
-    # (projects.job_message, shared with webapp's notice pages) is accurate
-    # for whichever reason applies, and also surfaces a failure that happened
-    # after the redirect already sent the clicker back here, which used to be
-    # reported nowhere at all.
-    message = projects.job_message(project)
-    if message:
-        problems.append(message)
 
     return {"since": since, "epics": epics, "components": components,
             "offered": urd.components_present(con),
@@ -157,7 +145,9 @@ def _controls(project, flags, others, section):
         f'<label>threshold <input name="threshold" placeholder="default=0.40"></label>'
         f'{_component_boxes(flags)}'
         f'<input type="hidden" name="section" value="{render.esc(section)}">'
-        f'<button type="submit">Apply</button></form>'
+        f'<button type="submit">Apply</button>'
+        f'<button type="submit" formmethod="post"'
+        f' formaction="/{render.esc(project.slug)}/defaults">Save as default</button></form>'
         f'<form method="post" action="/{render.esc(project.slug)}/refresh">'
         f'<button type="submit">Refresh</button></form>'
         f'{problems}'
@@ -205,7 +195,18 @@ def project(slug):
                 # Refresh button and a since/exclude box that does
                 # nothing without a report under it.
                 return webapp.project_page(found, con=con)
-            flags = flags_from(flask.request, found, con)
+            flags = flags_from(flask.request.args, found, con)
+            # The job's own state, not a query-string marker: start_refresh can return
+            # False for three different reasons (already running, no scope, the
+            # database would not open), and collapsing all three onto one marker meant
+            # this text was wrong two times out of three. Reading job.state directly
+            # (projects.job_message, shared with webapp's notice pages) is accurate
+            # for whichever reason applies, and also surfaces a failure that happened
+            # after the redirect already sent the clicker back here, which used to be
+            # reported nowhere at all.
+            message = projects.job_message(found)
+            if message:
+                flags["problems"].append(message)
             tabs = _tabs(slug, section, _filters_query(flask.request.args))
             page = webapp.project_page(found, flags["tiers"], con, section, tabs)
         finally:
@@ -229,8 +230,34 @@ def section_fragment(slug, section):
         try:
             if not webapp.report_ready(found, con):
                 flask.abort(404)
-            flags = flags_from(flask.request, found, con)
+            flags = flags_from(flask.request.args, found, con)
             tabs = _tabs(slug, section, _filters_query(flask.request.args))
             return urd.report_body(con, flags["tiers"], section, tabs)
         finally:
             con.execute("ROLLBACK")
+
+
+@bp.post("/<slug>/defaults")
+def save_defaults(slug):
+    """The one write path for report defaults, replacing the old `report` CLI.
+    Every value is applied or none is."""
+    registry = flask.current_app.config["REGISTRY"]
+    found = webapp.slug_or_404(registry, slug)
+    if found.con is None or not found.configured():
+        flask.abort(404)
+    form = flask.request.form
+    con = found.con.cursor()
+    with _RENDER_LOCK:
+        con.execute("BEGIN")
+        try:
+            flags = flags_from(form, found, con)
+            saved = not flags["problems"]
+            if saved:
+                urd.save_scope(con, thresholds=urd.format_thresholds(flags["tiers"]))
+            con.execute("COMMIT" if saved else "ROLLBACK")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+    if not saved:
+        return flask.redirect(f"/{slug}/?{urllib.parse.urlencode(list(form.items(multi=True)))}")
+    return flask.redirect(f"/{slug}/?section={_section(form)}")

@@ -1672,18 +1672,10 @@ def report_body(con, tiers=None, section="attention", tabs=""):
 
 
 def report_html(con, tiers=None, section="attention", tabs=""):
-    """The served report page with one section. `report` writes this to a file.
-    The fragment route returns report_body alone, so the page and a tab switch
-    show the same bytes."""
+    """The served report page with one section. The fragment route returns
+    report_body alone, so the page and a tab switch show the same bytes."""
     body = report_body(con, tiers, section, tabs)
     return render.page(report_header(con), body)
-
-
-def report(con, path="report.html", tiers=None):
-    with open(path, "w") as fh:
-        fh.write(report_html(con, tiers))
-    print(f"wrote {path}")
-    return 0
 
 
 def parse_thresholds(pairs, base=None):
@@ -1809,25 +1801,6 @@ def build_parser():
         "--abandoned-status",
         help="done-category statuses meaning dropped rather than delivered, "
              "comma separated. Counted separately, never as delivery.")
-
-    p_report = sub.add_parser("report", help="write report.html from the derived tables")
-    p_report.add_argument(
-        "--threshold", action="append", metavar="TIER=SHARE",
-        help="minimum coverage before a chart is replaced by a strip, e.g. "
-             "points=0.4. Repeatable, remembered between runs.")
-    p_report.add_argument(
-        "--exclude-epic", action="append", metavar="KEY",
-        help="leave this epic and every ticket under it out of every chart. "
-             "Repeatable, remembered between runs; pass an empty value to clear.")
-    p_report.add_argument(
-        "--component", action="append", metavar="NAME",
-        help="narrow every chart to this component. Repeatable, remembered "
-             f"between runs; pass an empty value to clear, or {NO_COMPONENT} "
-             "for the tickets that carry none.")
-    p_report.add_argument(
-        "--since", metavar="YYYY-MM-DD",
-        help="the date every chart measures from. Remembered between runs; "
-             "pass 1900-01-01 to go back to everything.")
 
     p_sql = sub.add_parser("sql", help="run a query against the database")
     p_sql.add_argument("query")
@@ -1958,25 +1931,6 @@ def main(argv=None):
             args.parked_status if args.parked_status is not None else scope["parked_status"],
         )
         return 0
-
-    if args.verb == "report":
-        scope = load_scope(con)
-        set_report_window(con, args.since or scope["report_since"])
-        # An empty --exclude-epic clears the list, which is why this is not just
-        # `args.exclude_epic or stored`: passing "" has to mean something.
-        if args.exclude_epic is not None:
-            set_excluded_epics(con, args.exclude_epic)
-        else:
-            set_excluded_epics(con, stored_excluded_epics(con))
-        # Same as --exclude-epic: passing "" has to mean clear, so this is not
-        # just `args.component or stored`.
-        if args.component is not None:
-            set_report_components(con, args.component)
-        else:
-            set_report_components(con, stored_report_components(con))
-        tiers = parse_thresholds(args.threshold, base=stored_thresholds(con))
-        save_scope(con, thresholds=format_thresholds(tiers))
-        return report(con, tiers=tiers)
 
 
 if __name__ == "__main__":

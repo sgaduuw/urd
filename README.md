@@ -1,7 +1,7 @@
 # urd
 
 urd mirrors one Jira project's ticket history into a local DuckDB database and
-renders it into a static HTML report. It is read only: every request to Jira
+serves it as an HTML report. It is read only: every request to Jira
 is a GET, and urd never writes anything back.
 
 ## Setup
@@ -26,7 +26,7 @@ export URD_JIRA_HOST=example.atlassian.net
 Every live request requires it, including refreshes of existing databases.
 The requested site must match it exactly (case-insensitive). To use another
 Jira tenant, run a separate process with that tenant and its token. Offline
-`derive`, `report` and `sql` commands do not require it.
+`derive` and `sql` commands do not require it.
 
 First run needs the full scope. `--component` is optional and narrows what is
 mirrored; leave it out to mirror the whole project and pick components on the
@@ -40,7 +40,7 @@ uv run --isolated --with-requirements requirements.txt python urd.py derive \
   --status-order "To Do,In Progress,Review,Done" \
   --start-status "In Progress" --review-status "Review" \
   --abandoned-status "Won't do"
-uv run --isolated --with-requirements requirements.txt python urd.py report
+uv run --isolated --with-requirements requirements.txt python urd.py serve
 ```
 
 Every flag there is remembered in `sync_state`. From the second run on:
@@ -48,25 +48,24 @@ Every flag there is remembered in `sync_state`. From the second run on:
 ```
 uv run --isolated --with-requirements requirements.txt python urd.py sync
 uv run --isolated --with-requirements requirements.txt python urd.py derive
-uv run --isolated --with-requirements requirements.txt python urd.py report
-open report.html
+uv run --isolated --with-requirements requirements.txt python urd.py serve
 ```
+
+Reports are read in `urd serve`. The controls apply filters to the page
+you are looking at; **Save as default** stores them for every later visit.
 
 ## Serving it
 
-`urd serve` renders the report over HTTP instead of writing a file, with the report
-flags as controls and a Refresh button that syncs in the background:
+`urd serve` renders the report over HTTP, with the report
+filters as controls and a Refresh button that syncs in the background:
 
 ```
 uv run --isolated --with-requirements requirements.txt python urd.py serve --volume ./urd-data
 ```
 
 One DuckDB file per Jira project, all in the volume, each with its own workflow
-configuration, component filter and report flags. `/` redirects to the first
+configuration, component filter and report defaults. `/` redirects to the first
 configured project; `/setup` adds another.
-
-Nothing about the CLI changes. `urd report` still writes the self-contained file,
-and the server renders the same report with a controls form prepended to it.
 
 ### In a container
 
@@ -150,8 +149,8 @@ offline: no network call, and safe to rerun as often as you like. Changing a
 metric's definition, or the workflow's status order, costs a `derive` run,
 never a refetch.
 
-`report` reads the derived views and writes `report.html`: one file, inline
-SVG, no external references. Open it directly in a browser.
+The report reads the derived views and draws every chart as inline SVG on the
+server.
 
 ## Widening the window
 
@@ -254,7 +253,7 @@ These counts overlap: an added ticket subsequently removed contributes to both.
 An original ticket that leaves and returns stays original and is no longer removed;
 a return whose initial membership is uncertain stays unknown instead of becoming
 a confirmed addition. No ticket-detail rows are truncated. Component and epic
-filters apply, while report `--since` does not hide an ongoing sprint.
+filters apply, while the report's since does not hide an ongoing sprint.
 
 Parallel sprints remain separate by ID, even if their names match. Their state and
 start date come from the freshest mirrored snapshots across the whole mirror.
@@ -350,9 +349,9 @@ not guess one. A name that is not a done-category status is rejected.
 
 ## Interactivity
 
-`report.html` carries its JavaScript inline: uPlot 1.6.31 from `vendor/`, plus
-about 90 lines of first-party wiring. Nothing is fetched, so a saved report opens
-offline, unchanged, years later.
+The report loads its JavaScript as files the server serves itself: uPlot from
+`vendor/` and the first-party wiring in `static/urd.js`. Nothing is fetched from
+another host.
 
 Line, scatter, stack and combined charts gain hover readouts and drag-to-zoom; on
 a stack, hovering reads the band's own value rather than the running total it sits
@@ -361,7 +360,7 @@ with every label and value written out, and are not upgraded. Tables sort by
 any column, click or Enter on the header.
 
 All of it is additive: every chart is rendered as SVG by Python and is present in
-the file. A page opened with JavaScript disabled, or printed, loses hovering,
+the page. A page opened with JavaScript disabled, or printed, loses hovering,
 zooming and sorting, and nothing else. Nothing is computed in the browser that
 Python could have computed, which is what keeps two reports of one database
 diffable.
@@ -382,28 +381,18 @@ browser fetches on open with no choice.
 A trash-bin epic with a hundred abandoned children skews every total it appears
 in, and nothing in the data distinguishes it from a real one:
 
-```
-uv run --isolated --with-requirements requirements.txt python urd.py report --exclude-epic PROJ-1 --exclude-epic PROJ-2
-```
-
-Repeatable, remembered between runs, and `--exclude-epic ""` clears the list. The
+Enter the keys in the exclude epic box, comma separated, and press Apply to see
+the effect. **Save as default** stores the list; an empty box saved clears it. The
 epic and every ticket parented to it disappear from every chart, and the header
 names what was left out, because a report with an epic removed and one without
 look identical and say different things about every total.
 
 ## Slicing by component
 
-`sync --component` decides what is mirrored. `report --component` decides what a
-page shows of it, without refetching anything:
-
-```
-uv run --isolated --with-requirements requirements.txt python urd.py report --component TEAM --component OTHER
-```
-
-Repeatable, remembered between runs, and `--component ""` clears the list. On the
-served page the same choice is a row of tick boxes above the report, listing the
-components the mirror holds, most tickets first. No box ticked means every
-component, which is the default.
+`sync --component` decides what is mirrored. The component tick boxes decide what
+a page shows of it, without refetching anything. They sit above the report and
+list the components the mirror holds, most tickets first. **Save as default**
+stores the ticked boxes. No box ticked means every component, which is the default.
 
 `(none)` is the slice of tickets that carry no component. It is offered only when
 such tickets exist, since the list carries no counts and a box that can only
@@ -420,14 +409,10 @@ component offers the others as intersections with it.
 
 ## Reporting on a period
 
-`sync --since` decides what is fetched. `report --since` decides what the charts
-measure, without refetching anything:
-
-```
-uv run --isolated --with-requirements requirements.txt python urd.py report --since 2026-03-01
-```
-
-Remembered between runs; pass `1900-01-01` to go back to everything. The header
+`sync --since` decides what is fetched. The since box decides what the charts
+measure, without refetching anything. Enter a date such as `2026-03-01`, press
+Apply, and use **Save as default** to keep it; enter `1900-01-01` to go back to
+everything. The header
 states the window, because a windowed report and a whole-history one look
 identical otherwise.
 
@@ -464,27 +449,23 @@ note. Below it, `run_chart` (`urd.py`) skips the chart entirely and renders
 `coverage_strip` (`render.py`) instead: one sentence stating the shortfall.
 
 A chart names a *tier* rather than a number. There are two, and both can be
-set per run and are then remembered:
-
-```
-uv run --isolated --with-requirements requirements.txt python urd.py report --threshold default=0.40 --threshold points=0.35
-```
+set in the threshold box as `tier=share`, for example `points=0.35`, and then
+saved as the default.
 
 `default` covers most charts; `points` covers the two built on Story Points,
 which is genuinely optional. A mistyped tier is an error rather than a silently
-ignored flag. The shipped values are the ones above: judgements about how little
+ignored value. The shipped values are the ones above: judgements about how little
 data is still worth plotting, not properties of the data.
 
-A `report` run on the command line remembers the thresholds it resolved, so
-**changing the shipped default in `charts.py` does not move a database that has
-already run `report`**: the stored value wins, and `--threshold` has to be passed
-once against that database. A database that has only ever been served has nothing
-stored and follows the shipped default.
+**Changing the shipped default in `charts.py` does not move a database that has
+already saved thresholds**: the stored value wins, and the threshold has to be
+saved once against that database. A database that has never saved one follows the
+shipped default.
 
-The threshold box on the served page, like the since and exclude-epic boxes
-beside it, applies to that one request and stores nothing. All three write into
-the request's own transaction, which is what keeps two browser tabs from
-fighting over each other's view.
+Apply, on the threshold, since and exclude-epic boxes alike, affects that one
+request and stores nothing. The values are written inside the request's own
+transaction, which is what keeps two browser tabs from fighting over each other's
+view. Only **Save as default** stores them, and it stores all of them or none.
 
 ## Adding a chart
 
@@ -539,7 +520,7 @@ needed for the checks; network requests from tests are stubbed or refused.
 
 ## Privacy
 
-`urd.duckdb` and `report.html` contain real names, account ids and ticket
+`urd.duckdb` and any exported plan HTML contain real names, account ids and ticket
 keys pulled straight from Jira. Both are gitignored. `tests/no-leaks.sh`
 guards the repository itself: it scans every file that could be published,
 every commit message and the commit author identity for anything
@@ -550,7 +531,7 @@ employer-specific, and must pass before every commit.
 Attention today separates active / available work, deliberately parked work, and
 unclassified work. Active means eligible for attention, not necessarily in progress.
 Counts cover every open ticket in the report scope; each aging and carried-sprint
-table shows up to 40 tickets within its own group. These views ignore `report --since`
+table shows up to 40 tickets within its own group. These views ignore the since box
 so old open tickets remain visible. Component and excluded-epic filters still apply.
 
 Configure parking explicitly with the existing workflow settings:

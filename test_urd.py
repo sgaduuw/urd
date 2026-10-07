@@ -3933,63 +3933,6 @@ _FETCHING = (
 )
 
 
-def _assert_nothing_is_fetched(html, label=""):
-    """Nothing in this page causes a network request when it is opened.
-
-    Anchors are removed first: a link is followed only if a human clicks it,
-    unlike everything in _FETCHING, which the browser acts on with no choice.
-    `href` is then forbidden in what remains, which is what keeps a stylesheet
-    <link> out while leaving <a href> in.
-    """
-    without_anchors = re.sub(r"<a\b[^>]*>", "", html)
-    for pattern in _FETCHING + (r"\bhref\s*=",):
-        found = re.search(pattern, without_anchors)
-        assert not found, f"{label}{pattern} can reach the network: {found.group(0)!r}"
-
-
-def test_report_writes_a_standalone_file_with_no_external_references():
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    out = os.path.join(tempfile.mkdtemp(), "report.html")
-    assert urd.report(con, out) == 0
-    html = pathlib.Path(out).read_text()
-    assert html.startswith("<!doctype html>")
-    # Task 4 of the htmx work deletes this test with the report command. Until
-    # then the served-file tags are the only references the page may carry.
-    served = html.replace(render.SCRIPTS, "").replace(
-        '<link rel="stylesheet" href="/vendor/uplot.min.css">', "")
-    assert served != html
-    _assert_nothing_is_fetched(served)
-
-
-def test_the_fetch_check_is_not_blinded_by_its_own_exemptions():
-    """Two exemptions live in that helper: anchors are stripped, and URLs are not
-    themselves an offence. Both are the kind that quietly widen until nothing is
-    caught, so each fetching form is fed in and must still be rejected."""
-    must_catch = [
-        '<img src="https://x/y.png">',
-        '<img src="/local/y.png">',
-        '<link href="x.css" rel="stylesheet">',
-        "<style>@import 'x.css';</style>",
-        "<style>a{background:url(x.png)}</style>",
-        '<script>fetch("/telemetry")</script>',
-        "<script>new XMLHttpRequest()</script>",
-        "<script>new WebSocket('wss://x')</script>",
-        "<script>navigator.sendBeacon('/x')</script>",
-        "<script>new EventSource('/x')</script>",
-        "<script>import('/x.js')</script>",
-    ]
-    for markup in must_catch:
-        try:
-            _assert_nothing_is_fetched(markup)
-        except AssertionError:
-            continue
-        raise AssertionError(f"not caught: {markup}")
-    # And the two things that must stay allowed.
-    _assert_nothing_is_fetched(
-        '<a href="https://example.invalid/browse/PROJ-1">PROJ-1</a>')
-    _assert_nothing_is_fetched("<script>/*! https://github.com/leeoniya/uPlot */</script>")
-
-
 def test_an_interactive_chart_still_ships_its_server_drawn_svg():
     """The whole basis of allowing a library: the page prints, and a browser with
     script disabled shows exactly what it showed before. The upgrade replaces the
@@ -4192,9 +4135,7 @@ def test_a_linked_key_is_escaped_in_both_the_href_and_the_text():
 
 def test_the_report_header_reflects_the_database_it_read():
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    out = os.path.join(tempfile.mkdtemp(), "report.html")
-    urd.report(con, out)
-    html = pathlib.Path(out).read_text()
+    html = urd.report_html(con)
     expected = con.execute("SELECT count(*) FROM issues").fetchone()[0]
     assert f"{expected} tickets" in html
 

@@ -12,7 +12,7 @@ source and are worth reading before any substantial change.
 ## What urd is
 
 A **local** tool. It mirrors one Jira project's ticket history into a
-DuckDB file and renders a self-contained HTML report, serving four
+DuckDB file and serves an HTML report to four
 readers from one page: flow health, outward reporting, retro material,
 and individual contribution evidence.
 
@@ -23,8 +23,8 @@ rather than things not got round to yet:
   writes anything back, and must not learn to.
 - **There is no server, no scheduled run, and no per-reader variant.**
   `urd serve` renders over HTTP for convenience on your own machine;
-  it is not a deployment. The report is shared by handing someone the
-  HTML file.
+  it is not a deployment. The report is read in `urd serve`; a capacity plan can
+  be exported as HTML.
 - **It is not a released artifact.** No versioning, no release flow,
   no `develop` branch. See "Branching" below, which is a deliberate
   divergence from the rest of the portfolio.
@@ -80,7 +80,6 @@ Dependencies are pinned in `requirements.txt` (compiled from
 ```sh
 uv run --isolated --with-requirements requirements.txt python urd.py sync
 uv run --isolated --with-requirements requirements.txt python urd.py derive
-uv run --isolated --with-requirements requirements.txt python urd.py report
 uv run --isolated --with-requirements requirements.txt python urd.py serve
 uv run --isolated --with-requirements requirements.txt python urd.py sql
 ```
@@ -90,7 +89,7 @@ optionally `--component`, `--since`) and `derive` needs the status
 vocabulary. Every flag is remembered in `sync_state`, so from the
 second run on the bare commands continue correctly.
 
-`derive`, `report` and `sql` are offline and do not need
+`derive` and `sql` are offline and do not need
 `URD_JIRA_HOST`. `sync` and the setup wizard do.
 
 Tests and lint:
@@ -104,11 +103,12 @@ uv run ruff check .
 
 Flat modules at the repo root, one concern each:
 
-- `urd.py` the CLI entry point: `sync`, `derive`, `report`, `sql`, `serve`.
+- `urd.py` the CLI entry point: `sync`, `derive`, `sql`, `serve`.
 - `projects.py` one Project per database file, and the registry owning them.
 - `wizard.py` validate a proposed scope against Jira before writing it anywhere.
 - `charts.py` chart specifications.
 - `render.py` SVG primitives for the report.
+- `static/urd.js` the report's sorting and charts, served as a file.
 - `webapp.py` the Flask app: wiring, and the states that are not a chart.
 - `views_report.py` `/` and `/<slug>/`, and the flag controls.
 - `capacity.py` durable local plans, validation, forecast provenance and aggregate exports.

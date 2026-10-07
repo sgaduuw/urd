@@ -252,6 +252,39 @@ def test_a_section_fragment_does_not_change_the_stored_default():
     assert urd.load_scope(project.con)["report_since"] == before
 
 
+def test_save_as_default_persists_every_filter():
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    response = test_helpers.client(registry).post("/alpha/defaults", data={
+        "since": "2026-02-01", "exclude_epic": "PROJ-9", "component": "TEAM",
+        "threshold": "default=0.5", "section": "flow"})
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/alpha/?section=flow")
+    scope = urd.load_scope(project.con)
+    assert scope["report_since"] == "2026-02-01"
+    assert urd.stored_excluded_epics(project.con) == ["PROJ-9"]
+    assert urd.stored_report_components(project.con) == ["TEAM"]
+    assert urd.stored_thresholds(project.con)["default"] == 0.5
+
+
+def test_save_as_default_with_an_invalid_value_saves_nothing():
+    registry = test_helpers.registry()
+    project = test_helpers.synced(registry)
+    before = urd.load_scope(project.con)
+    response = test_helpers.client(registry).post("/alpha/defaults", data={
+        "since": "yesterday", "component": "TEAM", "threshold": "default=0.5"})
+    assert response.status_code == 302
+    assert "since=yesterday" in response.headers["Location"]
+    assert urd.load_scope(project.con) == before
+
+
+def test_the_controls_offer_save_as_default():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    body = test_helpers.client(registry).get("/alpha/").get_data(as_text=True)
+    assert 'formaction="/alpha/defaults"' in body and 'formmethod="post"' in body
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
