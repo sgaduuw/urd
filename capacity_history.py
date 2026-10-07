@@ -294,11 +294,16 @@ def in_scope(state, settings, sprint_id):
 def select_points(states):
     children = {}
     uncertain_parent = False
+    uncertain_parents = set()
     for state in states.values():
         if state["exists"] is False:
             continue
-        if {"type", "parent"} & state["unknown"]:
+        # An unknown parent could be anyone's subtask. An unknown type with a known parent
+        # only makes that one parent uncertain; with no parent it cannot be a subtask.
+        if "parent" in state["unknown"]:
             uncertain_parent = True
+        elif "type" in state["unknown"] and state["parent"]:
+            uncertain_parents.add(state["parent"])
         if state["is_subtask"] and "parent" not in state["unknown"] and state["parent"]:
             children.setdefault(state["parent"], []).append(state)
     for key, state in states.items():
@@ -307,7 +312,7 @@ def select_points(states):
             continue
         family = children.get(key, [])
         estimated = any("points" not in c["unknown"] and c["points"] is not None for c in family)
-        unknown = (uncertain_parent or not state["inventory_complete"]
+        unknown = (uncertain_parent or key in uncertain_parents or not state["inventory_complete"]
                    or any("points" in c["unknown"] for c in family))
         state["point_source"] = False if estimated else None if unknown else True
     for state in states.values():

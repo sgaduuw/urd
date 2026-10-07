@@ -358,6 +358,27 @@ def test_known_subtask_points_survive_unrelated_unknown_type():
     assert result["delivered_points"] == 3, result["delivered_points"]
 
 
+def test_unrelated_unknown_type_keeps_the_parent_fallback():
+    unrelated = issue("EX-9", 5, component="Other", sprint_id=99)
+    unrelated["fields"]["issuetype"] = {"id": "unclassified"}
+    con = fixture([issue("EX-1", 8), unrelated])
+    result = review(con)
+    con.close()
+    assert result["delivered_points"] == 8, result["delivered_points"]
+    assert result["points_complete"] and result["rate_eligible"], result["unestimated"]
+
+
+def test_unknown_type_under_a_parent_leaves_only_that_parent_uncertain():
+    child = issue("EX-2", None, parent="EX-1")
+    child["fields"]["issuetype"] = {"id": "unclassified"}
+    con = fixture([issue("EX-1", 8), child, issue("EX-3", 5)])
+    result = review(con)
+    con.close()
+    assert result["tickets"]["EX-1"]["point_source"] is None
+    assert result["tickets"]["EX-3"]["point_source"] is True
+    assert result["delivered_points"] == 5 and not result["points_complete"]
+
+
 def test_omitted_original_removed_later_stays_unclassified():
     record = issue("EX-1", 5, sprint_id=None)
     record["changelog"]["histories"].append(
