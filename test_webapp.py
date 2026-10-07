@@ -785,10 +785,21 @@ def test_vendor_route_serves_only_the_listed_files():
     assert response.status_code == 200
     assert hashlib.sha256(response.get_data()).hexdigest() == (
         "e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f")
+    assert response.mimetype == "text/javascript"
     assert browser.get("/vendor/uplot.min.css").mimetype == "text/css"
     for name in ("README.md", "..%2Fwebapp.py", "nope.js"):
         assert browser.get(f"/vendor/{name}").status_code == 404, name
-    assert browser.get("/static/urd.js").status_code == 200
+    script = browser.get("/static/urd.js")
+    assert script.status_code == 200 and script.mimetype == "text/javascript"
+    assert browser.get("/static/nope.js").status_code == 404
+
+
+def test_a_project_named_static_keeps_its_own_routes():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry, slug="static")
+    browser = test_helpers.client(registry)
+    assert browser.get("/static/capacity/").status_code == 200
+    assert browser.get("/static/urd.js").mimetype == "text/javascript"
 
 
 

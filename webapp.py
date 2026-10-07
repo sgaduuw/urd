@@ -30,7 +30,9 @@ def _error_page(exc):
 
 
 def create_app(registry):
-    app = flask.Flask(__name__)
+    # No built-in /static route: it would swallow /static/... for a project whose
+    # slug is "static". urd.js is served from the same fixed list as the vendor files.
+    app = flask.Flask(__name__, static_folder=None)
     app.config["REGISTRY"] = registry
 
     # Loopback binding does not stop a cross-origin form POST: any page open in
@@ -77,16 +79,19 @@ def create_app(registry):
     app.register_blueprint(views_jobs.bp)
     app.register_blueprint(views_wizard.bp)
 
-    vendor = pathlib.Path(__file__).parent / "vendor"
-    served = {"htmx.min.js": "text/javascript", "uplot.min.js": "text/javascript",
-              "uplot.min.css": "text/css"}
+    here = pathlib.Path(__file__).parent
+    served = {"vendor/htmx.min.js": "text/javascript",
+              "vendor/uplot.min.js": "text/javascript",
+              "vendor/uplot.min.css": "text/css",
+              "static/urd.js": "text/javascript"}
 
-    @app.get("/vendor/<name>")
-    def vendor_file(name):
+    @app.get("/<any(vendor, static):folder>/<name>")
+    def served_file(folder, name):
         # A fixed list, never a path join on request data.
-        if name not in served:
+        key = f"{folder}/{name}"
+        if key not in served:
             flask.abort(404)
-        return flask.send_file(vendor / name, mimetype=served[name], max_age=86400)
+        return flask.send_file(here / key, mimetype=served[key], max_age=86400)
 
     @app.errorhandler(404)
     def not_found(_):

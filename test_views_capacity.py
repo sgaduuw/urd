@@ -3,6 +3,7 @@ import json
 from html.parser import HTMLParser
 
 import capacity
+import render
 import views_capacity
 from test_capacity import team
 from test_helpers import client, registry, synced
@@ -57,6 +58,16 @@ def plan_form(browser, path):
     assert "payload" in form, response.get_data(as_text=True)
     form.update({"focus": "75", "rate_mode": "keep"})
     return form
+
+
+def test_capacity_pages_load_the_scripts_and_inline_none():
+    import test_urd
+    project, browser, saved_team = setup()
+    for path in ("/alpha/capacity/", "/alpha/capacity/teams/new",
+                 f"/alpha/capacity/plan/{saved_team['id']}/11"):
+        html = browser.get(path).get_data(as_text=True)
+        assert render.SCRIPTS in html, path
+        assert not test_urd._EXECUTABLE_INLINE.search(html), path
 
 
 def test_plan_confirm_revise_void_and_conflict():

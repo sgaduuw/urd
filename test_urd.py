@@ -3175,12 +3175,20 @@ def test_a_plain_table_gains_no_script_hooks():
 
 
 _EXECUTABLE_INLINE = re.compile(
-    r"<script(?![^>]*\bsrc=)(?![^>]*type=\"application/json\")[^>]*>", re.I)
+    r"<script(?![^>]*\bsrc=)(?![^>]*type=[\"']application/json[\"'])[^>]*>", re.I)
 
 
 def test_the_page_loads_its_scripts_from_served_files():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "created_vs_closed")
+    island = render.figure(chart, rows, "sub", con)
+    assert 'type="application/json" class="plot-data"' in island, "no data island to guard"
     html = render.page(_header(), [("S", [render.table(_epic_rows(2), headers=["epic"],
-                                                       sortable=True)])])
+                                                       sortable=True), island])])
+    assert 'class="plot-data"' in html
+    assert _EXECUTABLE_INLINE.search("<script>alert(1)</script>")
+    assert _EXECUTABLE_INLINE.search("<script type='text/javascript'>x</script>")
+    assert not _EXECUTABLE_INLINE.search("<script type='application/json'>{}</script>")
     for src in ("/vendor/uplot.min.js", "/vendor/htmx.min.js", "/static/urd.js"):
         assert f'<script src="{src}"></script>' in html, src
     assert '<link rel="stylesheet" href="/vendor/uplot.min.css">' in html
