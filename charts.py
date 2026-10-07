@@ -230,7 +230,8 @@ CHARTS = [
                 "Removed means absent at the snapshot, including later-removed additions, "
                 "so these columns overlap. Returning tickets keep their origin and are no "
                 "longer removed. Unknown means initial membership cannot be established. "
-                "Main work, subtasks and unknown issue types are separate. Ignores --since. "
+                "Main work, subtasks and unknown issue types are separate. "
+                "Ignores the since window. "
                 "Sprint state and start use the freshest mirrored evidence. Equally fresh "
                 "snapshots must agree on activity and a known start date.",
         options={"headers": ["sprint", "work", "original", "added", "removed", "unknown"],
@@ -254,7 +255,8 @@ CHARTS = [
         caption="Every ticket supporting the active sprint counts, including removed work. "
                 "Membership includes changes at the snapshot time. A return with uncertain "
                 "initial membership remains unknown, never a confirmed addition. "
-                "All rows respect the report's component and epic filters; ignores --since. "
+                "All rows respect the report's component and epic filters; "
+                "ignores the since window. "
                 "Sprints without any remaining metadata in the mirror cannot appear.",
         options={"headers": ["sprint", "key", "summary", "work", "origin", "membership"],
                  "sortable": True, "links": ["key"]},
@@ -356,7 +358,7 @@ CHARTS = [
         title="Active / available: aging work",
         kind="table",
         caption="Open tickets by days in their current status. The chart that "
-                "changes what you do today. Ignores --since: a window drops any "
+                "changes what you do today. Ignores the since window: a window drops any "
                 "ticket created before it, which is exactly the oldest work here.",
         options={"headers": ["key", "summary", "status", "assignee", "days"],
                  "shade": "days", "sortable": True, "links": ["key"]},
@@ -1091,7 +1093,7 @@ CHARTS = [
             -- 6 days and the maximum is 655, so on a full axis 84% of the cloud
             -- sits in the bottom 5% of the plot and reads as a single line. The
             -- clip is computed over the same rows that are plotted, so it moves
-            -- with --since rather than being a number written here.
+            -- with the since window rather than being a number written here.
             WITH plotted AS (
                 SELECT i.story_points, c.cycle_days
                 FROM issues i JOIN cycle_times c ON c.key = i.key
@@ -1186,7 +1188,8 @@ for _key in ("aging_wip", "carried_sprints"):
                 + "Eligible for attention, not necessarily being worked on. "
                 "Parked means explicitly configured deferred statuses. Unclassified means "
                 "parking is unconfirmed, or the status or category is unfamiliar. "
-                "Each table shows up to 40 tickets; counts above are uncapped. Ignores --since.")
+                "Each table shows up to 40 tickets; counts above are uncapped. "
+                "Ignores the since window.")
     CHARTS[_index] = _chart._replace(caption=_caption)
     for _group, _label in (("parked", "Parked"), ("unclassified", "Unclassified")):
         _variant = _chart._replace(

@@ -4732,7 +4732,7 @@ def test_a_selected_component_is_remembered_and_cleared():
 
 def test_opening_a_database_refreshes_a_view_older_than_the_filter():
     """Every database derived before this feature has an excluded_tickets that
-    knows nothing about components, so a report run without a re-derive would
+    knows nothing about components, so a render without a re-derive would
     filter nothing at all and say it had. Refreshed on open rather than by the
     setter, which runs on every rendered page and would race the derive a
     background sync runs on the same connection."""
@@ -4817,7 +4817,7 @@ def test_every_chart_respects_the_report_window():
             f"{chart.key}: exempt={exempt} but "
             f"{'uses' if used else 'ignores'} the window")
         if chart.coverage and not exempt:
-            assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores --since"
+            assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores the since window"
 
 
 def test_no_chart_reaches_around_the_scope_views():

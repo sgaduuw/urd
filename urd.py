@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """urd: mirror one Jira project's ticket history into DuckDB and report on it.
 
-Three verbs. `sync` is the only one that touches the network and the only one
-that writes raw_issues. `derive` and `report` are offline and repeatable, which
-is what makes changing a metric definition cheap.
+Verbs: `sync`, `derive`, `sql` and `serve`. `sync` is the only one that touches
+the network and the only one that writes raw_issues. `derive` is offline and
+repeatable, which is what makes changing a metric definition cheap. `serve` renders
+the report; `sql` runs a query.
 """
 import argparse
 import base64

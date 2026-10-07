@@ -243,7 +243,7 @@ def section_fragment(slug, section):
 
 @bp.post("/<slug>/defaults")
 def save_defaults(slug):
-    """The one write path for report defaults, replacing the old `report` CLI.
+    """The one write path for report defaults.
     Every value is applied or none is."""
     registry = flask.current_app.config["REGISTRY"]
     found = webapp.slug_or_404(registry, slug)

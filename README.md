@@ -229,7 +229,7 @@ histories even when no work has completed. Unknown issue types
 and subtasks are excluded from confirmed counts; hierarchy and classification use
 mirrored metadata rather than reconstructed historical issue types.
 
-Event dates respect `--since`; current relationship gaps remain visible regardless
+Event dates respect the since window; current relationship gaps remain visible regardless
 of it. Component and epic exclusions apply, including historical epic keys after
 a ticket has moved elsewhere. The weekly graph shows zero observed events in quiet
 weeks, not a guarantee of complete history. The existing coverage threshold applies
