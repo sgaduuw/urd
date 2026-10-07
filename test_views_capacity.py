@@ -98,6 +98,28 @@ def test_plan_confirm_revise_void_and_conflict():
     project.con.close()
 
 
+def _post(browser, path, form, **changes):
+    response = browser.post(path, data=dict(form, **changes), follow_redirects=True)
+    assert response.status_code == 200, response.get_data(as_text=True)
+    return Form(response.get_data(as_text=True)).values
+
+
+def test_second_replacement_links_the_latest_voided_confirmation():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = _post(browser, path, plan_form(browser, path), action="confirm")
+    form = _post(browser, path, form, action="void", reason="Wrong scope")
+    form = _post(browser, path, form, action="confirm")
+    third = capacity.get_plan(project.con, saved_team["id"], 11)
+    assert third["confirmation"] == 3 and third["replaces"]["confirmation"] == 1
+    form = _post(browser, path, form, action="void", reason="Still wrong")
+    _post(browser, path, form, action="confirm")
+    fifth = capacity.get_plan(project.con, saved_team["id"], 11)
+    project.con.close()
+    assert fifth["confirmation"] == 5, fifth["confirmation"]
+    assert fifth["replaces"]["confirmation"] == 3, fifth["replaces"]
+
+
 def test_changed_preview_busy_refresh_and_invalid_inputs_preserve_form():
     project, browser, saved_team = setup()
     path = f"/alpha/capacity/plan/{saved_team['id']}/11"

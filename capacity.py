@@ -335,6 +335,8 @@ def save_plan(con, payload, expected_version, action="save", reason="", baseline
             if replaces:
                 value["replaces"] = _replacement(con, replaces)
         if action == "void":
+            # A void copies the confirmed plan; the link it carried belongs to that confirmation.
+            value.pop("replaces", None)
             value["voids"] = confirmation
             confirmation = None
         timestamp = now()
