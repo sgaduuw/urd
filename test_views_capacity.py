@@ -1,5 +1,6 @@
 """Native form flows for local capacity planning."""
 import json
+import urllib.parse
 from html.parser import HTMLParser
 
 import capacity
@@ -135,7 +136,7 @@ def test_second_replacement_links_the_latest_voided_confirmation():
 def test_grid_escapes_day_keys_when_dates_are_invalid():
     value = {"dates": {"start": "", "end": ""}, "members": [{
         "id": "person-a", "name": "Aster", "daily": {"<i>day</i>": {"work": 1, "meetings": 0}}}]}
-    html = views_capacity._grid(value)
+    html = views_capacity._grid(value, "/alpha/capacity/plan/t/1", "")
     assert "&lt;i&gt;day" in html and "<i>" not in html, html
 
 
@@ -371,6 +372,86 @@ def test_empty_weekly_cells_render_blank_team_and_plan_inputs():
     after = {table: project.con.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
     assert after == before
     project.con.close()
+
+
+def _capacity_tables(con):
+    return {t: con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall()
+            for t in ("capacity_teams", "capacity_plans", "capacity_revisions")}
+
+
+def test_members_adds_a_person_and_carries_them_in_the_payload():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    before = _capacity_tables(project.con)
+    form["new_name"] = "Cedar"
+    response = browser.post(path + "/members?add=1", data=form)
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert body.startswith('<div id="grid">') and "Cedar" in body
+    payload = json.loads(Form(f'<form id="plan">{body}</form>').values["payload"])
+    assert "Cedar" in [m["name"] for m in payload["members"]]
+    assert _capacity_tables(project.con) == before
+
+
+def test_remove_url_escapes_the_member_id():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    payload = json.loads(form["payload"])
+    payload["members"][0]["id"] = "jira:a b&c/d"
+    form["payload"] = json.dumps(payload)
+    page = browser.post(path, data=form).get_data(as_text=True)
+    quoted = urllib.parse.quote("jira:a b&c/d", safe="")
+    assert f"/members?remove={quoted}" in page
+    response = browser.post(f"{path}/members?remove={quoted}", data=form)
+    remaining = json.loads(Form(f'<form id="plan">{response.get_data(as_text=True)}</form>')
+                           .values["payload"])["members"]
+    assert "jira:a b&c/d" not in [m["id"] for m in remaining]
+    assert len(remaining) == len(payload["members"]) - 1
+
+
+def test_remove_without_javascript_drops_the_member():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    first = json.loads(form["payload"])["members"][0]
+    form["remove"] = first["id"]
+    form.pop("action", None)
+    body = browser.post(path, data=form).get_data(as_text=True)
+    names = [m["name"] for m in json.loads(Form(body).values["payload"])["members"]]
+    assert first["name"] not in names
+
+
+def test_members_rejects_an_invalid_payload_in_place():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    response = browser.post(path + "/members?add=1", data={"payload": "{not json"})
+    assert response.status_code == 400
+    body = response.get_data(as_text=True)
+    assert body.startswith('<div id="grid">') and 'role="alert"' in body
+
+
+def test_plan_page_wraps_everything_swappable_in_plan_area():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    body = browser.get(path + "?start=2026-10-05&end=2026-10-08").get_data(as_text=True)
+    area = body[body.index('<div id="plan-area">'):]
+    for marker in ('<form id="plan"', '<div id="grid">', "Revision history"):
+        assert marker in area, marker
+    assert f'hx-post="{path}"' in body and 'hx-select="#plan-area"' in body
+
+
+def test_a_save_error_renders_its_message_inside_plan_area():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    form.update(action="confirm", focus="")
+    response = browser.post(path, data=form)
+    assert response.status_code == 400
+    body = response.get_data(as_text=True)
+    area = body[body.index('<div id="plan-area">'):]
+    assert 'role="alert"' in area
 
 
 if __name__ == "__main__":

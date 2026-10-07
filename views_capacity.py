@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import urllib.parse
 import uuid
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -36,8 +37,16 @@ def _project(slug):
     return project
 
 
+def _notice(message):
+    return f'<p class="warn" role="alert">{render.esc(message)}</p>' if message else ""
+
+
+def _plan_path(slug, value):
+    return f'/{slug}/capacity/plan/{value["team_id"]}/{value["sprint_id"]}'
+
+
 def _page(slug, title, body, message=""):
-    notice = f'<p class="warn" role="alert">{render.esc(message)}</p>' if message else ""
+    notice = _notice(message)
     nav = (f'<nav><a href="/{slug}/">Report</a> · '
            f'<a href="/{slug}/capacity/">Capacity</a></nav>')
     return render.notice(title, []).replace("</style>", GRID_CSS + "</style>", 1).replace(
@@ -92,14 +101,16 @@ def _add_member(con, value, patterns=False):
     value["members"].append(member)
 
 
-def _member_picker(con):
+def _member_picker(con, members_url=None):
     options = '<option value="">Choose a Jira person (optional)</option>' + "".join(
         f'<option value="{render.esc(account)}">{render.esc(name)}</option>'
         for account, name in _people(con).items())
+    htmx = (f' hx-post="{render.esc(members_url)}?add=1" hx-target="#grid"'
+            f' hx-swap="outerHTML"' if members_url else "")
     return ('<fieldset><legend>Add a person</legend><label>Jira person '
             f'<select name="new_account">{options}</select></label>'
             + _input("new_name", label="Or local display name")
-            + '<button name="action" value="add_member">Add person</button></fieldset>')
+            + f'<button name="action" value="add_member"{htmx}>Add person</button></fieldset>')
 
 
 @bp.get("/<slug>/capacity/")
@@ -251,13 +262,13 @@ def _preview_id(con, value):
     return hashlib.sha256((history.source_id(con) + scope).encode()).hexdigest()
 
 
-def _grid(value):
+def _grid(value, base, picker, message=""):
     try:
         calendar = capacity.days(value["dates"]["start"], value["dates"]["end"])
     except ValueError:
         calendar = sorted({d for m in value["members"]
                            for d in m.get("daily", {})})
-    rows = ('<h2>Availability in hours</h2>'
+    rows = (_notice(message) + _hidden(value) + '<h2>Availability in hours</h2>'
             '<p id="daily-hours-help">Enter <strong>Work</strong> hours excluding meetings '
             'and <strong>Meetings</strong> hours for each day. Exclude leave and time allocated '
             'to other teams. Enter 0 for none; blank means not entered. '
@@ -287,10 +298,13 @@ def _grid(value):
                           f'{render.esc(day)} {label} hours" aria-describedby="daily-hours-help"')
             rows += "</td>"
         totals = by_member.get(identity, {})
+        remove_url = f"{base}/members?remove={urllib.parse.quote(identity, safe='')}"
         rows += (f'<td>{render.esc(totals.get("available_hours", ""))}</td>'
-                 f'<td>{render.esc(totals.get("work_hours", ""))}</td><td>'
-                 + _input(f"remove:{identity}", "yes", "checkbox",
-                          extra=f'aria-label="Remove {render.esc(member["name"])}"') + "</td></tr>")
+                 f'<td>{render.esc(totals.get("work_hours", ""))}</td>'
+                 '<td><button type="submit" name="remove" value="' + render.esc(identity)
+                 + f'" hx-post="{render.esc(remove_url)}" hx-target="#grid"'
+                 ' hx-swap="outerHTML" aria-label="Remove ' + render.esc(member["name"])
+                 + '">Remove</button></td></tr>')
     rows += "</tbody></table></div>"
     outside = [(m["name"], d, cell) for m in value["members"]
                for d, cell in m.get("daily", {}).items() if d not in calendar]
@@ -301,7 +315,7 @@ def _grid(value):
                         f'Work: {render.esc(cell.get("work"))} h; '
                         f'Meetings: {render.esc(cell.get("meetings"))} h</p>'
                         for n, d, cell in outside) + "</details>"
-    return rows
+    return f'<div id="grid">{rows}{picker}</div>'
 
 
 def _summary(con, value, preview):
@@ -390,7 +404,9 @@ def _render_plan_form(slug, con, value, message="", reason=""):
     body += (f'<p>Team scope: {render.esc(", ".join(value["settings"]["components"]))}. '
              f'Timezone: {render.esc(value["settings"]["timezone"])}. '
              f'Jira metadata cached {render.esc(current.get("fetched_at"))}.</p>')
-    body += '<form id="plan" method="post">' + _hidden(value)
+    base = _plan_path(slug, value)
+    body += (f'<form id="plan" method="post" hx-post="{render.esc(base)}"'
+             ' hx-target="#plan-area" hx-select="#plan-area" hx-swap="outerHTML">')
     body += _input("source_id", _preview_id(con, value), "hidden")
     body += _input("start", value["dates"]["start"], "date", "Planning start date")
     body += _input("end", value["dates"]["end"], "date", "Planning last date")
@@ -400,7 +416,7 @@ def _render_plan_form(slug, con, value, message="", reason=""):
                  f'{render.esc(dates["end"])}. Review the dates and retained hours.</p>'
                  '<label>' + _input("reconcile_dates", "yes", "checkbox")
                  + "I reviewed these date changes and my planning dates</label>")
-    body += _grid(value) + _member_picker(con)
+    body += _grid(value, base, _member_picker(con, base + "/members"))
     body += _input("focus", value.get("focus"), "number", "Focus percentage",
                    'min="0" max="100" step="any"')
     form = flask.request.form
@@ -465,15 +481,15 @@ def _render_plan_form(slug, con, value, message="", reason=""):
                  f'{revision["action"]} · {render.esc(revision["reason"])} · '
                  f'<a href="?version={revision["version"]}">View saved revision</a></p>')
     body += "</details>"
-    return _page(slug, f'{value["settings"]["name"]}: {current["name"]}', body, message)
+    return _page(slug, f'{value["settings"]["name"]}: {current["name"]}',
+                 f'<div id="plan-area">{_notice(message)}{body}</div>')
 
 
-def _read_plan_inputs(value):
+def _read_plan_inputs(value, removed=()):
     form = flask.request.form
     value["dates"] = {"start": form.get("start", ""), "end": form.get("end", "")}
     value["focus"] = form.get("focus", "")
-    value["members"] = [m for m in value.get("members", [])
-                        if not form.get(f'remove:{m["id"]}')]
+    value["members"] = [m for m in value.get("members", []) if m["id"] not in removed]
     for member in value["members"]:
         for field in ("work", "meetings"):
             prefix = f'{field}:{member["id"]}:'
@@ -528,7 +544,7 @@ def plan_form(slug, team_id, sprint_id):
             return _plan_form(slug, con, saved)
         value, reason = saved, flask.request.form.get("reason", "")
         try:
-            value = _read_plan_inputs(_payload())
+            value = _read_plan_inputs(_payload(), flask.request.form.getlist("remove"))
             if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
                 raise ValueError("The form belongs to a different team or sprint.")
             action = flask.request.form.get("action", "preview")
@@ -600,12 +616,37 @@ def plan_form(slug, team_id, sprint_id):
         except (ValueError, KeyError, TypeError) as exc:
             status = 409 if isinstance(exc, capacity.Conflict) else 400
             if value is None:
-                return _page(slug, "Invalid plan", "", str(exc)), status
+                return _page(slug, "Invalid plan",
+                             f'<div id="plan-area">{_notice(str(exc))}</div>'), status
             try:
                 return _plan_form(slug, con, value, str(exc), reason), status
             except (ValueError, KeyError, TypeError):
-                return _page(slug, "Correct the plan", "<pre>" + render.esc(
-                    json.dumps(value, indent=2)) + "</pre>", str(exc)), status
+                return _page(slug, "Correct the plan",
+                             f'<div id="plan-area">{_notice(str(exc))}<pre>'
+                             + render.esc(json.dumps(value, indent=2)) + "</pre></div>"), status
+
+
+@bp.post("/<slug>/capacity/plan/<team_id>/<int:sprint_id>/members")
+def plan_members(slug, team_id, sprint_id):
+    """Add or remove a person in the unsaved plan. Writes nothing: the roster
+    travels back to the browser in the grid's hidden payload."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        remove = flask.request.args.get("remove")
+        try:
+            value = _read_plan_inputs(_payload(), {remove} if remove else ())
+            if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
+                raise ValueError("The form belongs to a different team or sprint.")
+        except (ValueError, KeyError, TypeError) as exc:
+            return f'<div id="grid">{_notice(str(exc))}</div>', 400
+        message = ""
+        if "add" in flask.request.args:
+            try:
+                _add_member(con, value)
+            except ValueError as exc:
+                message = str(exc)
+        base = _plan_path(slug, value)
+        return _grid(value, base, _member_picker(con, base + "/members"), message)
 
 
 @bp.get("/<slug>/capacity/replace")
