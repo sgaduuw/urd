@@ -41,7 +41,7 @@ def _page(slug, title, body, message=""):
     nav = (f'<nav><a href="/{slug}/">Report</a> · '
            f'<a href="/{slug}/capacity/">Capacity</a></nav>')
     return render.notice(title, []).replace("</style>", GRID_CSS + "</style>", 1).replace(
-        "</body>", nav + notice + body + "</body>", 1)
+        "</body>", nav + notice + body + render.SCRIPTS + "</body>", 1)
 
 
 def _input(name, value="", kind="text", label=None, extra=""):

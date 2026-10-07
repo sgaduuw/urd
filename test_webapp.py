@@ -778,6 +778,20 @@ def test_seed_from_env_and_the_wizard_derive_the_same_slug():
     assert seeded == [urd.project_slug("PROJ,OTHER")], seeded
 
 
+def test_vendor_route_serves_only_the_listed_files():
+    import hashlib
+    browser = test_helpers.client(test_helpers.registry())
+    response = browser.get("/vendor/htmx.min.js")
+    assert response.status_code == 200
+    assert hashlib.sha256(response.get_data()).hexdigest() == (
+        "e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f")
+    assert browser.get("/vendor/uplot.min.css").mimetype == "text/css"
+    for name in ("README.md", "..%2Fwebapp.py", "nope.js"):
+        assert browser.get(f"/vendor/{name}").status_code == 404, name
+    assert browser.get("/static/urd.js").status_code == 200
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

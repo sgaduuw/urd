@@ -4,6 +4,8 @@ Routes live in three blueprints rather than here, so three implementers can work
 on them without touching one file. Keep that split: collapsing them back into this
 module makes every route change serial.
 """
+import pathlib
+
 import flask
 import werkzeug.exceptions
 
@@ -74,6 +76,17 @@ def create_app(registry):
     app.register_blueprint(views_report.bp)
     app.register_blueprint(views_jobs.bp)
     app.register_blueprint(views_wizard.bp)
+
+    vendor = pathlib.Path(__file__).parent / "vendor"
+    served = {"htmx.min.js": "text/javascript", "uplot.min.js": "text/javascript",
+              "uplot.min.css": "text/css"}
+
+    @app.get("/vendor/<name>")
+    def vendor_file(name):
+        # A fixed list, never a path join on request data.
+        if name not in served:
+            flask.abort(404)
+        return flask.send_file(vendor / name, mimetype=served[name], max_age=86400)
 
     @app.errorhandler(404)
     def not_found(_):

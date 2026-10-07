@@ -19,7 +19,6 @@ import decimal
 import html
 import json
 import math
-import pathlib
 import urllib.parse
 
 # Reference categorical palette (see the `dataviz` skill, references/palette.md).
@@ -267,127 +266,11 @@ CSS = (
 )
 
 
-# Inline, first-party, and additive only: every table it touches is already
-# complete and readable in the markup, so a page opened with script disabled
-# loses sorting and nothing else. Nothing is computed here that Python could
-# have computed, which is what keeps the numbers diffable.
-#
-# Sorting is by the cell's text, numerically when every value in the column
-# parses as a number. aria-sort is both the announced state and the only stored
-# state, so there is no second copy to drift.
-SORT_SCRIPT = """
-document.querySelectorAll('table.sortable').forEach(function (table) {
-  var head = table.tHead.rows[0];
-  Array.prototype.forEach.call(head.cells, function (cell, index) {
-    function apply() {
-      var rows = Array.prototype.slice.call(table.tBodies[0].rows);
-      var descending = cell.getAttribute('aria-sort') !== 'descending';
-      var numeric = rows.every(function (row) {
-        var text = row.cells[index].textContent.trim();
-        return text === '' || !isNaN(Number(text));
-      });
-      rows.sort(function (a, b) {
-        var x = a.cells[index].textContent.trim();
-        var y = b.cells[index].textContent.trim();
-        if (numeric) { return (Number(x) - Number(y)) * (descending ? -1 : 1); }
-        return x.localeCompare(y) * (descending ? -1 : 1);
-      });
-      Array.prototype.forEach.call(head.cells, function (other) {
-        other.setAttribute('aria-sort', 'none');
-      });
-      cell.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
-      rows.forEach(function (row) { table.tBodies[0].appendChild(row); });
-    }
-    cell.addEventListener('click', apply);
-    cell.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); apply(); }
-    });
-  });
-});
-"""
-
-
-_VENDOR = pathlib.Path(__file__).parent / "vendor"
-UPLOT_JS = (_VENDOR / "uplot.min.js").read_text()
-UPLOT_CSS = (_VENDOR / "uplot.min.css").read_text()
-
-# Upgrades a .plot box in place. The SVG it replaces stays in the DOM, hidden, so
-# printing and a script-less browser both still get the server-drawn chart.
-#
-# Colours are read from the CSS custom properties the SVG already uses, rather
-# than baked in, so an upgraded chart follows light and dark mode exactly as its
-# static twin does.
-PLOT_SCRIPT = """
-(function () {
-  if (typeof uPlot === 'undefined') { return; }
-  var root = getComputedStyle(document.documentElement);
-  function token(name, fallback) {
-    var v = root.getPropertyValue(name);
-    return v ? v.trim() : fallback;
-  }
-  document.querySelectorAll('.plot').forEach(function (box) {
-    var island = box.querySelector('script.plot-data');
-    var svg = box.querySelector('svg');
-    if (!island) { return; }
-    var spec;
-    try { spec = JSON.parse(island.textContent); } catch (e) { return; }
-    var scatter = spec.kind === 'scatter';
-    var stacked = spec.kind === 'stacked';
-    /* combo carries a type per series, so bar-ness is decided per series rather
-       than per chart. uPlot reads series.paths individually, which is exactly what
-       lets one series be a bar column and its neighbour a line. */
-    var combo = spec.kind === 'combo';
-    var series = [{ label: spec.xLabel }];
-    spec.series.forEach(function (s) {
-      var colour = token('--s' + (s.slot || 1), '#2a78d6');
-      var asBar = combo && s.type === 'bars';
-      series.push({
-        label: s.label,
-        stroke: colour,
-        width: stacked ? 1 : (scatter ? 0 : 2),
-        /* Opaque, like the SVG. A stack paints smaller bands over larger ones,
-           so any alpha lets every band underneath show through and each one
-           renders as a blend of itself and all its predecessors. */
-        fill: (stacked || asBar) ? colour : null,
-        /* Translucent so the lines stay legible through the bars behind them. */
-        fillAlpha: asBar ? 0.55 : 1,
-        paths: asBar ? uPlot.paths.bars({ size: [0.7, 40] }) : null,
-        points: { show: !stacked && !asBar, size: scatter ? 5 : 4,
-                  stroke: colour, fill: colour },
-        /* The drawn value is the running total; the band's own number is what a
-           reader wants. This reads it out of the payload rather than
-           subtracting, so nothing on screen was computed in the browser. */
-        value: function (u, v, si, di) {
-          if (!stacked || di == null) { return v == null ? '' : v; }
-          var own = spec.series[si - 1].raw[di];
-          return own == null ? '' : own;
-        }
-      });
-    });
-    var data = [spec.x].concat(spec.series.map(function (s) { return s.data; }));
-    var chart = new uPlot({
-      width: box.clientWidth || 480,
-      height: 240,
-      cursor: { drag: { x: true, y: false } },
-      scales: {
-        x: { time: !!spec.time },
-        y: stacked ? { range: [0, null] } : {}
-      },
-      axes: [
-        { stroke: token('--text-secondary', '#52514e'),
-          grid: { stroke: token('--grid', '#e1e0d9') } },
-        { stroke: token('--text-secondary', '#52514e'),
-          grid: { stroke: token('--grid', '#e1e0d9') } }
-      ],
-      series: series
-    }, data, box);
-    if (svg) { svg.style.display = 'none'; }
-    window.addEventListener('resize', function () {
-      chart.setSize({ width: box.clientWidth || 480, height: 240 });
-    });
-  });
-})();
-"""
+# Served files, not inline: the Content-Security-Policy allows only same-origin
+# scripts, which is what stops a markup injection from running one.
+SCRIPTS = ('<script src="/vendor/uplot.min.js"></script>'
+           '<script src="/vendor/htmx.min.js"></script>'
+           '<script src="/static/urd.js"></script>')
 
 
 def esc(text):
@@ -467,13 +350,13 @@ def page(header, sections):
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{esc(scope)} flow report</title>"
-        f"<style>{UPLOT_CSS}\n{CSS}</style></head><body>"
+        '<link rel="stylesheet" href="/vendor/uplot.min.css">'
+        f"<style>{CSS}</style></head><body>"
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
         f"{esc(header['since'])}. Synced {esc(header['synced'])}. "
         f"{showing}{dropped}{window}{warn}</p></header>"
         + body
-        + f"<script>{UPLOT_JS}</script>"
-        + f"<script>{SORT_SCRIPT}{PLOT_SCRIPT}</script></body></html>\n"
+        + SCRIPTS + "</body></html>\n"
     )
 
 
@@ -1305,7 +1188,7 @@ def table(rows, headers, shade=None, sortable=False, link_base=None, links=()):
     # Sorting is opt-in per chart. A three-row matrix does not need it, and the
     # attributes alone would promise behaviour the reader then tries to use.
     # tabindex and aria-sort go on every header so the control is reachable
-    # without a mouse and announces its state; SORT_SCRIPT reads aria-sort as
+    # without a mouse and announces its state; static/urd.js reads aria-sort as
     # the source of truth rather than keeping its own.
     if sortable:
         thead = "".join(

@@ -3174,15 +3174,17 @@ def test_a_plain_table_gains_no_script_hooks():
     assert "tabindex" not in out
 
 
-def test_every_script_the_page_carries_is_inline():
-    """The library is vendored, so the count is structural (library + wiring) plus
-    one JSON island per interactive chart. What must hold regardless of that count
-    is that not one of them is fetched."""
+_EXECUTABLE_INLINE = re.compile(
+    r"<script(?![^>]*\bsrc=)(?![^>]*type=\"application/json\")[^>]*>", re.I)
+
+
+def test_the_page_loads_its_scripts_from_served_files():
     html = render.page(_header(), [("S", [render.table(_epic_rows(2), headers=["epic"],
                                                        sortable=True)])])
-    assert html.count("<script") >= 2, "library and wiring should both be present"
-    assert not re.search(r"<script[^>]*\bsrc\s*=", html)
-    assert "uPlot" in html, "the charting library is not embedded"
+    for src in ("/vendor/uplot.min.js", "/vendor/htmx.min.js", "/static/urd.js"):
+        assert f'<script src="{src}"></script>' in html, src
+    assert '<link rel="stylesheet" href="/vendor/uplot.min.css">' in html
+    assert not _EXECUTABLE_INLINE.search(html), "an inline script remains"
 
 
 def _people_bars(n, prefix="Firstname Surname "):
@@ -3943,7 +3945,12 @@ def test_report_writes_a_standalone_file_with_no_external_references():
     assert urd.report(con, out) == 0
     html = pathlib.Path(out).read_text()
     assert html.startswith("<!doctype html>")
-    _assert_nothing_is_fetched(html)
+    # Task 4 of the htmx work deletes this test with the report command. Until
+    # then the served-file tags are the only references the page may carry.
+    served = html.replace(render.SCRIPTS, "").replace(
+        '<link rel="stylesheet" href="/vendor/uplot.min.css">', "")
+    assert served != html
+    _assert_nothing_is_fetched(served)
 
 
 def test_the_fetch_check_is_not_blinded_by_its_own_exemptions():
@@ -4086,6 +4093,9 @@ def test_interactivity_is_declared_on_plot_kinds_only():
                                   "combo"), f"{chart.key}: {chart.kind}"
 
 
+_URD_JS = pathlib.Path(__file__).parent / "static" / "urd.js"
+
+
 def test_a_stacked_band_is_filled_opaquely():
     """A stack is drawn largest cumulative first with smaller bands painted over
     it, so a translucent fill shows every band underneath and renders each one as
@@ -4096,7 +4106,7 @@ def test_a_stacked_band_is_filled_opaquely():
     decides the fill rather than the whole script."""
     # Both "fill:" and "stacked": three lines mention a fill, and the other two
     # are fillAlpha and the points config.
-    candidates = [ln for ln in render.PLOT_SCRIPT.splitlines()
+    candidates = [ln for ln in _URD_JS.read_text().splitlines()
                   if "fill:" in ln and "stacked" in ln]
     assert len(candidates) == 1, candidates
     fill_line = candidates[0]
@@ -4112,7 +4122,7 @@ def test_the_embedded_javascript_parses():
     quietly passing."""
     import shutil
     import subprocess
-    for name, source in (("sort", render.SORT_SCRIPT), ("plot", render.PLOT_SCRIPT)):
+    for name, source in (("urd", _URD_JS.read_text()),):
         path = os.path.join(tempfile.mkdtemp(), f"{name}.js")
         pathlib.Path(path).write_text(source)
         node = shutil.which("node")
@@ -4136,6 +4146,7 @@ def test_the_vendored_library_is_present_and_makes_no_requests():
         assert not re.search(pattern, js), f"vendored js can reach the network: {pattern}"
         assert not re.search(pattern, css), f"vendored css can reach the network: {pattern}"
     assert "uPlot" in js
+    assert (root / "vendor" / "htmx.min.js").exists(), "htmx must be vendored"
     assert (root / "vendor" / "README.md").exists(), "provenance must be recorded"
 
 
