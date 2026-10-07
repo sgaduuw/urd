@@ -332,7 +332,7 @@ def test_partial_weekly_pattern_survives_save_reopen():
 def test_empty_weekly_cells_render_blank_team_and_plan_inputs():
     project, browser, saved_team = setup()
     for member in saved_team["members"]:
-        member["weekly"] = [{"work": None, "meetings": None}] * 7
+        member["weekly"] = [None] * 7
     saved_team["members"][1]["weekly"][0] = {"work": 6.25, "meetings": 0}
     project.con.execute("UPDATE capacity_teams SET payload = ? WHERE id = ?",
                         [json.dumps(saved_team), saved_team["id"]])

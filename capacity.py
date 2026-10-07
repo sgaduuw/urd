@@ -112,9 +112,17 @@ def _members(members, patterns=False):
 
 
 def teams(con):
-    return [dict(json.loads(payload), id=identity, version=version)
-            for identity, version, payload in con.execute(
-                "SELECT id, version, payload FROM capacity_teams ORDER BY id").fetchall()]
+    result = [dict(json.loads(payload), id=identity, version=version)
+              for identity, version, payload in con.execute(
+                  "SELECT id, version, payload FROM capacity_teams ORDER BY id").fetchall()]
+    # Teams saved by earlier builds stored None for unentered weekly cells.
+    for team in result:
+        for member in team.get("members", []):
+            pattern = member.get("weekly")
+            member["weekly"] = [
+                {"work": None, "meetings": None} if cell is None else cell
+                for cell in ([None] * 7 if pattern is None else pattern)]
+    return result
 
 
 def get_team(con, team_id):
