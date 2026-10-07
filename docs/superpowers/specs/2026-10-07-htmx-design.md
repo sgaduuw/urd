@@ -107,25 +107,26 @@ with it.
 
 | Element | Render function | Contents |
 | --- | --- | --- |
-| `#summary` | `_summary` | focus hours, forecast, commitment preview, delivery review once confirmed |
+| `#totals` | new `_totals_line` | focus hours and forecast, the part that updates while typing |
+| `#summary` | `_summary` | commitment preview and delivery review once confirmed; refreshed on Preview and save, because it reads the whole mirror |
 | `#grid` | `_grid` | the roster and day cells, the person picker, the hidden `payload` |
 | `#rate` | new `_rate` | rate mode, manual rate, history candidates |
-| `#plan` | `_render_plan_form` | the above plus actions and revision history |
+| `#plan-area` | `_render_plan_form` | the above plus the form, actions, messages and revision history |
 
 ### Interactions
 
 | Trigger | Request | Swaps | Writes |
 | --- | --- | --- | --- |
-| Typing in a grid cell or the focus field | `POST …/plan/<team>/<sprint>/totals`, `hx-trigger="input changed delay:400ms"`, whole form included | per-person total cells (out of band) and `#summary` | none |
+| Typing in a grid cell or the focus field | `POST …/plan/<team>/<sprint>/totals`, `hx-trigger="input changed delay:400ms"`, whole form included | per-person totals (out of band) and `#totals` | none |
 | Add person, Remove (a button per row, applied immediately to the working copy) | `POST …/plan/<team>/<sprint>/members` | `#grid` including its new `payload` | none |
-| Rate mode, manual rate, history selection | `POST …/plan/<team>/<sprint>/rate` | `#rate` and `#summary` | none |
-| Save, Confirm, Void, Review latest, Use team setup | the existing `POST` to the plan URL, `hx-select="#plan"` | `#plan` | unchanged |
+| Rate mode, manual rate, history selection | `POST …/plan/<team>/<sprint>/rate` | `#rate` and `#totals` (out of band) | none |
+| Save, Confirm, Void, Review latest, Use team setup | the existing `POST` to the plan URL, `hx-select="#plan-area"` | `#plan-area` | unchanged |
 
 - The three fragment routes only calculate from the submitted form. They take
   no `project.lock`, write nothing, and do not change the stale-preview token
   (`source_id`).
 - Saves keep their route and logic. A successful save still redirects; htmx
-  follows the redirect and selects `#plan` from the returned page.
+  follows the redirect and selects `#plan-area` from the returned page.
 - Preview stays as the no-JavaScript path. It also refreshes the Jira
   commitment preview and the stale-preview token, which live totals leave
   alone.
@@ -134,15 +135,16 @@ with it.
 
 Same pattern: `#weekly` holds the weekly grid, the person picker and the
 hidden `payload`. `POST /<slug>/capacity/teams/<id>/members` adds or removes a
-person in the working copy without writing. Save swaps the form.
+person in the working copy without writing. Save stays a normal form submit:
+it is rare, and it ends on the capacity index anyway.
 
 ## Errors
 
 - Fragment routes put validation messages inside the fragment they return,
-  for example "Work + Meetings hours must not exceed 24" in `#summary`, with
+  for example "Work + Meetings hours must not exceed 24" in `#totals`, with
   status 200: the request succeeded, the input is incomplete.
 - Save errors keep their status codes, 400 for invalid input and 409 for a
-  conflict. The re-rendered `#plan` carries the message.
+  conflict. The re-rendered `#plan-area` carries the message.
 - htmx 4 swaps every response except 204 and 304 (its `noSwap` default), so
   400 and 409 responses swap in without extra configuration.
 
