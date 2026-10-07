@@ -300,6 +300,7 @@ def test_a_system_exit_from_a_route_becomes_a_500_not_a_dropped_connection():
     response = app.test_client().get("/boom-system-exit")
     assert response.status_code == 500
     assert "simulated operational failure" in response.get_data(as_text=True)
+    assert response.headers["Content-Security-Policy"] == webapp.CSP
 
 
 def test_an_ordinary_exception_from_a_route_is_a_notice_not_a_bare_500():
