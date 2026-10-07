@@ -45,6 +45,20 @@ charts. Three gaps justify a separate tool:
 The corollary is a scope rule: **anything Jira already does well is
 out of scope.** In particular, no burndown.
 
+## Local sprint capacity
+
+The approved `2026-10-06-sprint-capacity-design.md` extends the tool with local
+team-and-sprint availability and delivery comparisons. Jira supplies historical
+work evidence; the user supplies availability, meeting allowances and focus.
+Immutable confirmations and reasoned revisions preserve what was planned.
+Subtask point precedence prevents parent/child double counting. Partial
+evidence remains explicit and cannot become an automatic forecast rate.
+
+The cached sprint catalogue uses fixed Jira Software Agile GET paths so empty
+future sprints are selectable. The trusted-host and redirect rules still apply.
+Local inputs are durable state, so copying the complete closed data volume is
+the recovery path; re-syncing Jira cannot reconstruct them.
+
 ## Why the credential destination is immutable
 
 urd holds a Jira API token, and the single worst failure available to

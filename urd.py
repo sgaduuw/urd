@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 import duckdb
 
+import capacity
 import charts as chart_specs
 import render
 
@@ -121,7 +122,9 @@ class Jira:
             return TRANSPORT_ERROR_STATUS, str(err).encode()
 
     def get(self, path, params=None):
-        url = self.base + path
+        return self._get(self.base + path, params)
+
+    def _get(self, url, params=None):
         if params:
             url += "?" + urllib.parse.urlencode(params)
         headers = {"Authorization": f"Basic {self.auth}", "Accept": "application/json"}
@@ -139,6 +142,55 @@ class Jira:
                 continue
             raise SystemExit(f"GET {url} returned {status}: {body[:200]!r}")
         raise SystemExit(f"GET {url} failed twice")
+
+    def agile_get(self, path, params=None):
+        if not re.fullmatch(r"/board(?:/[1-9][0-9]*/sprint)?", path):
+            raise ValueError("Unsupported Jira Software read path.")
+        base = self.base.removesuffix("/rest/api/3")
+        return self._get(base + "/rest/agile/1.0" + path, params)
+
+    def _agile_pages(self, path, params):
+        offset, seen, expected_total = 0, set(), None
+        while True:
+            page = self.agile_get(path, dict(params, startAt=offset, maxResults=PAGE_SIZE))
+            if (not isinstance(page, dict) or not isinstance(page.get("values"), list)
+                    or not isinstance(page.get("isLast"), bool) or page.get("startAt") != offset):
+                raise SystemExit("Invalid or stalled Jira catalogue page.")
+            values, total = page["values"], page.get("total")
+            if total is not None:
+                if (type(total) is not int or total < offset + len(values)
+                        or (expected_total is not None and total != expected_total)):
+                    raise SystemExit("Invalid or changed Jira catalogue total.")
+                expected_total = total
+            total = expected_total
+            if (not values and not page["isLast"]) or (
+                    page["isLast"] and total is not None and offset + len(values) != total):
+                raise SystemExit("Incomplete Jira catalogue pagination.")
+            for value in values:
+                if (not isinstance(value, dict) or type(value.get("id")) is not int
+                        or value["id"] < 1 or not isinstance(value.get("name"), str)
+                        or not value["name"] or value["id"] in seen):
+                    raise SystemExit("Invalid or repeated Jira catalogue record.")
+                seen.add(value["id"])
+                yield value
+            if page["isLast"]:
+                return
+            offset += len(values)
+
+    def boards(self, project):
+        for board in self._agile_pages("/board", {"projectKeyOrId": project, "type": "scrum"}):
+            if board.get("type") != "scrum":
+                raise SystemExit("Jira returned a non-Scrum board.")
+            yield {k: board[k] for k in ("id", "name", "type")}
+
+    def sprints(self, board_id):
+        board_id = capacity._id(board_id)
+        for sprint in self._agile_pages(f"/board/{board_id}/sprint", {}):
+            if sprint.get("state") not in ("future", "active", "closed"):
+                raise SystemExit("Jira returned an invalid sprint state.")
+            yield {k: sprint[k] for k in
+                   ("id", "name", "state", "startDate", "endDate", "completeDate", "originBoardId")
+                   if k in sprint}
 
     def search(self, jql):
         """Yield (key, updated) for every issue matching jql, following pages."""
@@ -290,6 +342,7 @@ CREATE TABLE IF NOT EXISTS statuses (
 def open_db(path=DB_DEFAULT):
     con = duckdb.connect(path)
     con.execute(SCHEMA)
+    capacity.init_db(con)
     # CREATE TABLE IF NOT EXISTS leaves an older database on its original columns,
     # so a column added later has to be alter'd in or every read of it fails on a
     # database that predates it. Idempotent, and cheap enough to run every open.
@@ -466,7 +519,7 @@ BASE_FIELDS = (
     "summary", "issuetype", "status", "statuscategorychangedate", "priority",
     "labels", "components", "assignee", "reporter", "created", "updated",
     "resolutiondate", "resolution", "parent", "fixVersions", "timespent",
-    "timeoriginalestimate",
+    "timeoriginalestimate", "subtasks",
 )
 
 # Custom fields are per instance, so they are resolved by name at sync time and
@@ -542,6 +595,8 @@ def sync(con, jira, label=None):
 
 
 def _sync(con, jira, scope, progress):
+    import capacity_history
+
     if not scope["project"] or not scope["earliest_since"]:
         raise SystemExit("first run needs --site, --email, --project and --since")
 
@@ -571,6 +626,7 @@ def _sync(con, jira, scope, progress):
     last_report = time.monotonic()
     for item in jira.search(jql):
         remote.append(item)
+        capacity_history.observe(con, item[0], item[1], _now().isoformat() + "Z")
         if len(remote) % 100 == 0 or time.monotonic() - last_report >= 10:
             progress(f'discovered {len(remote)} tickets')
             last_report = time.monotonic()
@@ -585,6 +641,12 @@ def _sync(con, jira, scope, progress):
     # never asked about anything older: an older key's absence proves nothing, and
     # pruning on it would make moving --since forward destroy the history that
     # widening it again refetches one request at a time.
+    con.execute(
+        "INSERT INTO capacity_pruned SELECT key, ? FROM raw_issues "
+        "WHERE NOT list_contains(?::VARCHAR[], key) AND updated >= ? "
+        "ON CONFLICT (key) DO UPDATE SET removed_at = excluded.removed_at",
+        [_now().isoformat() + "Z", [key for key, _ in remote], scope["earliest_since"]],
+    )
     gone = con.execute(
         "DELETE FROM raw_issues WHERE NOT list_contains(?::VARCHAR[], key) AND updated >= ?",
         [[key for key, _ in remote], scope["earliest_since"]],
@@ -631,6 +693,13 @@ def _sync(con, jira, scope, progress):
                 "json = excluded.json",
                 [key, updated, _now(), json.dumps(issue)],
             )
+            issue_type = issue["fields"].get("issuetype") or {}
+            capacity_history.remember_metadata(
+                con, "type", issue_type.get("id"), issue_type.get("subtask"))
+            status = issue["fields"].get("status") or {}
+            capacity_history.remember_metadata(
+                con, "status", status.get("id"), (status.get("statusCategory") or {}).get("key"))
+            con.execute("DELETE FROM capacity_pruned WHERE key = ?", [key])
             con.execute("DELETE FROM sync_errors WHERE key = ?", [key])
         if n % 50 == 0 or n == len(wanted) or time.monotonic() - last_report >= 10:
             progress(f"processed {n}/{len(wanted)}; {failed} failed")
@@ -652,7 +721,11 @@ def _refresh_lookups(con, jira, project=None):
                     [field["id"], field.get("name")])
     _refresh_workflow_statuses(con, jira, project)
     con.execute("DELETE FROM statuses")
+    import capacity_history
+
     for status in jira.statuses():
+        capacity_history.remember_metadata(
+            con, "status", status.get("id"), (status.get("statusCategory") or {}).get("key"))
         con.execute(
             "INSERT INTO statuses VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
             [status["name"], (status.get("statusCategory") or {}).get("key")],
@@ -1597,7 +1670,11 @@ def report_html(con, tiers=None):
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
-    return render.page(header, render_sections(con, tiers))
+    sections = render_sections(con, tiers)
+    planning = capacity.report_section(con)
+    if planning:
+        sections.append(("Sprint capacity", [planning]))
+    return render.page(header, sections)
 
 
 def report(con, path="report.html", tiers=None):
