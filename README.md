@@ -349,8 +349,8 @@ not guess one. A name that is not a done-category status is rejected.
 
 ## Interactivity
 
-The report loads its JavaScript as files the server serves itself: uPlot from
-`vendor/` and the first-party wiring in `static/urd.js`. Nothing is fetched from
+The report loads its JavaScript as files the server serves itself: uPlot and htmx
+from `vendor/` and the first-party wiring in `static/urd.js`. Nothing is fetched from
 another host.
 
 Line, scatter, stack and combined charts gain hover readouts and drag-to-zoom; on
@@ -362,8 +362,8 @@ any column, click or Enter on the header.
 All of it is additive: every chart is rendered as SVG by Python and is present in
 the page. A page opened with JavaScript disabled, or printed, loses hovering,
 zooming and sorting, and nothing else. Nothing is computed in the browser that
-Python could have computed, which is what keeps two reports of one database
-diffable.
+Python could have computed, which is what keeps two renders of one database
+identical.
 
 ## Ticket links
 
@@ -372,9 +372,8 @@ built from the site recorded by `sync`, so a report against a different instance
 links to that instance. With no site recorded yet, keys render as plain text
 rather than as half a URL.
 
-This does not weaken the self-contained guarantee: a link is fetched only when a
-human clicks it, unlike `src`, `@import`, `url()` or a stylesheet `href`, which the
-browser fetches on open with no choice.
+A link fetches nothing until a human clicks it, unlike `src`, `@import`, `url()`
+or a stylesheet `href`, which the browser fetches on open with no choice.
 
 ## Leaving epics out
 

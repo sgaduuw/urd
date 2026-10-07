@@ -299,13 +299,13 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 CREATE TABLE IF NOT EXISTS excluded_epics (
     -- Epics whose whole subtree is left out of the report. Set at report time, so
-    -- flipping it costs a report run rather than a re-derive.
+    -- flipping it costs a render rather than a re-derive.
     key VARCHAR PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS report_components (
     -- The components the report is narrowed to, empty meaning every one of
     -- them. Set at report time like the epic exclusion, so a slice costs a
-    -- report run rather than a re-sync: `sync --component` bounds what the
+    -- render rather than a re-sync: `sync --component` bounds what the
     -- mirror holds, this bounds what a page shows of it.
     name VARCHAR PRIMARY KEY
 );
@@ -349,7 +349,7 @@ def open_db(path=DB_DEFAULT):
     for column in SCOPE_COLUMNS:
         con.execute(f"ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS {column} VARCHAR")
     # A database derived before the component filter existed has an
-    # excluded_tickets that ignores report_components, so a report run without a
+    # excluded_tickets that ignores report_components, so a render without a
     # re-derive would filter nothing and its header would say it had. Here
     # rather than in set_report_components, because that runs on every rendered
     # page: DDL there conflicts with the derive a background sync is running on
@@ -488,7 +488,7 @@ def set_report_window(con, since):
         try:
             datetime.strptime(since, "%Y-%m-%d")
         except (ValueError, TypeError):
-            raise SystemExit(f"--since wants YYYY-MM-DD, got {since!r}") from None
+            raise SystemExit(f"since wants YYYY-MM-DD, got {since!r}") from None
     con.execute("DELETE FROM report_window")
     con.execute("INSERT INTO report_window VALUES (?)", [since or UNBOUNDED])
     con.execute(WINDOW_MACRO)
@@ -1689,7 +1689,7 @@ def parse_thresholds(pairs, base=None):
     for pair in pairs or ():
         name, sep, raw = str(pair).partition("=")
         if not sep or not name:
-            raise SystemExit(f"--threshold wants tier=share, got {pair!r}")
+            raise SystemExit(f"threshold wants tier=share, got {pair!r}")
         if name not in chart_specs.THRESHOLDS:
             raise SystemExit(
                 f"unknown threshold tier {name!r}; "
@@ -1698,9 +1698,9 @@ def parse_thresholds(pairs, base=None):
         try:
             share = float(raw)
         except ValueError:
-            raise SystemExit(f"--threshold {name}: {raw!r} is not a number") from None
+            raise SystemExit(f"threshold {name}: {raw!r} is not a number") from None
         if not 0 <= share <= 1:
-            raise SystemExit(f"--threshold {name}: {share} is not a share between 0 and 1")
+            raise SystemExit(f"threshold {name}: {share} is not a share between 0 and 1")
         tiers[name] = share
     return tiers
 

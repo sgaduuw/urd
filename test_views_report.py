@@ -285,6 +285,19 @@ def test_the_controls_offer_save_as_default():
     assert 'formaction="/alpha/defaults"' in body and 'formmethod="post"' in body
 
 
+def test_save_as_default_with_every_box_unticked_clears_the_components():
+    registry = test_helpers.registry()
+    project = _with_components(test_helpers.synced(registry), **{"PROJ-1": ["TEAM"]})
+    client = test_helpers.client(registry)
+    client.post("/alpha/defaults", data={"component": "TEAM"})
+    assert urd.stored_report_components(project.con) == ["TEAM"]
+    # What the form sends once the hidden empty input is in it and no box is ticked.
+    client.post("/alpha/defaults", data={"component": ""})
+    assert urd.stored_report_components(project.con) == []
+    body = client.get("/alpha/").get_data(as_text=True)
+    assert '<input type="hidden" name="component" value="">' in body
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

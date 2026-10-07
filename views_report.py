@@ -99,7 +99,11 @@ def _component_boxes(flags):
         f' {render.esc(name)}</label>'
         for name in flags["offered"]
     )
-    return f'<span class="boxes">component {boxes}</span>'
+    # An all-unticked form sends no component key, which would read as "keep the
+    # stored slice". The empty value is dropped by set_report_components and makes
+    # "no box ticked" mean every component, for Apply and Save as default alike.
+    return (f'<span class="boxes">component'
+            f'<input type="hidden" name="component" value="">{boxes}</span>')
 
 
 def _section(args):

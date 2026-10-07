@@ -39,10 +39,10 @@ POINTS_TIER = 0.35
 DEFAULT_TIER = 0.40
 
 # A chart names a TIER rather than carrying a number, so both knobs can be
-# retuned from the command line without editing code. Both values above were
+# retuned in the report controls without editing code. Both values above were
 # moved twice in one sitting by editing source, which is what prompted this.
-#   urd report --threshold points=0.4 --threshold default=0.6
-# Overrides are remembered in sync_state, the same way the sync scope is.
+#   threshold box: points=0.4, then Save as default
+# Saved values are remembered in sync_state, the same way the sync scope is.
 # ponytail: two tiers, no per-chart override. Upgrade path when one chart
 # genuinely needs its own number is to accept a chart key here as a third kind
 # of name; nothing else has to change.
@@ -52,7 +52,7 @@ THRESHOLDS = {"default": DEFAULT_TIER, "points": POINTS_TIER}
 # enough that the x-axis stays readable and the report stops growing.
 WINDOW_WEEKS = 26
 
-# Charts that deliberately ignore `report --since`, and why. A dict rather than a
+# Charts that deliberately ignore the report's since, and why. A dict rather than a
 # comment because the report header reads it: a page claiming every chart covers
 # a window while one does not is worse than no claim at all.
 WINDOW_EXEMPT = {
