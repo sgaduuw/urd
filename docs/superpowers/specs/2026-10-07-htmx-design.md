@@ -54,12 +54,31 @@ Two things slow down everyday use of `urd serve`:
   The fragment includes the tab bar, so the active tab is always the selected
   one. Back and forward work through the pushed URL.
 - The header and the filter controls stay outside `#report`. The controls
-  remain a normal GET form that reloads the page, so their writes (date
-  window, excluded epics, components) keep happening the way they do today.
-  The page keeps the selected tab through a hidden `section` input.
-- Thresholds submitted through the controls are now saved with
-  `save_scope(thresholds=…)`. Before this change only the removed `report`
-  command saved them.
+  remain a normal GET form that reloads the page. The page keeps the selected
+  tab through a hidden `section` input.
+- Filters live in the query string (`since`, `exclude_epic`, `component`,
+  `threshold`). `flags_from` applies them inside a transaction that is always
+  rolled back, so reading never changes the stored defaults, as today. Every
+  tab link and every fragment request carries the current filter query
+  string. Otherwise switching tabs would silently reset the filters.
+
+### Saving filters as the default
+
+The removed `report` command was the only way to change the stored defaults.
+Its replacement is a **Save as default** button next to Apply in the controls
+form: `<button formmethod="post" formaction="/<slug>/defaults">`, native HTML
+with no JavaScript.
+
+- `POST /<slug>/defaults` reads the same fields from the form and applies them
+  with the same `set_report_window`, `set_excluded_epics` and
+  `set_report_components` calls, plus `save_scope(thresholds=…)`, under
+  `_RENDER_LOCK`, then commits.
+- If any value is invalid, nothing is saved. The route rolls back and
+  redirects to the page with the submitted filters, which shows the same
+  problems the Apply path shows.
+- On success it redirects to `/<slug>/?section=<tab>` without filters, so the
+  page shows the new defaults.
+- The app-wide same-origin check covers it, like every POST.
 
 ### Charts and sorting after a swap
 
@@ -155,7 +174,8 @@ person in the working copy without writing. Save swaps the form.
 
 ## Removed
 
-- The `report` command, `urd.report()` and its CLI options.
+- The `report` command, `urd.report()` and its CLI options. Their job of
+  changing stored defaults moves to Save as default.
 - `test_report_writes_a_standalone_file_with_no_external_references`.
 - The README and AGENTS sections that describe `report.html` and `report`.
   Filter documentation moves to the web controls.
@@ -186,7 +206,11 @@ CONTEXT.md are updated to say this.
   - no rendered page contains an executable inline `<script>`: one without a
     `type`, or with a JavaScript type
   - an unknown file under `/vendor/` or `/static/` returns 404
-- **Thresholds:** submitted thresholds persist across requests.
+- **Filters:**
+  - tab links and fragment requests carry the current filter query string
+  - Apply and tab switches leave `sync_state` and `report_window` unchanged
+  - Save as default persists window, epics, components and thresholds
+  - Save as default with one invalid value persists nothing
 - **Manual check in the container,** because the repo has no browser tests:
   - switching tabs, and back and forward
   - charts render after a tab switch
