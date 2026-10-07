@@ -187,7 +187,7 @@ def form(client, saved_team, target):
 
 
 
-def test_keep_uses_the_saved_rate_not_the_submitted_one():
+def test_keep_on_an_unsaved_plan_means_no_rate_not_the_submitted_one():
     con, saved_team, target = setup()
     client = browser(con)
     path, fields = form(client, saved_team, target)
@@ -202,6 +202,22 @@ def test_keep_uses_the_saved_rate_not_the_submitted_one():
     con.close()
     assert response.status_code == 200, response.get_data(as_text=True)
     assert saved["rate"]["kind"] == "none" and saved["forecast"] is None, saved["rate"]
+
+
+def test_keep_on_a_saved_plan_means_its_recorded_rate_not_the_submitted_one():
+    con, saved_team, target = setup()
+    target["rate"] = {"kind": "manual", "value": 0.5, "sources": []}
+    capacity.save_plan(con, target, 0)
+    client = browser(con)
+    path, fields = form(client, saved_team, target)
+    payload = json.loads(fields["payload"])
+    payload["rate"] = {"kind": "manual", "value": 99, "sources": []}
+    fields.update(action="save", rate_mode="keep", reason="Hours", payload=json.dumps(payload))
+    response = client.post(path, data=fields, follow_redirects=True)
+    saved = capacity.get_plan(con, saved_team["id"], 13)
+    con.close()
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert saved["version"] == 2 and saved["rate"]["value"] == 0.5, saved["rate"]
 
 
 def test_busy_save_retains_manual_rate_for_retry():
