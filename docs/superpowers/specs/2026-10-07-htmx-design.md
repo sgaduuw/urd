@@ -26,7 +26,8 @@ Two things slow down everyday use of `urd serve`:
 | Decision | Choice | Rejected, and why |
 | --- | --- | --- |
 | Static `report.html` | Remove the `report` command and the file. | Keeping it means maintaining a second, one-page layout for a prototype feature. |
-| Client library | htmx 2.0.11, vendored. | A CSS framework such as Bulma for tabs: it would restyle every element and fight the existing stylesheet. Vanilla JavaScript: possible, but htmx was the explicit choice. |
+| Client library | htmx 4.0.0, vendored. It is a final release, although npm still tags it `next`, with 2.0.11 as `latest`. Starting on 4 avoids a later major upgrade of code written now. | htmx 2.0.11: the current `latest`, but 4 renames its events and changes inheritance and swapping. A CSS framework such as Bulma for tabs: it would restyle every element and fight the existing stylesheet. Vanilla JavaScript: possible, but htmx was the explicit choice. |
+| Script safety | A `Content-Security-Policy: script-src 'self'` header, with no inline scripts on any page. | htmx 2's `allowEval` and `allowScriptTags` settings: htmx 4 removed both, always executes `<script>` in swapped content, and evaluates `hx-on` and `js:` with `new Function`. |
 | Partial updates | Fragment routes per component (approach 2). | Swapping the whole page with `hx-boost`: less code, but less precise. |
 | Drift between page and fragments | One render function per fragment. The full page is assembled from the same functions the fragment routes return. | Rendering a fragment separately from the page: the two drift apart. |
 | Delivering htmx | Served from `/vendor/htmx.min.js`, so the browser caches it. | Inlining it: only the offline file needed that. |
@@ -62,11 +63,13 @@ Two things slow down everyday use of `urd serve`:
 
 ### Charts and sorting after a swap
 
-`PLOT_SCRIPT` and `SORT_SCRIPT` currently run once on load. Both become a
-function `init(root)`. It runs on load for `document` and on `htmx:afterSettle`
-for the swapped element. Chart data stays in the existing
-`<script type="application/json" class="plot-data">` islands, which are data
-and never executed.
+`PLOT_SCRIPT` and `SORT_SCRIPT` currently run once on load, inline. Both move
+into one served file, `/static/urd.js`, as a function `init(root)`. It runs on
+load for `document` and on `htmx:after:settle` for the swapped element. uPlot
+moves from inline to `/vendor/uplot.min.js` and `/vendor/uplot.min.css`. Chart
+data stays in the existing `<script type="application/json" class="plot-data">`
+islands. These are data blocks, which the browser never executes, and the
+Content-Security-Policy does not affect them.
 
 ### Styling
 
@@ -121,23 +124,30 @@ person in the working copy without writing. Save swaps the form.
   status 200: the request succeeded, the input is incomplete.
 - Save errors keep their status codes, 400 for invalid input and 409 for a
   conflict. The re-rendered `#plan` carries the message.
-- htmx does not swap 4xx responses by default. The page sets
-  `responseHandling` to swap 400 and 409 and keep the default for everything
-  else.
+- htmx 4 swaps every response except 204 and 304 (its `noSwap` default), so
+  400 and 409 responses swap in without extra configuration.
 
 ## htmx configuration and security
 
-- Vendored at `vendor/htmx.min.js`, version 2.0.11, licence 0BSD. Its version
-  and SHA-256 are recorded in `vendor/README.md` the way uPlot's are.
-- Served by one route, `GET /vendor/htmx.min.js`, with a long cache lifetime.
-- Configured with a `<meta name="htmx-config">`:
-  - `selfRequestsOnly: true` (the default, stated explicitly)
-  - `allowEval: false`
-  - `allowScriptTags: false`
-  - the `responseHandling` above
-
-  The pages use no `hx-on` or `js:` attributes, and swapped fragments never
-  need a script executed.
+- Vendored at `vendor/htmx.min.js`, version 4.0.0, licence 0BSD, SHA-256
+  `e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f` as
+  published in the npm package `htmx.org@4.0.0` (`dist/htmx.min.js`, 36,716
+  bytes). Recorded in `vendor/README.md` the way uPlot's are.
+- Served by `GET /vendor/<name>` for the vendored files and
+  `GET /static/urd.js` for urd's own script. Only the named files can be
+  served, and the browser caches them for a long time.
+- No htmx settings need changing. The defaults this design relies on are
+  `mode: 'same-origin'` and `noSwap: [204, 304]`. The pages use no `hx-on`
+  and no `js:` values.
+- Every HTML response carries
+  `Content-Security-Policy: script-src 'self'; object-src 'none'; base-uri 'none'`,
+  set app-wide in an `after_request` hook. In htmx 4.0.0, `#processScripts`
+  re-creates every `<script>` in swapped content as an inline script, and
+  `hx-on` and `js:` values run through `new Function`. This policy blocks
+  both: an inline script needs a nonce or `'unsafe-inline'`, and
+  `new Function` needs `'unsafe-eval'`. So a markup injection that got past
+  escaping still could not run a script. HTML escaping stays the first
+  defence.
 - The existing app-wide same-origin and Host checks in `before_request` cover
   the new POST routes.
 - The vendor audit test changes: uPlot must still make no network requests.
@@ -149,6 +159,11 @@ person in the working copy without writing. Save swaps the form.
 - `test_report_writes_a_standalone_file_with_no_external_references`.
 - The README and AGENTS sections that describe `report.html` and `report`.
   Filter documentation moves to the web controls.
+
+Consequence: AGENTS.md says "the report is shared by handing someone the HTML
+file". Without the file, a report is read in `urd serve`. The capacity HTML
+export (`…/export`) stays, and it contains no scripts. AGENTS.md and
+CONTEXT.md are updated to say this.
 
 ## Testing
 
@@ -164,9 +179,13 @@ person in the working copy without writing. Save swaps the form.
   - invalid input returns the message inside the fragment
 - **Identity:** each full page contains exactly the HTML its fragment route
   returns for the same input.
-- **Configuration:** the page links `/vendor/htmx.min.js`, the route serves the
-  file whose SHA-256 is recorded, and the meta config disables eval and script
-  tags.
+- **Configuration and policy:**
+  - the page links `/vendor/htmx.min.js`, and the route serves the file whose
+    SHA-256 is recorded
+  - every HTML response carries the Content-Security-Policy header
+  - no rendered page contains an executable inline `<script>`: one without a
+    `type`, or with a JavaScript type
+  - an unknown file under `/vendor/` or `/static/` returns 404
 - **Thresholds:** submitted thresholds persist across requests.
 - **Manual check in the container,** because the repo has no browser tests:
   - switching tabs, and back and forward
