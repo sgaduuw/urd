@@ -112,8 +112,8 @@ def test_confirmation_revisions_void_and_forecast():
     con = database()
     saved_team = capacity.save_team(con, team())
     plan = prepared(con, saved_team)
-    baseline = {"cutoff": "2026-10-05T09:00:00Z", "source_id": "synthetic-source",
-                "kind": "observed", "issues": {"EX-1": {"points": 3}}, "coherent": True}
+    baseline = {"cutoff": "2026-10-05T09:00:00Z", "kind": "observed",
+                "issues": {"EX-1": {"points": 3}}, "coherent": True}
     confirmed = capacity.save_plan(con, plan, 0, action="confirm", baseline=baseline)
     assert confirmed["confirmation"] == 1
     changed = copy.deepcopy(confirmed)
@@ -193,14 +193,15 @@ def test_weekly_split_copy_and_validation():
     con.close()
 
 
-def test_empty_weekly_cells_normalize_only_in_read_results():
+def test_blank_weekly_cells_stay_unentered():
     con = database()
     saved_team = capacity.save_team(con, team())
     confirmed = capacity.save_plan(con, prepared(con, saved_team), 0, action="confirm",
                                    baseline={"coherent": True})
-    saved_team["members"][0]["weekly"] = [None] * 7
-    saved_team["members"][1]["weekly"] = [{"work": 6.25, "meetings": 0}, None,
-                                         {"work": 0, "meetings": 0}] + [None] * 4
+    blank = {"work": None, "meetings": None}
+    saved_team["members"][0]["weekly"] = [blank] * 7
+    saved_team["members"][1]["weekly"] = [{"work": 6.25, "meetings": 0}, blank,
+                                         {"work": 0, "meetings": 0}] + [blank] * 4
     con.execute("UPDATE capacity_teams SET payload = ? WHERE id = ?",
                 [json.dumps(saved_team), saved_team["id"]])
     before = con.execute("SELECT * FROM capacity_teams").fetchall()

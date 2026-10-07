@@ -112,16 +112,9 @@ def _members(members, patterns=False):
 
 
 def teams(con):
-    result = [dict(json.loads(payload), id=identity, version=version)
-              for identity, version, payload in con.execute(
-                  "SELECT id, version, payload FROM capacity_teams ORDER BY id").fetchall()]
-    for team in result:
-        for member in team.get("members", []):
-            pattern = member.get("weekly")
-            member["weekly"] = [
-                {"work": None, "meetings": None} if cell is None else cell
-                for cell in ([None] * 7 if pattern is None else pattern)]
-    return result
+    return [dict(json.loads(payload), id=identity, version=version)
+            for identity, version, payload in con.execute(
+                "SELECT id, version, payload FROM capacity_teams ORDER BY id").fetchall()]
 
 
 def get_team(con, team_id):
@@ -434,7 +427,6 @@ def history_candidates(con, target):
     if target_start is None:
         target_start = datetime.fromisoformat(target["dates"]["start"]).replace(
             tzinfo=ZoneInfo(target["settings"]["timezone"]))
-    fingerprint = history.source_id(con)
     rows = con.execute("SELECT sprint_id FROM capacity_plans WHERE team_id = ? AND sprint_id != ?",
                        [target["team_id"], target["sprint_id"]]).fetchall()
     for (sprint_id,) in rows:
@@ -462,7 +454,7 @@ def history_candidates(con, target):
         result.append({
             "team_id": value["team_id"], "sprint_id": sprint_id, "version": value["version"],
             "confirmation": value["confirmation"], "points": points, "focus_hours": hours,
-            "cutoff": metadata.get("completeDate"), "source_id": fingerprint, "kind": kind,
+            "cutoff": metadata.get("completeDate"), "kind": kind,
             "label": metadata["name"], "eligible": not reason,
             "reason": reason or f"{points:g} points / {hours:g} focus hours; revision "
                                f"{value['version']}; {kind}; closed {metadata.get('completeDate')}",
