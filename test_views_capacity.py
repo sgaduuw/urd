@@ -3,6 +3,7 @@ import json
 from html.parser import HTMLParser
 
 import capacity
+import views_capacity
 from test_capacity import team
 from test_helpers import client, registry, synced
 
@@ -118,6 +119,13 @@ def test_second_replacement_links_the_latest_voided_confirmation():
     project.con.close()
     assert fifth["confirmation"] == 5, fifth["confirmation"]
     assert fifth["replaces"]["confirmation"] == 3, fifth["replaces"]
+
+
+def test_grid_escapes_day_keys_when_dates_are_invalid():
+    value = {"dates": {"start": "", "end": ""}, "members": [{
+        "id": "person-a", "name": "Aster", "daily": {"<i>day</i>": {"work": 1, "meetings": 0}}}]}
+    html = views_capacity._grid(value)
+    assert "&lt;i&gt;day" in html and "<i>" not in html, html
 
 
 def test_changed_preview_busy_refresh_and_invalid_inputs_preserve_form():

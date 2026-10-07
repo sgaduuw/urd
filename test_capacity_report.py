@@ -115,6 +115,23 @@ def test_review_warns_when_a_rate_source_was_later_revised():
     assert "was later revised" in html, html
 
 
+def test_report_escapes_rate_source_fields():
+    con, saved_team, target = setup()
+    target["rate"] = capacity.history_rate(capacity.history_candidates(con, target))
+    capacity.save_plan(con, target, 0, action="confirm", baseline=history.baseline(con, target))
+    row = con.execute("SELECT payload FROM capacity_revisions WHERE team_id = ? "
+                      "AND sprint_id = 13", [saved_team["id"]]).fetchone()
+    stored = json.loads(row[0])
+    for field in ("version", "confirmation"):
+        stored["rate"]["sources"][0][field] = f"<b>{field}</b>"
+    con.execute("UPDATE capacity_revisions SET payload = ? WHERE team_id = ? AND sprint_id = 13",
+                [json.dumps(stored), saved_team["id"]])
+    html = capacity.report_section(con)
+    con.close()
+    assert "&lt;b&gt;version" in html and "&lt;b&gt;confirmation" in html, html
+    assert "<b>" not in html, html
+
+
 def test_closed_volume_backup_restore_keeps_local_records():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
@@ -168,6 +185,23 @@ def form(client, saved_team, target):
             fields[f"meetings:{member['id']}:{day}"] = "0"
     return path, fields
 
+
+
+def test_keep_uses_the_saved_rate_not_the_submitted_one():
+    con, saved_team, target = setup()
+    client = browser(con)
+    path, fields = form(client, saved_team, target)
+    forged = capacity.history_rate([{
+        "team_id": saved_team["id"], "sprint_id": 11, "confirmation": 1, "version": 1,
+        "points": 9999, "focus_hours": 1}])
+    payload = json.loads(fields["payload"])
+    payload["rate"] = forged
+    fields.update(action="save", rate_mode="keep", payload=json.dumps(payload))
+    response = client.post(path, data=fields, follow_redirects=True)
+    saved = capacity.get_plan(con, saved_team["id"], 13)
+    con.close()
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert saved["rate"]["kind"] == "none" and saved["forecast"] is None, saved["rate"]
 
 
 def test_busy_save_retains_manual_rate_for_retry():

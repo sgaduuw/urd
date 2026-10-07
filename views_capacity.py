@@ -267,7 +267,7 @@ def _grid(value):
             'Use Preview to update the totals.</p>')
     rows += ('<div class="capacity-scroll"><table class="urd capacity-grid">'
              '<thead><tr><th>Person</th>')
-    rows += "".join(f'<th scope="col">{d}</th>' for d in calendar)
+    rows += "".join(f'<th scope="col">{render.esc(d)}</th>' for d in calendar)
     rows += ('<th>Available (h)</th><th>Work (h)</th>'
              '<th>Remove</th></tr></thead><tbody>')
     try:
@@ -284,7 +284,7 @@ def _grid(value):
                     f"{field}:{identity}:{day}", member.get("daily", {}).get(day, {}).get(field),
                     "number", label,
                     extra=f'min="0" max="24" step="any" aria-label="{render.esc(member["name"])} '
-                          f'{day} {label} hours" aria-describedby="daily-hours-help"')
+                          f'{render.esc(day)} {label} hours" aria-describedby="daily-hours-help"')
             rows += "</td>"
         totals = by_member.get(identity, {})
         rows += (f'<td>{render.esc(totals.get("available_hours", ""))}</td>'
@@ -579,7 +579,11 @@ def plan_form(slug, team_id, sprint_id):
                         raise ValueError("Select eligible historical sprints.")
                     value["rate"] = capacity.history_rate(
                         [candidates[s] for s in sorted(set(selected))])
-                elif mode != "keep":
+                elif mode == "keep":
+                    # The submitted rate is client data; only the saved plan's rate is recorded.
+                    value["rate"] = copy.deepcopy(saved["rate"]) if saved else {
+                        "kind": "none", "value": None, "sources": []}
+                else:
                     raise ValueError("Choose a valid rate source.")
                 capacity.totals(value)
                 if action == "preview":

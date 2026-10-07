@@ -312,6 +312,8 @@ def save_plan(con, payload, expected_version, action="save", reason="", baseline
                     raise ValueError("Void the confirmation before replacing its team scope.")
         value["totals"] = totals(value, complete=action == "confirm" or confirmation is not None)
         rate = value.get("rate", {})
+        if rate.get("kind") != "history" and rate.get("sources"):
+            raise ValueError("Only a historical rate can carry sources.")
         if rate.get("kind") == "history":
             if (not rate.get("sources")
                     or history_rate(rate["sources"])["value"] != rate.get("value")):
@@ -543,8 +545,9 @@ def report_section(con, include_grid=False, plan=None):
         body += (f'<p>Rate: {display(rate.get("value"))} points per focus hour '
                  f'({render.esc(rate.get("kind", "none"))}). Forecasts are planning estimates.</p>')
         for source in rate.get("sources", []):
-            body += (f'<p>Rate source sprint {source["sprint_id"]}, capacity revision '
-                     f'{source["version"]}, confirmation {source["confirmation"]}: '
+            body += (f'<p>Rate source sprint {render.esc(source["sprint_id"])}, capacity revision '
+                     f'{render.esc(source["version"])}, confirmation '
+                     f'{render.esc(source["confirmation"])}: '
                      f'{display(source["points"])} points / {display(source["focus_hours"])} '
                      f'focus hours; cutoff {display(source.get("cutoff"))}.</p>')
         warnings = _rate_warnings(con, rate) + comparison["coverage"] + baseline.get("coverage", [])

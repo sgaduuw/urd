@@ -163,6 +163,17 @@ def test_confirmed_plan_locks_scope_and_rejects_a_second_confirmation():
     con.close()
 
 
+def test_only_a_historical_rate_carries_sources():
+    con = database()
+    saved_team = capacity.save_team(con, team())
+    plan = prepared(con, saved_team)
+    source = {"team_id": saved_team["id"], "sprint_id": 12, "confirmation": 1, "version": 1,
+              "points": 9999, "focus_hours": 1}
+    plan["rate"] = {"kind": "manual", "value": 1, "sources": [source]}
+    rejects(lambda: capacity.save_plan(con, plan, 0), "sources")
+    con.close()
+
+
 def test_daily_arithmetic_and_outside_dates():
     value = {"dates": {"start": "2026-10-05", "end": "2026-10-06"}, "focus": 75,
              "members": [{"id": "one", "name": "Aster", "daily": {
