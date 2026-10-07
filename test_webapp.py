@@ -778,6 +778,18 @@ def test_seed_from_env_and_the_wizard_derive_the_same_slug():
     assert seeded == [urd.project_slug("PROJ,OTHER")], seeded
 
 
+def test_every_html_response_carries_the_script_policy():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    browser = test_helpers.client(registry)
+    for path in ("/alpha/", "/alpha/capacity/", "/no-such-project/", "/setup"):
+        response = browser.get(path)
+        assert response.mimetype == "text/html", path
+        assert response.headers.get("Content-Security-Policy") == (
+            "script-src 'self'; object-src 'none'; base-uri 'none'"), path
+    assert "Content-Security-Policy" not in browser.get("/vendor/htmx.min.js").headers
+
+
 def test_vendor_route_serves_only_the_listed_files():
     import hashlib
     browser = test_helpers.client(test_helpers.registry())

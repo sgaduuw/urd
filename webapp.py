@@ -13,6 +13,12 @@ import projects
 import render
 import urd
 
+# htmx 4 executes every <script> in swapped content and evaluates hx-on and js:
+# values with new Function, with no setting to stop either. This policy does:
+# an inline script needs a nonce or 'unsafe-inline', new Function needs
+# 'unsafe-eval', and neither is granted. Escaping stays the first defence.
+CSP = "script-src 'self'; object-src 'none'; base-uri 'none'"
+
 
 def slug_or_404(registry, slug):
     project = registry.get(slug)
@@ -63,6 +69,12 @@ def create_app(registry):
         host = host.split("]")[0] + "]" if host.startswith("[") else host.split(":")[0]
         if host not in ("127.0.0.1", "localhost", "[::1]"):
             flask.abort(403)
+
+    @app.after_request
+    def _script_policy(response):
+        if response.mimetype == "text/html":
+            response.headers["Content-Security-Policy"] = CSP
+        return response
 
     # Imported here, not at module scope: views_report and views_jobs both
     # import webapp themselves, and a plain top-level import on both sides
@@ -132,7 +144,8 @@ def create_app(registry):
             start_response(
                 "500 INTERNAL SERVER ERROR",
                 [("Content-Type", "text/html; charset=utf-8"),
-                 ("Content-Length", str(len(body)))],
+                 ("Content-Length", str(len(body))),
+                 ("Content-Security-Policy", CSP)],
             )
             return [body]
 
