@@ -1,5 +1,10 @@
+import os
 import pathlib
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 
 import urd
 
@@ -66,6 +71,23 @@ def test_the_image_pins_a_python_that_can_parse_the_timestamps():
 def test_the_image_installs_only_the_two_dependencies():
     direct = set(_read("requirements.in").splitlines())
     assert direct == {"duckdb", "flask"}, direct
+
+
+def test_the_image_copies_every_runtime_module():
+    with tempfile.TemporaryDirectory() as temp:
+        target = pathlib.Path(temp)
+        for line in _read("Dockerfile").splitlines():
+            if line.startswith("COPY "):
+                for source in line.split()[1:-1]:
+                    if source.endswith(".py"):
+                        shutil.copy2(ROOT / source, target / source)
+        shutil.copytree(ROOT / "vendor", target / "vendor")
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        result = subprocess.run(
+            [sys.executable, "-c", "import urd; import webapp; webapp.create_app(None)"],
+            cwd=target, env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ REQUIRED = (
     "test_urd.py", "test_projects.py", "test_wizard.py", "test_container.py",
     "test_webapp.py", "test_views_report.py", "test_views_jobs.py", "test_views_wizard.py",
     "test_security.py", "test_sync_safety.py", "test_checks.py",
+    "test_capacity.py", "test_capacity_history.py", "test_capacity_catalogue.py",
+    "test_views_capacity.py", "test_capacity_report.py",
 )
 
 

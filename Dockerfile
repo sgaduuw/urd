@@ -12,6 +12,7 @@ RUN groupadd --gid 10001 urd && useradd --uid 10001 --gid urd --no-create-home u
     && mkdir -p /var/lib/urd && chown urd:urd /var/lib/urd
 COPY urd.py charts.py render.py projects.py wizard.py webapp.py ./
 COPY views_report.py views_jobs.py views_wizard.py ./
+COPY capacity.py capacity_history.py views_capacity.py ./
 COPY vendor/ ./vendor/
 
 # The volume, not a layer: the database is the only state and a restart must keep
