@@ -96,6 +96,25 @@ def test_history_rate_and_export_privacy():
     con.close()
 
 
+def test_only_previous_sprints_are_history_candidates():
+    con, saved_team, _ = setup()
+    target = capacity.get_plan(con, saved_team["id"], 11)
+    later = next(c for c in capacity.history_candidates(con, target) if c["sprint_id"] == 12)
+    con.close()
+    assert not later["eligible"] and "not a previous sprint" in later["reason"], later
+
+
+def test_review_warns_when_a_rate_source_was_later_revised():
+    con, saved_team, target = setup()
+    target["rate"] = capacity.history_rate(capacity.history_candidates(con, target))
+    capacity.save_plan(con, target, 0, action="confirm", baseline=history.baseline(con, target))
+    source = capacity.get_plan(con, saved_team["id"], 12)
+    capacity.save_plan(con, source, source["version"], reason="Corrected hours")
+    html = capacity.report_section(con)
+    con.close()
+    assert "was later revised" in html, html
+
+
 def test_closed_volume_backup_restore_keeps_local_records():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)

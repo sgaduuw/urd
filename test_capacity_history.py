@@ -379,6 +379,31 @@ def test_unknown_type_under_a_parent_leaves_only_that_parent_uncertain():
     assert result["delivered_points"] == 5 and not result["points_complete"]
 
 
+def test_original_outcomes_and_dropped_points():
+    removed = issue("EX-2", 2, done=False, sprint_id=None)
+    removed["changelog"]["histories"].append(
+        event("2026-01-12T09:00:00Z", "Sprint", "11", None))
+    moved = issue("EX-3", 3, done=False, component="Other")
+    moved["changelog"]["histories"].append(
+        event("2026-01-12T09:00:00Z", "Component", "Engine", "Other", "Engine", "Other"))
+    dropped = issue("EX-4", 8)
+    dropped["fields"]["status"] = {"id": "dropped", "name": "Dropped",
+                                   "statusCategory": {"key": "done"}}
+    dropped["changelog"]["histories"] = [
+        event("2026-01-10T12:00:00Z", "status", "open", "dropped", "Ready", "Dropped")]
+    con = fixture([issue("EX-1", 5), removed, moved, dropped, issue("EX-5", 13, done=False)])
+    result = review(con)
+    con.close()
+    outcomes = result["original_outcomes"]
+    assert outcomes["delivered"] == ["EX-1"], outcomes
+    assert outcomes["removed"] == ["EX-2"], outcomes
+    assert outcomes["transferred_out"] == ["EX-3"], outcomes
+    assert outcomes["dropped"] == ["EX-4"], outcomes
+    assert outcomes["unfinished"] == ["EX-5"], outcomes
+    assert result["delivered_points"] == 5, result["delivered_points"]
+    assert result["rate_eligible"], result["coverage"]
+
+
 def test_omitted_original_removed_later_stays_unclassified():
     record = issue("EX-1", 5, sprint_id=None)
     record["changelog"]["histories"].append(

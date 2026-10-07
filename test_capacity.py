@@ -147,6 +147,22 @@ def test_confirmation_revisions_void_and_forecast():
     con.close()
 
 
+def test_confirmed_plan_locks_scope_and_rejects_a_second_confirmation():
+    con = database()
+    saved_team = capacity.save_team(con, team())
+    baseline = {"cutoff": "2026-10-05T09:00:00Z", "kind": "observed", "issues": {},
+                "coherent": True}
+    confirmed = capacity.save_plan(con, prepared(con, saved_team), 0, action="confirm",
+                                   baseline=baseline)
+    rejects(lambda: capacity.save_plan(con, confirmed, 1, action="confirm", reason="Again",
+                                       baseline=baseline), "already has a valid confirmation")
+    moved = copy.deepcopy(confirmed)
+    moved["settings"]["components"] = ["Other"]
+    rejects(lambda: capacity.save_plan(con, moved, 1, reason="Rescope"), "team scope")
+    assert capacity.get_plan(con, saved_team["id"], 11)["version"] == 1
+    con.close()
+
+
 def test_daily_arithmetic_and_outside_dates():
     value = {"dates": {"start": "2026-10-05", "end": "2026-10-06"}, "focus": 75,
              "members": [{"id": "one", "name": "Aster", "daily": {
