@@ -456,15 +456,15 @@ def test_a_save_error_renders_its_message_inside_plan_area():
 
 
 class _Buttons(HTMLParser):
-    def __init__(self, html):
+    def __init__(self, html, identity="plan"):
         super().__init__()
-        self.in_plan, self.found = False, []
+        self.identity, self.in_plan, self.found = identity, False, []
         self.feed(html)
 
     def handle_starttag(self, tag, attributes):
         attrs = dict(attributes)
         if tag == "form":
-            self.in_plan = attrs.get("id") == "plan"
+            self.in_plan = attrs.get("id") == self.identity
         if self.in_plan and tag == "button" and attrs.get("type", "submit") == "submit":
             self.found.append(attrs)
 
@@ -601,6 +601,53 @@ def test_rate_box_after_a_preview_still_shows_the_saved_rate():
     again.update(rate_mode="manual", manual_rate="0.5")
     body = browser.post(path + "/rate", data=again).get_data(as_text=True)
     assert "(none).</p>" in body, "recorded rate must be the saved one, not the 0.25 preview"
+
+
+def test_team_members_adds_and_removes_without_writing():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/teams/{saved_team['id']}"
+    fields = Form(browser.get(path).get_data(as_text=True), "team").values
+    before = _capacity_tables(project.con)
+    fields["new_name"] = "Cedar"
+    body = browser.post(path + "/members?add=1", data=fields).get_data(as_text=True)
+    assert body.startswith('<div id="weekly">') and "Cedar" in body
+    payload = json.loads(Form(f'<form id="team">{body}</form>', "team").values["payload"])
+    first = payload["members"][0]["id"]
+    fields = Form(f'<form id="team">{body}</form>', "team").values
+    quoted = urllib.parse.quote(first, safe="")
+    body = browser.post(f"{path}/members?remove={quoted}", data=fields).get_data(as_text=True)
+    ids = [m["id"] for m in json.loads(
+        Form(f'<form id="team">{body}</form>', "team").values["payload"])["members"]]
+    assert first not in ids
+    assert _capacity_tables(project.con) == before
+
+
+def test_new_team_page_can_add_people_in_place():
+    project, browser, _ = setup()
+    fields = Form(browser.get("/alpha/capacity/teams/new").get_data(as_text=True),
+                  "team").values
+    fields["new_name"] = "Cedar"
+    response = browser.post("/alpha/capacity/teams/new/members?add=1", data=fields)
+    assert response.status_code == 200 and "Cedar" in response.get_data(as_text=True)
+
+
+def test_team_remove_without_javascript_still_works():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/teams/{saved_team['id']}"
+    fields = Form(browser.get(path).get_data(as_text=True), "team").values
+    first = json.loads(fields["payload"])["members"][0]
+    fields.update(remove=first["id"], action="save")
+    assert browser.post(path, data=fields).status_code == 302
+    saved = capacity.get_team(project.con, saved_team["id"])
+    assert first["id"] not in [m["id"] for m in saved["members"]]
+
+
+def test_the_first_team_submit_button_is_save_not_remove():
+    # Enter in a team field fires the form's first submit button, so it must not be a Remove.
+    project, browser, saved_team = setup()
+    body = browser.get(f"/alpha/capacity/teams/{saved_team['id']}").get_data(as_text=True)
+    first = _Buttons(body, "team").found[0]
+    assert (first.get("name"), first.get("value")) == ("action", "save"), first
 
 
 if __name__ == "__main__":

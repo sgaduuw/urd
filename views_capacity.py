@@ -104,11 +104,11 @@ def _add_member(con, value, patterns=False):
     value["members"].append(member)
 
 
-def _member_picker(con, members_url=None):
+def _member_picker(con, members_url=None, target="#grid"):
     options = '<option value="">Choose a Jira person (optional)</option>' + "".join(
         f'<option value="{render.esc(account)}">{render.esc(name)}</option>'
         for account, name in _people(con).items())
-    htmx = (f' hx-post="{render.esc(members_url)}?add=1" hx-target="#grid"'
+    htmx = (f' hx-post="{render.esc(members_url)}?add=1" hx-target="{target}"'
             f' hx-swap="outerHTML"' if members_url else "")
     return ('<fieldset><legend>Add a person</legend><label>Jira person '
             f'<select name="new_account">{options}</select></label>'
@@ -166,24 +166,12 @@ def catalogue(slug):
     return flask.redirect(f"/{slug}/capacity/")
 
 
-def _team_form(slug, con, value, message=""):
-    body = ('<form id="team" method="post">' + _hidden(value)
-            + _input("name", value.get("name"), label="Team name")
-            + _input("components", ", ".join(value.get("components", [])),
-                     label="Jira components (comma separated, match any)")
-            + _input("timezone", value.get("timezone"), label="Planning timezone, for example UTC"))
-    body += '<fieldset class="boxes"><legend>Scrum boards for sprint discovery</legend>'
-    found = {b["id"]: b["name"] for b in capacity.boards(con)}
-    for identity in value.get("boards", []):
-        found.setdefault(identity, f"Cached board {identity}")
-    for identity, name in found.items():
-        checked = "checked" if identity in value.get("boards", []) else ""
-        body += ('<label>' + _input("boards", identity, "checkbox", extra=checked)
-                 + render.esc(name) + "</label>")
-    body += ('</fieldset><p id="weekly-hours-help">Normal Work and Meetings hours are copied '
-             'into new sprints. Work excludes meetings; focus applies only to Work. '
-             'Enter 0 for none; blank means not entered. Work + Meetings must not exceed '
-             '24 hours per day.</p>')
+def _weekly(con, value, members_url, message=""):
+    body = ('<div id="weekly">' + _notice(message) + _hidden(value)
+            + '<p id="weekly-hours-help">Normal Work and Meetings hours are copied '
+              'into new sprints. Work excludes meetings; focus applies only to Work. '
+              'Enter 0 for none; blank means not entered. Work + Meetings must not exceed '
+              '24 hours per day.</p>')
     body += ('<div class="capacity-scroll"><table class="urd capacity-grid">'
              '<thead><tr><th>Person</th>')
     body += "".join(f"<th>{d}</th>" for d in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
@@ -198,10 +186,55 @@ def _team_form(slug, con, value, message=""):
                     extra=f'min="0" max="24" step="any" aria-label="{render.esc(member["name"])} '
                           f'day {index + 1} {label} hours" aria-describedby="weekly-hours-help"')
             body += "</td>"
-        body += "<td>" + _input(f'remove:{member["id"]}', "yes", "checkbox") + "</td></tr>"
-    body += "</tbody></table></div>" + _member_picker(con)
+        remove_url = f"{members_url}?remove={urllib.parse.quote(member['id'], safe='')}"
+        body += ('<td><button type="submit" name="remove" value="' + render.esc(member["id"])
+                 + f'" hx-post="{render.esc(remove_url)}" hx-target="#weekly"'
+                 ' hx-swap="outerHTML" aria-label="Remove ' + render.esc(member["name"])
+                 + '">Remove</button></td></tr>')
+    return body + "</tbody></table></div>" + _member_picker(con, members_url, "#weekly") + "</div>"
+
+
+def _team_form(slug, con, value, message=""):
+    # The off-screen Save is the first submit button, so Enter never fires a Remove.
+    body = ('<form id="team" method="post">'
+            '<button type="submit" name="action" value="save" class="default-submit" '
+            'tabindex="-1" aria-hidden="true">Save team</button>'
+            + _input("name", value.get("name"), label="Team name")
+            + _input("components", ", ".join(value.get("components", [])),
+                     label="Jira components (comma separated, match any)")
+            + _input("timezone", value.get("timezone"), label="Planning timezone, for example UTC"))
+    body += '<fieldset class="boxes"><legend>Scrum boards for sprint discovery</legend>'
+    found = {b["id"]: b["name"] for b in capacity.boards(con)}
+    for identity in value.get("boards", []):
+        found.setdefault(identity, f"Cached board {identity}")
+    for identity, name in found.items():
+        checked = "checked" if identity in value.get("boards", []) else ""
+        body += ('<label>' + _input("boards", identity, "checkbox", extra=checked)
+                 + render.esc(name) + "</label>")
+    body += "</fieldset>" + _weekly(
+        con, value, f"/{slug}/capacity/teams/{value.get('id') or 'new'}/members")
     body += '<button name="action" value="save">Save team</button></form>'
     return _page(slug, "Team and normal working hours", body, message)
+
+
+def _read_team_inputs(removed=()):
+    form = flask.request.form
+    value = _payload()
+    value.update(name=form.get("name", ""),
+                 components=[c.strip() for c in form.get("components", "").split(",")
+                             if c.strip()],
+                 timezone=form.get("timezone", ""),
+                 boards=[capacity._id(b) for b in form.getlist("boards")])
+    value["members"] = [m for m in value.get("members", []) if m["id"] not in removed]
+    if any(f'weekly:{field}:{member["id"]}:{i}' not in form
+           for member in value["members"] for i in range(7)
+           for field in ("work", "meetings")):
+        raise ValueError("Enter weekly Work and Meetings hours for all seven days.")
+    for member in value["members"]:
+        member["weekly"] = [
+            {field: form[f'weekly:{field}:{member["id"]}:{i}']
+             for field in ("work", "meetings")} for i in range(7)]
+    return value
 
 
 @bp.route("/<slug>/capacity/teams/<team_id>", methods=["GET", "POST"])
@@ -215,22 +248,7 @@ def team_form(slug, team_id):
         if flask.request.method == "GET":
             return _team_form(slug, con, value)
         try:
-            value = _payload()
-            value.update(name=flask.request.form.get("name", ""),
-                         components=[c.strip() for c in flask.request.form.get(
-                             "components", "").split(",") if c.strip()],
-                         timezone=flask.request.form.get("timezone", ""),
-                         boards=[capacity._id(b) for b in flask.request.form.getlist("boards")])
-            value["members"] = [m for m in value.get("members", [])
-                                if not flask.request.form.get(f'remove:{m["id"]}')]
-            if any(f'weekly:{field}:{member["id"]}:{i}' not in flask.request.form
-                   for member in value["members"] for i in range(7)
-                   for field in ("work", "meetings")):
-                raise ValueError("Enter weekly Work and Meetings hours for all seven days.")
-            for member in value["members"]:
-                member["weekly"] = [
-                    {field: flask.request.form[f'weekly:{field}:{member["id"]}:{i}']
-                     for field in ("work", "meetings")} for i in range(7)]
+            value = _read_team_inputs(flask.request.form.getlist("remove"))
             if flask.request.form.get("action") == "add_member":
                 _add_member(con, value, patterns=True)
                 return _team_form(slug, con, value)
@@ -245,6 +263,28 @@ def team_form(slug, team_id):
         except (ValueError, KeyError, TypeError) as exc:
             return _team_form(slug, con, value, str(exc)), (
                 409 if isinstance(exc, capacity.Conflict) else 400)
+
+
+@bp.post("/<slug>/capacity/teams/<team_id>/members")
+def team_members(slug, team_id):
+    """Add or remove a person on the unsaved team form. Writes nothing."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        if team_id != "new" and capacity.get_team(con, team_id) is None:
+            flask.abort(404)
+        url = f"/{slug}/capacity/teams/{team_id}/members"
+        remove = flask.request.args.get("remove")
+        try:
+            value = _read_team_inputs({remove} if remove else ())
+        except (ValueError, KeyError, TypeError) as exc:
+            return f'<div id="weekly">{_notice(str(exc))}</div>', 400
+        message = ""
+        if "add" in flask.request.args:
+            try:
+                _add_member(con, value, patterns=True)
+            except ValueError as exc:
+                message = str(exc)
+        return _weekly(con, value, url, message)
 
 
 def _proposed_dates(sprint, settings):
