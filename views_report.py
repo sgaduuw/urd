@@ -77,8 +77,10 @@ def flags_from(args, project, con):
     # a header that names it.
     urd.set_report_components(con, components)
 
+    # The rendered threshold box has no value, so a browser always sends it empty.
+    blank = [t for t in args.getlist("threshold") if t.strip()]
     try:
-        tiers = urd.parse_thresholds(args.getlist("threshold"), base=tiers)
+        tiers = urd.parse_thresholds(blank, base=tiers)
     except SystemExit as exc:
         problems.append(str(exc))
 
@@ -126,13 +128,17 @@ def _tabs(slug, active, query):
         fragment_url = f"{base}/sections/{key}" + (f"?{query}" if query else "")
         current = ' aria-current="page"' if key == active else ""
         links.append(
-            f'<a href="{render.esc(page_url)}" hx-get="{render.esc(fragment_url)}"'
+            f'<a id="tab-{key}" href="{render.esc(page_url)}" hx-get="{render.esc(fragment_url)}"'
             f' hx-target="#report" hx-push-url="{render.esc(page_url)}"{current}>'
             f"{render.esc(title)}</a>")
+    # Inside #report, so a tab swap also updates the tab Apply and Save as default
+    # submit: the controls form sits outside the fragment.
+    links.append(
+        f'<input type="hidden" name="section" value="{render.esc(active)}" form="controls">')
     return f'<nav class="tabs" aria-label="Report sections">{"".join(links)}</nav>'
 
 
-def _controls(project, flags, others, section):
+def _controls(project, flags, others):
     switcher = " ".join(
         f'<a href="/{render.esc(p.slug)}/">{render.esc(p.slug)}</a>' for p in others
         if p.slug != project.slug
@@ -141,14 +147,13 @@ def _controls(project, flags, others, section):
         f'<p class="warn">{render.esc(p)}</p>' for p in flags["problems"])
     return (
         f'<p><a href="/{render.esc(project.slug)}/capacity/">Plan capacity</a></p>'
-        f'<form method="get" action="/{render.esc(project.slug)}/" class="controls">'
+        f'<form method="get" action="/{render.esc(project.slug)}/" class="controls" id="controls">'
         f'<label>since <input name="since" value="{render.esc(flags["since"] or "")}"'
         f' placeholder="YYYY-MM-DD"></label>'
         f'<label>exclude epic <input name="exclude_epic"'
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
         f'<label>threshold <input name="threshold" placeholder="default=0.40"></label>'
         f'{_component_boxes(flags)}'
-        f'<input type="hidden" name="section" value="{render.esc(section)}">'
         f'<button type="submit">Apply</button>'
         f'<button type="submit" formmethod="post"'
         f' formaction="/{render.esc(project.slug)}/defaults">Save as default</button></form>'
@@ -216,7 +221,7 @@ def project(slug):
         finally:
             con.execute("ROLLBACK")
 
-    controls = _controls(found, flags, registry.projects(), section)
+    controls = _controls(found, flags, registry.projects())
     # Injected after <body> so the controls precede the report without the report
     # needing to know they exist.
     return page.replace("<body>", "<body>" + controls, 1)
