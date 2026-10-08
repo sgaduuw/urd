@@ -1,5 +1,6 @@
 """Native form flows for local capacity planning."""
 import json
+import re
 import urllib.parse
 from html.parser import HTMLParser
 
@@ -508,6 +509,60 @@ def test_correct_the_plan_error_renders_inside_plan_area():
     body = response.get_data(as_text=True)
     area = body[body.index('<div id="plan-area">'):]
     assert 'role="alert"' in area and "<pre>" in area
+
+
+def test_totals_matches_the_page_and_writes_nothing():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    page = browser.post(path, data=dict(form, action="preview")).get_data(as_text=True)
+    before = _capacity_tables(project.con)
+    body = browser.post(path + "/totals", data=form).get_data(as_text=True)
+    line = re.search(r'<p id="totals".*?</p>', body).group(0)
+    assert line in page
+    assert "31.5 focus hours" in line
+    assert 'id="available-0" hx-swap-oob="true"' in body
+    assert _capacity_tables(project.con) == before
+
+
+def test_totals_follow_an_edited_cell():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    form["work:person-a:2026-10-05"] = "3"
+    body = browser.post(path + "/totals", data=form).get_data(as_text=True)
+    assert "28.5 focus hours" in body
+
+
+def test_totals_reports_an_invalid_payload_in_place():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    response = browser.post(path + "/totals", data={"payload": "[]"})
+    assert response.status_code == 200
+    assert '<p id="totals" class="warn" role="alert">' in response.get_data(as_text=True)
+
+
+def test_totals_shows_the_validation_message():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    form.update({"work:person-a:2026-10-05": "20", "meetings:person-a:2026-10-05": "10"})
+    body = browser.post(path + "/totals", data=form).get_data(as_text=True)
+    assert "must not exceed 24" in body
+
+
+def test_rate_previews_a_manual_rate_without_saving():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    before = _capacity_tables(project.con)
+    form.update(rate_mode="manual", manual_rate="0.25")
+    body = browser.post(path + "/rate", data=form).get_data(as_text=True)
+    assert body.startswith('<div id="rate"')
+    assert 'id="totals" hx-swap-oob="true"' in body
+    assert "forecast: 7.875 points" in body
+    assert "(none).</p>" in body, "the recorded rate is the saved one, not the preview"
+    assert _capacity_tables(project.con) == before
 
 
 if __name__ == "__main__":

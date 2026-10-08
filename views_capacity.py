@@ -1,4 +1,5 @@
 """Native local forms for team and sprint capacity planning."""
+import contextlib
 import copy
 import hashlib
 import json
@@ -264,6 +265,34 @@ def _preview_id(con, value):
     return hashlib.sha256((history.source_id(con) + scope).encode()).hexdigest()
 
 
+def _live(base):
+    return (f' hx-post="{render.esc(base)}/totals" hx-trigger="input delay:400ms"'
+            ' hx-target="#totals" hx-swap="outerHTML"')
+
+
+def _totals_line(value, oob=False):
+    swap = ' hx-swap-oob="true"' if oob else ""
+    try:
+        totals = capacity.totals(value)
+    except ValueError as exc:
+        return f'<p id="totals" class="warn" role="alert"{swap}>{render.esc(exc)}</p>'
+    forecast = capacity.forecast(totals["focus_hours"], value.get("rate", {}))
+    focus = (render.esc(totals["focus_hours"]) if totals["focus_hours"] is not None
+             else "Incomplete")
+    shown = render.esc(forecast) if forecast is not None else "unavailable"
+    return (f'<p id="totals"{swap}><strong>{focus} focus hours</strong>'
+            f" · forecast: {shown} points</p>")
+
+
+def _total_cells(index, row, oob=False):
+    # Spans, not cells: a bare <td> in a fragment is dropped by the HTML parser.
+    swap = ' hx-swap-oob="true"' if oob else ""
+    return (f'<td><span id="available-{index}"{swap}>'
+            f'{render.esc(row.get("available_hours", ""))}</span></td>'
+            f'<td><span id="work-{index}"{swap}>'
+            f'{render.esc(row.get("work_hours", ""))}</span></td>')
+
+
 def _grid(value, base, picker, message=""):
     try:
         calendar = capacity.days(value["dates"]["start"], value["dates"]["end"])
@@ -277,8 +306,8 @@ def _grid(value, base, picker, message=""):
             'Work + Meetings must not exceed 24 hours per day.</p>'
             '<p><strong>Calculated totals:</strong> Available adds Work and Meetings. '
             'Focus applies only to Work. Meetings are already excluded from Work. '
-            'Use Preview to update the totals.</p>')
-    rows += ('<div class="capacity-scroll"><table class="urd capacity-grid">'
+            'Totals update as you type; Preview also refreshes the Jira commitment.</p>')
+    rows += (f'<div class="capacity-scroll"{_live(base)}><table class="urd capacity-grid">'
              '<thead><tr><th>Person</th>')
     rows += "".join(f'<th scope="col">{render.esc(d)}</th>' for d in calendar)
     rows += ('<th>Available (h)</th><th>Work (h)</th>'
@@ -287,7 +316,7 @@ def _grid(value, base, picker, message=""):
         by_member = {m["id"]: m for m in capacity.totals(value)["members"]}
     except ValueError:
         by_member = {}
-    for member in value["members"]:
+    for index, member in enumerate(value["members"]):
         identity = member["id"]
         rows += f'<tr><th scope="row">{render.esc(member["name"])}</th>'
         for day in calendar:
@@ -301,9 +330,8 @@ def _grid(value, base, picker, message=""):
             rows += "</td>"
         totals = by_member.get(identity, {})
         remove_url = f"{base}/members?remove={urllib.parse.quote(identity, safe='')}"
-        rows += (f'<td>{render.esc(totals.get("available_hours", ""))}</td>'
-                 f'<td>{render.esc(totals.get("work_hours", ""))}</td>'
-                 '<td><button type="submit" name="remove" value="' + render.esc(identity)
+        rows += (_total_cells(index, totals)
+                 + '<td><button type="submit" name="remove" value="' + render.esc(identity)
                  + f'" hx-post="{render.esc(remove_url)}" hx-target="#grid"'
                  ' hx-swap="outerHTML" aria-label="Remove ' + render.esc(member["name"])
                  + '">Remove</button></td></tr>')
@@ -321,17 +349,7 @@ def _grid(value, base, picker, message=""):
 
 
 def _summary(con, value, preview):
-    try:
-        totals = capacity.totals(value)
-        forecast = capacity.forecast(totals["focus_hours"], value.get("rate", {}))
-        focus = (render.esc(totals["focus_hours"]) if totals["focus_hours"] is not None
-                 else "Incomplete")
-        body = (f'<p><strong>{focus}'
-                f' focus hours</strong> · forecast: '
-                f'{render.esc(forecast) if forecast is not None else "unavailable"} points</p>')
-    except ValueError:
-        body = "<p>Correct the highlighted inputs to calculate capacity.</p>"
-    body += "".join(f'<p class="warn">{render.esc(warning)}</p>'
+    body = "".join(f'<p class="warn">{render.esc(warning)}</p>'
                     for warning in capacity._rate_warnings(con, value.get("rate", {})))
     if value.get("confirmation") is not None:
         original = capacity.get_plan(
@@ -399,10 +417,38 @@ def _plan_form(slug, con, value, message="", reason=""):
         con.execute("ROLLBACK")
 
 
+def _rate(con, value, form, base, message="", recorded=None):
+    recorded = value.get("rate", {}) if recorded is None else recorded
+    body = (f'<div id="rate" hx-post="{render.esc(base)}/rate" hx-trigger="change"'
+            ' hx-target="#rate" hx-swap="outerHTML">' + _notice(message))
+    body += '<label>Rate source for this save <select name="rate_mode">'
+    for mode, label in (("keep", "Keep the recorded rate"), ("none", "No rate"),
+                        ("manual", "Manual rate"), ("history", "Selected history")):
+        selected = "selected" if form.get("rate_mode", "keep") == mode else ""
+        body += f'<option value="{mode}" {selected}>{label}</option>'
+    body += '</select></label>'
+    body += _input("manual_rate", form.get("manual_rate", value.get("rate", {}).get("value")),
+                   "number", "Manual points per focus hour", 'min="0" step="any"')
+    body += ('<p>Recorded rate: ' + render.esc(recorded.get("value"))
+             + " (" + render.esc(recorded.get("kind", "none")) + ").</p>")
+    body += '<details><summary>Historical sprints for a weighted rate</summary>'
+    selected_history = set(form.getlist("history"))
+    for candidate in capacity.history_candidates(con, value):
+        checked = "checked" if str(candidate["sprint_id"]) in selected_history else ""
+        # Keep invalid selections submitted until cleared, so retries cannot silently drop them.
+        disabled = "" if candidate["eligible"] or checked else "disabled"
+        body += ('<label>' + _input(
+            "history", candidate["sprint_id"], "checkbox", extra=f"{checked} {disabled}")
+                 + render.esc(candidate["label"]) + " · " + render.esc(candidate["reason"])
+                 + "</label>")
+    body += "</details>"
+    return body + "</div>"
+
+
 def _render_plan_form(slug, con, value, message="", reason=""):
     current = capacity.sprint(con, value["sprint_id"])
     preview = history.baseline(con, value)
-    body = _summary(con, value, preview)
+    body = _totals_line(value) + _summary(con, value, preview)
     body += (f'<p>Team scope: {render.esc(", ".join(value["settings"]["components"]))}. '
              f'Timezone: {render.esc(value["settings"]["timezone"])}. '
              f'Jira metadata cached {render.esc(current.get("fetched_at"))}.</p>')
@@ -423,29 +469,8 @@ def _render_plan_form(slug, con, value, message="", reason=""):
                  + "I reviewed these date changes and my planning dates</label>")
     body += _grid(value, base, _member_picker(con, base + "/members"))
     body += _input("focus", value.get("focus"), "number", "Focus percentage",
-                   'min="0" max="100" step="any"')
-    form = flask.request.form
-    body += '<label>Rate source for this save <select name="rate_mode">'
-    for mode, label in (("keep", "Keep the recorded rate"), ("none", "No rate"),
-                        ("manual", "Manual rate"), ("history", "Selected history")):
-        selected = "selected" if form.get("rate_mode", "keep") == mode else ""
-        body += f'<option value="{mode}" {selected}>{label}</option>'
-    body += '</select></label>'
-    body += _input("manual_rate", form.get("manual_rate", value.get("rate", {}).get("value")),
-                   "number", "Manual points per focus hour", 'min="0" step="any"')
-    body += ('<p>Recorded rate: ' + render.esc(value.get("rate", {}).get("value"))
-             + " (" + render.esc(value.get("rate", {}).get("kind", "none")) + ").</p>")
-    body += '<details><summary>Historical sprints for a weighted rate</summary>'
-    selected_history = set(form.getlist("history"))
-    for candidate in capacity.history_candidates(con, value):
-        checked = "checked" if str(candidate["sprint_id"]) in selected_history else ""
-        # Keep invalid selections submitted until cleared, so retries cannot silently drop them.
-        disabled = "" if candidate["eligible"] or checked else "disabled"
-        body += ('<label>' + _input(
-            "history", candidate["sprint_id"], "checkbox", extra=f"{checked} {disabled}")
-                 + render.esc(candidate["label"]) + " · " + render.esc(candidate["reason"])
-                 + "</label>")
-    body += "</details>"
+                   'min="0" max="100" step="any"' + _live(base))
+    body += _rate(con, value, flask.request.form, base)
     body += _input("reason", reason, label="Reason (required for confirmed changes or voiding)")
     body += ('<div class="capacity-actions"><button name="action" value="preview">Preview</button>'
              '<button name="action" value="save">Save adjustment</button>'
@@ -488,6 +513,28 @@ def _render_plan_form(slug, con, value, message="", reason=""):
     body += "</details>"
     return _page(slug, f'{value["settings"]["name"]}: {current["name"]}',
                  f'<div id="plan-area">{_notice(message)}{body}</div>')
+
+
+def _chosen_rate(con, value, form, saved):
+    """The rate the form asks for. "keep" means the saved plan's rate, never the
+    submitted one, because the payload is client data."""
+    mode = form.get("rate_mode", "keep")
+    if mode == "manual":
+        return {"kind": "manual", "value": capacity.number(
+            form.get("manual_rate"), "Rate", missing=True), "sources": []}
+    if mode == "none":
+        return {"kind": "none", "value": None, "sources": []}
+    if mode == "history":
+        candidates = {str(c["sprint_id"]): c
+                      for c in capacity.history_candidates(con, value) if c["eligible"]}
+        selected = form.getlist("history")
+        if not selected or any(s not in candidates for s in selected):
+            raise ValueError("Select eligible historical sprints.")
+        return capacity.history_rate([candidates[s] for s in sorted(set(selected))])
+    if mode == "keep":
+        return copy.deepcopy(saved["rate"]) if saved else {
+            "kind": "none", "value": None, "sources": []}
+    raise ValueError("Choose a valid rate source.")
 
 
 def _read_plan_inputs(value, removed=()):
@@ -587,25 +634,7 @@ def plan_form(slug, team_id, sprint_id):
                     raise capacity.Conflict("The Jira preview or historical capacity changed. "
                                             "Review the new preview before saving. "
                                             "Your entries are retained.")
-                if mode == "manual":
-                    value["rate"] = {"kind": "manual", "value": capacity.number(
-                        flask.request.form.get("manual_rate"), "Rate", missing=True), "sources": []}
-                elif mode == "none":
-                    value["rate"] = {"kind": "none", "value": None, "sources": []}
-                elif mode == "history":
-                    candidates = {str(c["sprint_id"]): c
-                                  for c in capacity.history_candidates(con, value) if c["eligible"]}
-                    selected = flask.request.form.getlist("history")
-                    if not selected or any(s not in candidates for s in selected):
-                        raise ValueError("Select eligible historical sprints.")
-                    value["rate"] = capacity.history_rate(
-                        [candidates[s] for s in sorted(set(selected))])
-                elif mode == "keep":
-                    # The submitted rate is client data; only the saved plan's rate is recorded.
-                    value["rate"] = copy.deepcopy(saved["rate"]) if saved else {
-                        "kind": "none", "value": None, "sources": []}
-                else:
-                    raise ValueError("Choose a valid rate source.")
+                value["rate"] = _chosen_rate(con, value, flask.request.form, saved)
                 capacity.totals(value)
                 if action == "preview":
                     return _plan_form(slug, con, value, reason=reason)
@@ -652,6 +681,54 @@ def plan_members(slug, team_id, sprint_id):
                 message = str(exc)
         base = _plan_path(slug, value)
         return _grid(value, base, _member_picker(con, base + "/members"), message)
+
+
+def _fragment_value(team_id, sprint_id):
+    value = _read_plan_inputs(_payload())
+    if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
+        raise ValueError("The form belongs to a different team or sprint.")
+    return value
+
+
+@bp.post("/<slug>/capacity/plan/<team_id>/<int:sprint_id>/totals")
+def plan_totals(slug, team_id, sprint_id):
+    """Recalculate while typing. Reads the form, writes nothing."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        try:
+            value = _fragment_value(team_id, sprint_id)
+        except (ValueError, KeyError, TypeError) as exc:
+            return f'<p id="totals" class="warn" role="alert">{render.esc(exc)}</p>'
+        # The rate box shows its own problem; totals still update.
+        with contextlib.suppress(ValueError):
+            value["rate"] = _chosen_rate(con, value, flask.request.form,
+                                         capacity.get_plan(con, team_id, sprint_id))
+        try:
+            rows = capacity.totals(value)["members"]
+        except ValueError:
+            rows = [{} for _ in value["members"]]
+        cells = "".join(_total_cells(i, row, oob=True) for i, row in enumerate(rows))
+        return _totals_line(value) + cells
+
+
+@bp.post("/<slug>/capacity/plan/<team_id>/<int:sprint_id>/rate")
+def plan_rate(slug, team_id, sprint_id):
+    """Preview a rate choice. Reads the form, writes nothing."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        try:
+            value = _fragment_value(team_id, sprint_id)
+        except (ValueError, KeyError, TypeError) as exc:
+            return f'<div id="rate">{_notice(str(exc))}</div>', 400
+        recorded, message = value.get("rate", {}), ""
+        try:
+            value["rate"] = _chosen_rate(con, value, flask.request.form,
+                                         capacity.get_plan(con, team_id, sprint_id))
+        except ValueError as exc:
+            message = str(exc)
+        base = _plan_path(slug, value)
+        return (_rate(con, value, flask.request.form, base, message, recorded)
+                + _totals_line(value, oob=True))
 
 
 @bp.get("/<slug>/capacity/replace")
