@@ -274,10 +274,12 @@ CSS = (
 
 
 # Served files, not inline: the Content-Security-Policy allows only same-origin
-# scripts, which is what stops a markup injection from running one.
-SCRIPTS = ('<script src="/vendor/uplot.min.js"></script>'
-           '<script src="/vendor/htmx.min.js"></script>'
-           '<script src="/static/urd.js"></script>')
+# scripts, which is what stops a markup injection from running one. They go in
+# <head>, deferred: htmx restores history by swapping <body> and re-creates every
+# script in it, so a script in <body> would run again on each Back.
+SCRIPTS = ('<script defer src="/vendor/uplot.min.js"></script>'
+           '<script defer src="/vendor/htmx.min.js"></script>'
+           '<script defer src="/static/urd.js"></script>')
 
 
 def esc(text):
@@ -360,12 +362,12 @@ def page(header, body):
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{esc(scope)} flow report</title>"
         '<link rel="stylesheet" href="/vendor/uplot.min.css">'
-        f"<style>{CSS}</style></head><body>"
+        f"<style>{CSS}</style>{SCRIPTS}</head><body>"
         f"<header><h1>{esc(scope)}</h1><p>{header['issues']} tickets updated since "
         f"{esc(header['since'])}. Synced {esc(header['synced'])}. "
         f"{showing}{dropped}{window}{warn}</p></header>"
         + f'<div id="report">{body}</div>'
-        + SCRIPTS + "</body></html>\n"
+        + "</body></html>\n"
     )
 
 

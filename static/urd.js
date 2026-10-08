@@ -1,11 +1,24 @@
 /* Served from /static/urd.js. Additive only: every table is complete and
    readable without it, and every chart keeps its server-drawn SVG. */
 (function () {
+  /* init runs over the document and over every swapped fragment, and a swap can
+     hand back the element itself, so each matching element is found including
+     root and is marked once processed: a second pass must not double its handlers. */
+  function fresh(root, selector) {
+    var found = Array.prototype.slice.call(root.querySelectorAll(selector));
+    if (root.matches && root.matches(selector)) { found.unshift(root); }
+    return found.filter(function (el) {
+      if (el.hasAttribute('data-urd-init')) { return false; }
+      el.setAttribute('data-urd-init', '');
+      return true;
+    });
+  }
+
   /* Sorting is by the cell's text, numerically when every value in the column
      parses as a number. aria-sort is both the announced state and the only
      stored state, so there is no second copy to drift. */
   function sortable(root) {
-    root.querySelectorAll('table.sortable').forEach(function (table) {
+    fresh(root, 'table.sortable').forEach(function (table) {
       var head = table.tHead.rows[0];
       Array.prototype.forEach.call(head.cells, function (cell, index) {
         function apply() {
@@ -46,7 +59,7 @@
       var v = styles.getPropertyValue(name);
       return v ? v.trim() : fallback;
     }
-    root.querySelectorAll('.plot').forEach(function (box) {
+    fresh(root, '.plot').forEach(function (box) {
       var island = box.querySelector('script.plot-data');
       var svg = box.querySelector('svg');
       if (!island) { return; }

@@ -70,6 +70,9 @@ def test_capacity_pages_load_the_scripts_and_inline_none():
         html = browser.get(path).get_data(as_text=True)
         assert render.SCRIPTS in html, path
         assert not test_urd._EXECUTABLE_INLINE.search(html), path
+        # A history restore swaps <body> and re-creates every script in it.
+        head, body = html.split("<body", 1)
+        assert render.SCRIPTS in head and "<script" not in body, path
 
 
 def test_plan_confirm_revise_void_and_conflict():

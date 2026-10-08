@@ -403,6 +403,20 @@ def test_every_tab_link_has_a_stable_id():
         assert f'<a id="tab-{key}" ' in body, key
 
 
+def test_no_script_is_inside_the_body_a_history_restore_swaps():
+    """htmx 4 restores Back and Forward by swapping <body> and re-creates every
+    <script> in it, so a script there runs again: htmx itself, and urd.js
+    re-initialising what it already initialised."""
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    page = test_helpers.client(registry).get("/alpha/?section=flow").get_data(as_text=True)
+    body = page[page.index("<body"):]
+    executable = re.sub(r'<script type="application/json"[^>]*>.*?</script>', "", body,
+                        flags=re.S)
+    assert "<script" not in executable, "an executable script sits inside <body>"
+    assert page.index("<script") < page.index("<body"), "the scripts are not in <head>"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

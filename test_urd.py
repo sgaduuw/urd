@@ -3189,8 +3189,11 @@ def test_the_page_loads_its_scripts_from_served_files():
     assert _EXECUTABLE_INLINE.search("<script>alert(1)</script>")
     assert _EXECUTABLE_INLINE.search("<script type='text/javascript'>x</script>")
     assert not _EXECUTABLE_INLINE.search("<script type='application/json'>{}</script>")
+    head = html[:html.index("<body")]
     for src in ("/vendor/uplot.min.js", "/vendor/htmx.min.js", "/static/urd.js"):
-        assert f'<script src="{src}"></script>' in html, src
+        # In <head> with defer: a history restore swaps <body> and would re-run any
+        # script inside it.
+        assert f'<script defer src="{src}"></script>' in head, src
     assert '<link rel="stylesheet" href="/vendor/uplot.min.css">' in html
     assert not _EXECUTABLE_INLINE.search(html), "an inline script remains"
 
@@ -4083,6 +4086,63 @@ def test_the_embedded_javascript_parses():
         else:
             assert source.count("{") == source.count("}"), f"{name}.js braces"
             assert source.count("(") == source.count(")"), f"{name}.js parens"
+
+
+_INIT_CHECK = r"""
+// A fake DOM just big enough for init(): elements that remember attributes and count
+// what the script attaches to them.
+let handlers = 0, charts = 0, settle;
+const el = (selector, extra) => Object.assign({
+  attrs: {},
+  hasAttribute(k) { return k in this.attrs; },
+  setAttribute(k, v) { this.attrs[k] = v; },
+  matches(s) { return s === selector; },
+  querySelectorAll() { return []; },
+}, extra);
+const cell = () => ({ addEventListener() { handlers++; }, setAttribute() {},
+                      getAttribute() { return null; } });
+const table = () => el('table.sortable', {
+  tHead: { rows: [{ cells: [cell(), cell()] }] }, tBodies: [{ rows: [] }] });
+const island = { textContent: JSON.stringify(
+  { kind: 'lines', xLabel: 'x', x: [1, 2], series: [{ label: 'a', data: [1, 2] }] }) };
+const plot = () => el('.plot', {
+  clientWidth: 100, querySelector: (s) => (s === 'script.plot-data' ? island : null) });
+const first = table();
+const page = { querySelectorAll: (s) => (s === 'table.sortable' ? [first] : []) };
+global.window = { addEventListener() {} };
+global.getComputedStyle = () => ({ getPropertyValue: () => '' });
+global.uPlot = function () { charts++; };
+global.uPlot.paths = { bars() {} };
+global.document = Object.assign(page, {
+  documentElement: {},
+  addEventListener: (name, fn) => { settle = fn; } });
+eval(require('fs').readFileSync(process.argv[1], 'utf8'));
+const out = [handlers];
+settle({ target: page });             // the same tables again
+out.push(handlers);
+settle({ target: table() });          // a swapped-in table that is the root itself
+out.push(handlers);
+const box = plot();
+settle({ target: box }); settle({ target: box });   // a plot that is the root, twice
+out.push(charts);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_init_is_idempotent_and_includes_the_swapped_root_itself():
+    """A swap hands init the element it replaced, which can itself be the table or
+    the plot, and the page runs init again over what it already set up. Each
+    element must be set up once, or a click sorts twice and a chart is drawn over
+    itself."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    assert node, "node is needed to run urd.js"
+    done = subprocess.run([node, "-e", _INIT_CHECK, str(_URD_JS)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    # Two cells, a click and a keydown handler each: 4 per table.
+    assert json.loads(done.stdout) == [4, 4, 8, 1], done.stdout
 
 
 def test_the_vendored_library_is_present_and_makes_no_requests():
