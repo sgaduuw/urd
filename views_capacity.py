@@ -196,10 +196,11 @@ def _weekly(con, value, members_url, message=""):
 
 
 def _team_form(slug, con, value, message=""):
-    # The off-screen Save is the first submit button, so Enter never fires a Remove.
+    # The off-screen first submit button is disabled, so Enter in a field submits
+    # nothing: it can neither save half a roster nor fire a Remove.
     body = ('<form id="team" method="post">'
-            '<button type="submit" name="action" value="save" class="default-submit" '
-            'tabindex="-1" aria-hidden="true">Save team</button>'
+            '<button type="submit" class="default-submit" tabindex="-1" '
+            'aria-hidden="true" disabled>Save team</button>'
             + _input("name", value.get("name"), label="Team name")
             + _input("components", ", ".join(value.get("components", [])),
                      label="Jira components (comma separated, match any)")
@@ -727,7 +728,9 @@ def plan_members(slug, team_id, sprint_id):
             except ValueError as exc:
                 message = str(exc)
         base = _plan_path(slug, value)
-        return _grid(value, base, _member_picker(con, base + "/members"), message)
+        # The totals line sits outside #grid, so it travels with the grid out of band.
+        return (_grid(value, base, _member_picker(con, base + "/members"), message)
+                + _totals_line(value, oob=True))
 
 
 def _fragment_value(team_id, sprint_id):

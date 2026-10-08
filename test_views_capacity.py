@@ -645,12 +645,33 @@ def test_team_remove_without_javascript_still_works():
     assert first["id"] not in [m["id"] for m in saved["members"]]
 
 
-def test_the_first_team_submit_button_is_save_not_remove():
-    # Enter in a team field fires the form's first submit button, so it must not be a Remove.
+def test_the_first_team_submit_button_is_disabled_so_enter_does_nothing():
+    # Enter in a team field fires the form's first submit button. A disabled one
+    # makes implicit submission do nothing, and it is never a Remove.
     project, browser, saved_team = setup()
     body = browser.get(f"/alpha/capacity/teams/{saved_team['id']}").get_data(as_text=True)
     first = _Buttons(body, "team").found[0]
-    assert (first.get("name"), first.get("value")) == ("action", "save"), first
+    assert "disabled" in first, "Enter in a team field would submit the form"
+    assert first.get("class") == "default-submit", first
+
+
+def test_removing_a_person_refreshes_the_totals():
+    """Removing a person changes the focus hours and the forecast. The grid
+    fragment must bring the totals line with it, or #totals keeps the removed
+    person's hours."""
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    first = json.loads(form["payload"])["members"][0]["id"]
+    response = browser.post(f"{path}/members?remove={first}", data=form)
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    after = Form(f'<form id="plan">{body}</form>').values
+    expected = browser.post(path + "/totals", data=dict(form, payload=after["payload"]))
+    line = re.search(r'<p id="totals"[^>]*>(.*?)</p>', expected.get_data(as_text=True)).group(1)
+    oob = re.search(r'<p id="totals"[^>]*hx-swap-oob="true"[^>]*>(.*?)</p>', body)
+    assert oob, "the members fragment carries no totals update"
+    assert oob.group(1) == line, (oob.group(1), line)
 
 
 if __name__ == "__main__":
