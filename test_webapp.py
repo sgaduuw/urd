@@ -17,18 +17,6 @@ import urd
 import webapp
 
 
-def test_report_html_returns_what_report_writes():
-    """One rendering path, not two. If these ever diverge, the served page and the
-    archived file stop being the same report."""
-    con = test_helpers.configured_db()
-    urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
-    path = os.path.join(tempfile.mkdtemp(), "r.html")
-    urd.report(con, path)
-    with open(path) as fh:
-        written = fh.read()
-    assert urd.report_html(con) == written
-
-
 def test_a_database_derived_before_a_view_existed_repairs_itself():
     """Defining the chart views only in `derive` breaks every database derived
     before a new one is added: the derived tables are current and the report
@@ -55,8 +43,7 @@ def test_rendering_a_current_database_writes_nothing_to_it():
 
 
 def test_report_html_writes_no_file():
-    """`report` defaults to writing report.html in the working directory. The
-    server calls this thousands of times, so it must not touch the disk at all."""
+    """The server calls this thousands of times, so it must not touch the disk."""
     con = test_helpers.configured_db()
     urd.derive(con, "To Do,In Progress,Review,Done", "In Progress", "Review")
     workdir = tempfile.mkdtemp()
@@ -300,6 +287,7 @@ def test_a_system_exit_from_a_route_becomes_a_500_not_a_dropped_connection():
     response = app.test_client().get("/boom-system-exit")
     assert response.status_code == 500
     assert "simulated operational failure" in response.get_data(as_text=True)
+    assert response.headers["Content-Security-Policy"] == webapp.CSP
 
 
 def test_an_ordinary_exception_from_a_route_is_a_notice_not_a_bare_500():
@@ -693,7 +681,7 @@ def test_the_cli_reports_a_held_lock_as_such():
     held.execute("CREATE TABLE t (i INTEGER)")
     try:
         done = subprocess.run(
-            [sys.executable, "urd.py", "--db", path, "report"],
+            [sys.executable, "urd.py", "--db", path, "sql", "SELECT 1"],
             capture_output=True, text=True, timeout=60)
     finally:
         held.execute("ROLLBACK")
@@ -710,7 +698,7 @@ def test_a_bad_path_is_not_reported_as_a_held_lock():
     import subprocess
     bad_path = os.path.join(tempfile.mkdtemp(), "no-such-dir", "x.duckdb")
     done = subprocess.run(
-        [sys.executable, "urd.py", "--db", bad_path, "report"],
+        [sys.executable, "urd.py", "--db", bad_path, "sql", "SELECT 1"],
         capture_output=True, text=True, timeout=60)
     combined = done.stdout + done.stderr
     assert done.returncode != 0
@@ -733,7 +721,7 @@ def test_a_block_related_ioexception_does_not_collide_with_the_lock_phrase():
     urd.open_db = fake_open_db
     try:
         try:
-            urd.main(["--db", "irrelevant.duckdb", "report"])
+            urd.main(["--db", "irrelevant.duckdb", "sql", "SELECT 1"])
             raise AssertionError("expected SystemExit")
         except SystemExit as exc:
             message = str(exc)
@@ -776,6 +764,43 @@ def test_seed_from_env_and_the_wizard_derive_the_same_slug():
                                  "URD_SINCE": "2026-01-01"})
     seeded = [p.slug for p in registry.projects()]
     assert seeded == [urd.project_slug("PROJ,OTHER")], seeded
+
+
+def test_every_html_response_carries_the_script_policy():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry)
+    browser = test_helpers.client(registry)
+    for path in ("/alpha/", "/alpha/capacity/", "/no-such-project/", "/setup"):
+        response = browser.get(path)
+        assert response.mimetype == "text/html", path
+        assert response.headers.get("Content-Security-Policy") == (
+            "script-src 'self'; object-src 'none'; base-uri 'none'"), path
+    assert "Content-Security-Policy" not in browser.get("/vendor/htmx.min.js").headers
+
+
+def test_vendor_route_serves_only_the_listed_files():
+    import hashlib
+    browser = test_helpers.client(test_helpers.registry())
+    response = browser.get("/vendor/htmx.min.js")
+    assert response.status_code == 200
+    assert hashlib.sha256(response.get_data()).hexdigest() == (
+        "e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f")
+    assert response.mimetype == "text/javascript"
+    assert browser.get("/vendor/uplot.min.css").mimetype == "text/css"
+    for name in ("README.md", "..%2Fwebapp.py", "nope.js"):
+        assert browser.get(f"/vendor/{name}").status_code == 404, name
+    script = browser.get("/static/urd.js")
+    assert script.status_code == 200 and script.mimetype == "text/javascript"
+    assert browser.get("/static/nope.js").status_code == 404
+
+
+def test_a_project_named_static_keeps_its_own_routes():
+    registry = test_helpers.registry()
+    test_helpers.synced(registry, slug="static")
+    browser = test_helpers.client(registry)
+    assert browser.get("/static/capacity/").status_code == 200
+    assert browser.get("/static/urd.js").mimetype == "text/javascript"
+
 
 
 if __name__ == "__main__":

@@ -6,4 +6,3 @@ __pycache__/
 .superpowers/
 urd-data/
 *.duckdb
-report.html

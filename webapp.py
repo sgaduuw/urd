@@ -4,12 +4,20 @@ Routes live in three blueprints rather than here, so three implementers can work
 on them without touching one file. Keep that split: collapsing them back into this
 module makes every route change serial.
 """
+import pathlib
+
 import flask
 import werkzeug.exceptions
 
 import projects
 import render
 import urd
+
+# htmx 4 executes every <script> in swapped content and evaluates hx-on and js:
+# values with new Function, with no setting to stop either. This policy does:
+# an inline script needs a nonce or 'unsafe-inline', new Function needs
+# 'unsafe-eval', and neither is granted. Escaping stays the first defence.
+CSP = "script-src 'self'; object-src 'none'; base-uri 'none'"
 
 
 def slug_or_404(registry, slug):
@@ -28,7 +36,9 @@ def _error_page(exc):
 
 
 def create_app(registry):
-    app = flask.Flask(__name__)
+    # No built-in /static route: it would swallow /static/... for a project whose
+    # slug is "static". urd.js is served from the same fixed list as the vendor files.
+    app = flask.Flask(__name__, static_folder=None)
     app.config["REGISTRY"] = registry
 
     # Loopback binding does not stop a cross-origin form POST: any page open in
@@ -60,6 +70,12 @@ def create_app(registry):
         if host not in ("127.0.0.1", "localhost", "[::1]"):
             flask.abort(403)
 
+    @app.after_request
+    def _script_policy(response):
+        if response.mimetype == "text/html":
+            response.headers["Content-Security-Policy"] = CSP
+        return response
+
     # Imported here, not at module scope: views_report and views_jobs both
     # import webapp themselves, and a plain top-level import on both sides
     # would need one of the two modules to finish loading before the other
@@ -74,6 +90,20 @@ def create_app(registry):
     app.register_blueprint(views_report.bp)
     app.register_blueprint(views_jobs.bp)
     app.register_blueprint(views_wizard.bp)
+
+    here = pathlib.Path(__file__).parent
+    served = {"vendor/htmx.min.js": "text/javascript",
+              "vendor/uplot.min.js": "text/javascript",
+              "vendor/uplot.min.css": "text/css",
+              "static/urd.js": "text/javascript"}
+
+    @app.get("/<any(vendor, static):folder>/<name>")
+    def served_file(folder, name):
+        # A fixed list, never a path join on request data.
+        key = f"{folder}/{name}"
+        if key not in served:
+            flask.abort(404)
+        return flask.send_file(here / key, mimetype=served[key], max_age=86400)
 
     @app.errorhandler(404)
     def not_found(_):
@@ -114,7 +144,8 @@ def create_app(registry):
             start_response(
                 "500 INTERNAL SERVER ERROR",
                 [("Content-Type", "text/html; charset=utf-8"),
-                 ("Content-Length", str(len(body)))],
+                 ("Content-Length", str(len(body))),
+                 ("Content-Security-Policy", CSP)],
             )
             return [body]
 
@@ -142,7 +173,7 @@ def report_ready(project, con=None):
     return bool(scope["last_sync_at"]) and _has_issues_view(con)
 
 
-def project_page(project, tiers=None, con=None):
+def project_page(project, tiers=None, con=None, section="attention", tabs=""):
     """The report, or a notice explaining why there is not one yet.
 
     Every state here is a page rather than an exception, because these are all
@@ -195,4 +226,4 @@ def project_page(project, tiers=None, con=None):
             actions=[("Refresh", f"/{project.slug}/refresh", "post"),
                      ("Capacity", f"/{project.slug}/capacity/", "get")],
         )
-    return urd.report_html(con, tiers)
+    return urd.report_html(con, tiers, section, tabs)

@@ -82,6 +82,7 @@ def test_the_image_copies_every_runtime_module():
                     if source.endswith(".py"):
                         shutil.copy2(ROOT / source, target / source)
         shutil.copytree(ROOT / "vendor", target / "vendor")
+        shutil.copytree(ROOT / "static", target / "static")
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
         result = subprocess.run(

@@ -3174,15 +3174,28 @@ def test_a_plain_table_gains_no_script_hooks():
     assert "tabindex" not in out
 
 
-def test_every_script_the_page_carries_is_inline():
-    """The library is vendored, so the count is structural (library + wiring) plus
-    one JSON island per interactive chart. What must hold regardless of that count
-    is that not one of them is fetched."""
-    html = render.page(_header(), [("S", [render.table(_epic_rows(2), headers=["epic"],
-                                                       sortable=True)])])
-    assert html.count("<script") >= 2, "library and wiring should both be present"
-    assert not re.search(r"<script[^>]*\bsrc\s*=", html)
-    assert "uPlot" in html, "the charting library is not embedded"
+_EXECUTABLE_INLINE = re.compile(
+    r"<script(?![^>]*\bsrc=)(?![^>]*type=[\"']application/json[\"'])[^>]*>", re.I)
+
+
+def test_the_page_loads_its_scripts_from_served_files():
+    con = _derived("reopened", "skipped_progress", "two_sprints")
+    chart, rows = _flow_rows(con, "created_vs_closed")
+    island = render.figure(chart, rows, "sub", con)
+    assert 'type="application/json" class="plot-data"' in island, "no data island to guard"
+    html = render.page(_header(), render.report_body(
+        "", "S", render.table(_epic_rows(2), headers=["epic"], sortable=True) + island))
+    assert 'class="plot-data"' in html
+    assert _EXECUTABLE_INLINE.search("<script>alert(1)</script>")
+    assert _EXECUTABLE_INLINE.search("<script type='text/javascript'>x</script>")
+    assert not _EXECUTABLE_INLINE.search("<script type='application/json'>{}</script>")
+    head = html[:html.index("<body")]
+    for src in ("/vendor/uplot.min.js", "/vendor/htmx.min.js", "/static/urd.js"):
+        # In <head> with defer: a history restore swaps <body> and would re-run any
+        # script inside it.
+        assert f'<script defer src="{src}"></script>' in head, src
+    assert '<link rel="stylesheet" href="/vendor/uplot.min.css">' in html
+    assert not _EXECUTABLE_INLINE.search(html), "an inline script remains"
 
 
 def _people_bars(n, prefix="Firstname Surname "):
@@ -3848,7 +3861,7 @@ def _header(**over):
 
 def test_the_page_states_the_scope_it_covers():
     """A report must never be mistaken for one covering a different slice."""
-    html = render.page(_header(), [("Flow over time", ["<p>chart</p>"])])
+    html = render.page(_header(), render.report_body("", "Flow over time", "<p>chart</p>"))
     # The composed scope, not two substrings that could each appear anywhere.
     assert "PROJ / TEAM" in html
     assert "2026-01-01" in html
@@ -3859,7 +3872,7 @@ def test_the_page_states_the_scope_it_covers():
 
 
 def test_a_scope_with_no_component_says_so_without_a_stray_separator():
-    html = render.page(_header(component=None), [])
+    html = render.page(_header(component=None), "")
     assert "PROJ" in html
     assert "/" not in html[html.index("<h1>"):html.index("</h1>")]
 
@@ -3869,8 +3882,8 @@ def test_a_scope_containing_markup_is_escaped_not_injected():
     against a fixed number tests the page's structure rather than its escaping.
     The question is whether DATA can add one, so the same page is rendered with
     and without a hostile value and the counts must match."""
-    hostile = render.page(_header(project="P&D", component="<script>x</script>"), [])
-    benign = render.page(_header(project="P&D", component="TEAM"), [])
+    hostile = render.page(_header(project="P&D", component="<script>x</script>"), "")
+    benign = render.page(_header(project="P&D", component="TEAM"), "")
     assert "<script>x</script>" not in hostile, "the scope value was injected raw"
     assert "&lt;script&gt;x&lt;/script&gt;" in hostile, "the scope value was not escaped"
     assert hostile.count("<script") == benign.count("<script"), "data added a script element"
@@ -3879,10 +3892,10 @@ def test_a_scope_containing_markup_is_escaped_not_injected():
 
 def test_outstanding_sync_errors_are_visible_in_the_header():
     """41 tickets and 3 errors: the 3 has to be the error count, not the ticket count."""
-    html = render.page(_header(errors=3), [])
+    html = render.page(_header(errors=3), "")
     assert "3 sync error" in html
     # And the warning is conditional, not decoration that is always on.
-    assert "sync error" not in render.page(_header(errors=0), [])
+    assert "sync error" not in render.page(_header(errors=0), "")
 
 
 def test_a_chart_below_its_threshold_becomes_a_warning_not_a_plot():
@@ -3900,7 +3913,7 @@ def test_a_coverage_strip_with_no_tickets_at_all_does_not_divide_by_zero():
 
 def test_every_class_the_page_emits_is_styled():
     """An unstyled warning is an invisible warning, which is the failure this guards."""
-    emitted = render.page(_header(errors=3), []) + render.coverage_strip("X", 1, 10, 0.5)
+    emitted = render.page(_header(errors=3), "") + render.coverage_strip("X", 1, 10, 0.5)
     classes = set(re.findall(r'class="([\w-]+)"', emitted))
     assert classes, "no classes found: the regex, not the page, is what broke"
     for cls in classes:
@@ -3921,58 +3934,6 @@ _FETCHING = (
     r"\bWebSocket\b", r"sendBeacon", r"EventSource", r"importScripts",
     r"\bimport\s*\(",
 )
-
-
-def _assert_nothing_is_fetched(html, label=""):
-    """Nothing in this page causes a network request when it is opened.
-
-    Anchors are removed first: a link is followed only if a human clicks it,
-    unlike everything in _FETCHING, which the browser acts on with no choice.
-    `href` is then forbidden in what remains, which is what keeps a stylesheet
-    <link> out while leaving <a href> in.
-    """
-    without_anchors = re.sub(r"<a\b[^>]*>", "", html)
-    for pattern in _FETCHING + (r"\bhref\s*=",):
-        found = re.search(pattern, without_anchors)
-        assert not found, f"{label}{pattern} can reach the network: {found.group(0)!r}"
-
-
-def test_report_writes_a_standalone_file_with_no_external_references():
-    con = _derived("reopened", "skipped_progress", "two_sprints")
-    out = os.path.join(tempfile.mkdtemp(), "report.html")
-    assert urd.report(con, out) == 0
-    html = pathlib.Path(out).read_text()
-    assert html.startswith("<!doctype html>")
-    _assert_nothing_is_fetched(html)
-
-
-def test_the_fetch_check_is_not_blinded_by_its_own_exemptions():
-    """Two exemptions live in that helper: anchors are stripped, and URLs are not
-    themselves an offence. Both are the kind that quietly widen until nothing is
-    caught, so each fetching form is fed in and must still be rejected."""
-    must_catch = [
-        '<img src="https://x/y.png">',
-        '<img src="/local/y.png">',
-        '<link href="x.css" rel="stylesheet">',
-        "<style>@import 'x.css';</style>",
-        "<style>a{background:url(x.png)}</style>",
-        '<script>fetch("/telemetry")</script>',
-        "<script>new XMLHttpRequest()</script>",
-        "<script>new WebSocket('wss://x')</script>",
-        "<script>navigator.sendBeacon('/x')</script>",
-        "<script>new EventSource('/x')</script>",
-        "<script>import('/x.js')</script>",
-    ]
-    for markup in must_catch:
-        try:
-            _assert_nothing_is_fetched(markup)
-        except AssertionError:
-            continue
-        raise AssertionError(f"not caught: {markup}")
-    # And the two things that must stay allowed.
-    _assert_nothing_is_fetched(
-        '<a href="https://example.invalid/browse/PROJ-1">PROJ-1</a>')
-    _assert_nothing_is_fetched("<script>/*! https://github.com/leeoniya/uPlot */</script>")
 
 
 def test_an_interactive_chart_still_ships_its_server_drawn_svg():
@@ -4086,6 +4047,9 @@ def test_interactivity_is_declared_on_plot_kinds_only():
                                   "combo"), f"{chart.key}: {chart.kind}"
 
 
+_URD_JS = pathlib.Path(__file__).parent / "static" / "urd.js"
+
+
 def test_a_stacked_band_is_filled_opaquely():
     """A stack is drawn largest cumulative first with smaller bands painted over
     it, so a translucent fill shows every band underneath and renders each one as
@@ -4096,7 +4060,7 @@ def test_a_stacked_band_is_filled_opaquely():
     decides the fill rather than the whole script."""
     # Both "fill:" and "stacked": three lines mention a fill, and the other two
     # are fillAlpha and the points config.
-    candidates = [ln for ln in render.PLOT_SCRIPT.splitlines()
+    candidates = [ln for ln in _URD_JS.read_text().splitlines()
                   if "fill:" in ln and "stacked" in ln]
     assert len(candidates) == 1, candidates
     fill_line = candidates[0]
@@ -4112,7 +4076,7 @@ def test_the_embedded_javascript_parses():
     quietly passing."""
     import shutil
     import subprocess
-    for name, source in (("sort", render.SORT_SCRIPT), ("plot", render.PLOT_SCRIPT)):
+    for name, source in (("urd", _URD_JS.read_text()),):
         path = os.path.join(tempfile.mkdtemp(), f"{name}.js")
         pathlib.Path(path).write_text(source)
         node = shutil.which("node")
@@ -4122,6 +4086,63 @@ def test_the_embedded_javascript_parses():
         else:
             assert source.count("{") == source.count("}"), f"{name}.js braces"
             assert source.count("(") == source.count(")"), f"{name}.js parens"
+
+
+_INIT_CHECK = r"""
+// A fake DOM just big enough for init(): elements that remember attributes and count
+// what the script attaches to them.
+let handlers = 0, charts = 0, settle;
+const el = (selector, extra) => Object.assign({
+  attrs: {},
+  hasAttribute(k) { return k in this.attrs; },
+  setAttribute(k, v) { this.attrs[k] = v; },
+  matches(s) { return s === selector; },
+  querySelectorAll() { return []; },
+}, extra);
+const cell = () => ({ addEventListener() { handlers++; }, setAttribute() {},
+                      getAttribute() { return null; } });
+const table = () => el('table.sortable', {
+  tHead: { rows: [{ cells: [cell(), cell()] }] }, tBodies: [{ rows: [] }] });
+const island = { textContent: JSON.stringify(
+  { kind: 'lines', xLabel: 'x', x: [1, 2], series: [{ label: 'a', data: [1, 2] }] }) };
+const plot = () => el('.plot', {
+  clientWidth: 100, querySelector: (s) => (s === 'script.plot-data' ? island : null) });
+const first = table();
+const page = { querySelectorAll: (s) => (s === 'table.sortable' ? [first] : []) };
+global.window = { addEventListener() {} };
+global.getComputedStyle = () => ({ getPropertyValue: () => '' });
+global.uPlot = function () { charts++; };
+global.uPlot.paths = { bars() {} };
+global.document = Object.assign(page, {
+  documentElement: {},
+  addEventListener: (name, fn) => { settle = fn; } });
+eval(require('fs').readFileSync(process.argv[1], 'utf8'));
+const out = [handlers];
+settle({ target: page });             // the same tables again
+out.push(handlers);
+settle({ target: table() });          // a swapped-in table that is the root itself
+out.push(handlers);
+const box = plot();
+settle({ target: box }); settle({ target: box });   // a plot that is the root, twice
+out.push(charts);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_init_is_idempotent_and_includes_the_swapped_root_itself():
+    """A swap hands init the element it replaced, which can itself be the table or
+    the plot, and the page runs init again over what it already set up. Each
+    element must be set up once, or a click sorts twice and a chart is drawn over
+    itself."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    assert node, "node is needed to run urd.js"
+    done = subprocess.run([node, "-e", _INIT_CHECK, str(_URD_JS)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    # Two cells, a click and a keydown handler each: 4 per table.
+    assert json.loads(done.stdout) == [4, 4, 8, 1], done.stdout
 
 
 def test_the_vendored_library_is_present_and_makes_no_requests():
@@ -4136,6 +4157,7 @@ def test_the_vendored_library_is_present_and_makes_no_requests():
         assert not re.search(pattern, js), f"vendored js can reach the network: {pattern}"
         assert not re.search(pattern, css), f"vendored css can reach the network: {pattern}"
     assert "uPlot" in js
+    assert (root / "vendor" / "htmx.min.js").exists(), "htmx must be vendored"
     assert (root / "vendor" / "README.md").exists(), "provenance must be recorded"
 
 
@@ -4173,9 +4195,7 @@ def test_a_linked_key_is_escaped_in_both_the_href_and_the_text():
 
 def test_the_report_header_reflects_the_database_it_read():
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    out = os.path.join(tempfile.mkdtemp(), "report.html")
-    urd.report(con, out)
-    html = pathlib.Path(out).read_text()
+    html = urd.report_html(con)
     expected = con.execute("SELECT count(*) FROM issues").fetchone()[0]
     assert f"{expected} tickets" in html
 
@@ -4772,7 +4792,7 @@ def test_a_selected_component_is_remembered_and_cleared():
 
 def test_opening_a_database_refreshes_a_view_older_than_the_filter():
     """Every database derived before this feature has an excluded_tickets that
-    knows nothing about components, so a report run without a re-derive would
+    knows nothing about components, so a render without a re-derive would
     filter nothing at all and say it had. Refreshed on open rather than by the
     setter, which runs on every rendered page and would race the derive a
     background sync runs on the same connection."""
@@ -4825,19 +4845,19 @@ def test_the_components_on_offer_survive_their_own_filter():
 def test_the_page_names_the_epics_it_left_out():
     """A report with a trash epic removed and one without look identical, and they
     say different things about every total."""
-    html = render.page(_header(excluded=["PROJ-100"]), [])
+    html = render.page(_header(excluded=["PROJ-100"]), "")
     assert "PROJ-100" in html
     assert "excluded" in html.lower()
-    assert "excluded" not in render.page(_header(), []).lower()
+    assert "excluded" not in render.page(_header(), "").lower()
 
 
 def test_the_page_names_the_components_it_was_filtered_to():
     """Two slices of one project look identical and say different things about
     every total, the same reason the excluded epics are named."""
-    html = render.page(_header(components=["TEAM", "OTHER"]), [])
+    html = render.page(_header(components=["TEAM", "OTHER"]), "")
     assert "TEAM, OTHER" in html
     assert "showing" in html.lower()
-    assert "showing" not in render.page(_header(), []).lower()
+    assert "showing" not in render.page(_header(), "").lower()
 
 
 def test_every_chart_respects_the_report_window():
@@ -4857,7 +4877,7 @@ def test_every_chart_respects_the_report_window():
             f"{chart.key}: exempt={exempt} but "
             f"{'uses' if used else 'ignores'} the window")
         if chart.coverage and not exempt:
-            assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores --since"
+            assert "in_window(" in chart.coverage, f"{chart.key} coverage ignores the since window"
 
 
 def test_no_chart_reaches_around_the_scope_views():
@@ -4918,13 +4938,13 @@ def test_the_page_states_the_window_every_chart_obeys():
     """A windowed report and a whole-history one look identical otherwise, and
     they say different things. It matters most where the window changes a chart's
     meaning rather than just its length."""
-    windowed = render.page(_header(window="2026-03-01"), [])
+    windowed = render.page(_header(window="2026-03-01"), "")
     assert "2026-03-01 onward" in windowed
-    assert "onward" not in render.page(_header(), [])
+    assert "onward" not in render.page(_header(), "")
     # "Every chart" stopped being true the moment one was exempted, and a header
     # that overclaims is worse than one that says nothing: a reader quotes the
     # aging table as if it covered the window.
-    named = render.page(_header(window="2026-03-01", exempt=["Aging work in progress"]), [])
+    named = render.page(_header(window="2026-03-01", exempt=["Aging work in progress"]), "")
     assert "Every chart" not in named, named[named.index("<header>"):][:400]
     assert "Aging work in progress" in named
 
@@ -4995,9 +5015,8 @@ def test_no_chart_measures_an_individual():
 
 def test_the_whole_report_renders_end_to_end():
     con = _derived("reopened", "skipped_progress", "two_sprints")
-    out = os.path.join(tempfile.mkdtemp(), "report.html")
-    urd.report(con, out)
-    html = pathlib.Path(out).read_text()
+    # The page shows one section at a time, so the whole report is every tab.
+    html = "".join(urd.report_body(con, None, slug) for slug, _ in urd.SECTION_TABS)
     for chart in chart_specs.CHARTS:
         # A chart below its coverage threshold still names itself, in the strip.
         assert chart.title in html, f"{chart.key} missing from the page"

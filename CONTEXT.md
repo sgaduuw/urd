@@ -14,7 +14,7 @@ recorded only as code, it is not claimed as rationale.
 ## What urd is for
 
 A local tool that mirrors one Jira project's activity into DuckDB and
-renders a single self-contained HTML report, serving four readers from
+serves a single HTML report to four readers from
 one page:
 
 1. **Flow health for a team lead**: where work piles up, what is aging.
@@ -22,8 +22,8 @@ one page:
 3. **Retro material for the team**: rework, carry-over, cycle time trend.
 4. **Individual contribution evidence**: throughput, review load, handoffs.
 
-The report is shared as the HTML file itself. There is no server, no
-per-reader variant, and no scheduled run.
+The report is read in `urd serve`; a capacity plan can be exported as HTML.
+There is no per-reader variant and no scheduled run.
 
 ## Why not Jira's own reports
 

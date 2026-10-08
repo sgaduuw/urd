@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """urd: mirror one Jira project's ticket history into DuckDB and report on it.
 
-Three verbs. `sync` is the only one that touches the network and the only one
-that writes raw_issues. `derive` and `report` are offline and repeatable, which
-is what makes changing a metric definition cheap.
+Verbs: `sync`, `derive`, `sql` and `serve`. `sync` is the only one that touches
+the network and the only one that writes raw_issues. `derive` is offline and
+repeatable, which is what makes changing a metric definition cheap. `serve` renders
+the report; `sql` runs a query.
 """
 import argparse
 import base64
@@ -299,13 +300,13 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 CREATE TABLE IF NOT EXISTS excluded_epics (
     -- Epics whose whole subtree is left out of the report. Set at report time, so
-    -- flipping it costs a report run rather than a re-derive.
+    -- flipping it costs a render rather than a re-derive.
     key VARCHAR PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS report_components (
     -- The components the report is narrowed to, empty meaning every one of
     -- them. Set at report time like the epic exclusion, so a slice costs a
-    -- report run rather than a re-sync: `sync --component` bounds what the
+    -- render rather than a re-sync: `sync --component` bounds what the
     -- mirror holds, this bounds what a page shows of it.
     name VARCHAR PRIMARY KEY
 );
@@ -349,7 +350,7 @@ def open_db(path=DB_DEFAULT):
     for column in SCOPE_COLUMNS:
         con.execute(f"ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS {column} VARCHAR")
     # A database derived before the component filter existed has an
-    # excluded_tickets that ignores report_components, so a report run without a
+    # excluded_tickets that ignores report_components, so a render without a
     # re-derive would filter nothing and its header would say it had. Here
     # rather than in set_report_components, because that runs on every rendered
     # page: DDL there conflicts with the derive a background sync is running on
@@ -488,7 +489,7 @@ def set_report_window(con, since):
         try:
             datetime.strptime(since, "%Y-%m-%d")
         except (ValueError, TypeError):
-            raise SystemExit(f"--since wants YYYY-MM-DD, got {since!r}") from None
+            raise SystemExit(f"since wants YYYY-MM-DD, got {since!r}") from None
     con.execute("DELETE FROM report_window")
     con.execute("INSERT INTO report_window VALUES (?)", [since or UNBOUNDED])
     con.execute(WINDOW_MACRO)
@@ -1648,16 +1649,9 @@ def refresh_chart_views(con):
     return True
 
 
-def report_html(con, tiers=None):
-    """The report as a string. `report` writes this to a file.
-
-    One rendering path, not two: the served page and the archived file are the
-    same bytes, so a chart cannot look different depending on how it was asked
-    for.
-    """
-    refresh_chart_views(con)
+def report_header(con):
     scope = load_scope(con)
-    header = {
+    return {
         "project": scope["project"] or "unknown",
         "component": scope["component"],
         "since": scope["earliest_since"] or "unknown",
@@ -1670,18 +1664,19 @@ def report_html(con, tiers=None):
         "errors": con.execute("SELECT count(*) FROM sync_errors").fetchone()[0],
         "issues": con.execute("SELECT count(*) FROM issues").fetchone()[0],
     }
-    sections = render_sections(con, tiers)
-    planning = capacity.report_section(con)
-    if planning:
-        sections.append(("Sprint capacity", [planning]))
-    return render.page(header, sections)
 
 
-def report(con, path="report.html", tiers=None):
-    with open(path, "w") as fh:
-        fh.write(report_html(con, tiers))
-    print(f"wrote {path}")
-    return 0
+def report_body(con, tiers=None, section="attention", tabs=""):
+    refresh_chart_views(con)
+    return render.report_body(tabs, SECTION_TITLES[section],
+                              section_html(con, tiers, section))
+
+
+def report_html(con, tiers=None, section="attention", tabs=""):
+    """The served report page with one section. The fragment route returns
+    report_body alone, so the page and a tab switch show the same bytes."""
+    body = report_body(con, tiers, section, tabs)
+    return render.page(report_header(con), body)
 
 
 def parse_thresholds(pairs, base=None):
@@ -1695,7 +1690,7 @@ def parse_thresholds(pairs, base=None):
     for pair in pairs or ():
         name, sep, raw = str(pair).partition("=")
         if not sep or not name:
-            raise SystemExit(f"--threshold wants tier=share, got {pair!r}")
+            raise SystemExit(f"threshold wants tier=share, got {pair!r}")
         if name not in chart_specs.THRESHOLDS:
             raise SystemExit(
                 f"unknown threshold tier {name!r}; "
@@ -1704,9 +1699,9 @@ def parse_thresholds(pairs, base=None):
         try:
             share = float(raw)
         except ValueError:
-            raise SystemExit(f"--threshold {name}: {raw!r} is not a number") from None
+            raise SystemExit(f"threshold {name}: {raw!r} is not a number") from None
         if not 0 <= share <= 1:
-            raise SystemExit(f"--threshold {name}: {share} is not a share between 0 and 1")
+            raise SystemExit(f"threshold {name}: {share} is not a share between 0 and 1")
         tiers[name] = share
     return tiers
 
@@ -1758,6 +1753,22 @@ def run_chart(con, chart, tiers=None):
     return render.figure(chart, rows, subtitle, con, link_base)
 
 
+# Tab order and URL slugs. The chart tabs must match chart_specs.SECTIONS,
+# which a test checks.
+SECTION_TABS = (("attention", "Attention today"), ("flow", "Flow over time"),
+                ("commitments", "Commitments"), ("retrospective", "Retrospective"),
+                ("capacity", "Capacity"))
+SECTION_TITLES = dict(SECTION_TABS)
+
+
+def section_html(con, tiers, section):
+    """One tab's content. Only that section's charts are computed."""
+    if section == "capacity":
+        return capacity.report_section(con) or "<p>No confirmed capacity plans.</p>"
+    title = SECTION_TITLES[section]
+    return "".join(run_chart(con, c, tiers) for c in chart_specs.CHARTS if c.section == title)
+
+
 def render_sections(con, tiers=None):
     return [
         (
@@ -1791,25 +1802,6 @@ def build_parser():
         "--abandoned-status",
         help="done-category statuses meaning dropped rather than delivered, "
              "comma separated. Counted separately, never as delivery.")
-
-    p_report = sub.add_parser("report", help="write report.html from the derived tables")
-    p_report.add_argument(
-        "--threshold", action="append", metavar="TIER=SHARE",
-        help="minimum coverage before a chart is replaced by a strip, e.g. "
-             "points=0.4. Repeatable, remembered between runs.")
-    p_report.add_argument(
-        "--exclude-epic", action="append", metavar="KEY",
-        help="leave this epic and every ticket under it out of every chart. "
-             "Repeatable, remembered between runs; pass an empty value to clear.")
-    p_report.add_argument(
-        "--component", action="append", metavar="NAME",
-        help="narrow every chart to this component. Repeatable, remembered "
-             f"between runs; pass an empty value to clear, or {NO_COMPONENT} "
-             "for the tickets that carry none.")
-    p_report.add_argument(
-        "--since", metavar="YYYY-MM-DD",
-        help="the date every chart measures from. Remembered between runs; "
-             "pass 1900-01-01 to go back to everything.")
 
     p_sql = sub.add_parser("sql", help="run a query against the database")
     p_sql.add_argument("query")
@@ -1940,25 +1932,6 @@ def main(argv=None):
             args.parked_status if args.parked_status is not None else scope["parked_status"],
         )
         return 0
-
-    if args.verb == "report":
-        scope = load_scope(con)
-        set_report_window(con, args.since or scope["report_since"])
-        # An empty --exclude-epic clears the list, which is why this is not just
-        # `args.exclude_epic or stored`: passing "" has to mean something.
-        if args.exclude_epic is not None:
-            set_excluded_epics(con, args.exclude_epic)
-        else:
-            set_excluded_epics(con, stored_excluded_epics(con))
-        # Same as --exclude-epic: passing "" has to mean clear, so this is not
-        # just `args.component or stored`.
-        if args.component is not None:
-            set_report_components(con, args.component)
-        else:
-            set_report_components(con, stored_report_components(con))
-        tiers = parse_thresholds(args.threshold, base=stored_thresholds(con))
-        save_scope(con, thresholds=format_thresholds(tiers))
-        return report(con, tiers=tiers)
 
 
 if __name__ == "__main__":

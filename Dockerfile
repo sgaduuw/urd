@@ -14,6 +14,7 @@ COPY urd.py charts.py render.py projects.py wizard.py webapp.py ./
 COPY views_report.py views_jobs.py views_wizard.py ./
 COPY capacity.py capacity_history.py views_capacity.py ./
 COPY vendor/ ./vendor/
+COPY static/ ./static/
 
 # The volume, not a layer: the database is the only state and a restart must keep
 # it. Nothing about the scope or the token is baked in; both arrive at runtime.

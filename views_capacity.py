@@ -1,7 +1,9 @@
 """Native local forms for team and sprint capacity planning."""
+import contextlib
 import copy
 import hashlib
 import json
+import urllib.parse
 import uuid
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -26,6 +28,8 @@ GRID_CSS = """
 .capacity-grid td label { display: flex; align-items: center; gap: 6px;
     justify-content: space-between; white-space: nowrap; }
 .capacity-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.default-submit { position: absolute; left: -10000px; width: 1px; height: 1px;
+    overflow: hidden; }
 """
 
 
@@ -36,11 +40,20 @@ def _project(slug):
     return project
 
 
+def _notice(message):
+    return f'<p class="warn" role="alert">{render.esc(message)}</p>' if message else ""
+
+
+def _plan_path(slug, value):
+    return f'/{slug}/capacity/plan/{value["team_id"]}/{value["sprint_id"]}'
+
+
 def _page(slug, title, body, message=""):
-    notice = f'<p class="warn" role="alert">{render.esc(message)}</p>' if message else ""
+    notice = _notice(message)
     nav = (f'<nav><a href="/{slug}/">Report</a> · '
            f'<a href="/{slug}/capacity/">Capacity</a></nav>')
-    return render.notice(title, []).replace("</style>", GRID_CSS + "</style>", 1).replace(
+    return render.notice(title, []).replace(
+        "</style>", GRID_CSS + "</style>" + render.SCRIPTS, 1).replace(
         "</body>", nav + notice + body + "</body>", 1)
 
 
@@ -92,14 +105,16 @@ def _add_member(con, value, patterns=False):
     value["members"].append(member)
 
 
-def _member_picker(con):
+def _member_picker(con, members_url=None, target="#grid"):
     options = '<option value="">Choose a Jira person (optional)</option>' + "".join(
         f'<option value="{render.esc(account)}">{render.esc(name)}</option>'
         for account, name in _people(con).items())
+    htmx = (f' hx-post="{render.esc(members_url)}?add=1" hx-target="{target}"'
+            f' hx-swap="outerHTML"' if members_url else "")
     return ('<fieldset><legend>Add a person</legend><label>Jira person '
             f'<select name="new_account">{options}</select></label>'
             + _input("new_name", label="Or local display name")
-            + '<button name="action" value="add_member">Add person</button></fieldset>')
+            + f'<button name="action" value="add_member"{htmx}>Add person</button></fieldset>')
 
 
 @bp.get("/<slug>/capacity/")
@@ -152,24 +167,12 @@ def catalogue(slug):
     return flask.redirect(f"/{slug}/capacity/")
 
 
-def _team_form(slug, con, value, message=""):
-    body = ('<form id="team" method="post">' + _hidden(value)
-            + _input("name", value.get("name"), label="Team name")
-            + _input("components", ", ".join(value.get("components", [])),
-                     label="Jira components (comma separated, match any)")
-            + _input("timezone", value.get("timezone"), label="Planning timezone, for example UTC"))
-    body += '<fieldset class="boxes"><legend>Scrum boards for sprint discovery</legend>'
-    found = {b["id"]: b["name"] for b in capacity.boards(con)}
-    for identity in value.get("boards", []):
-        found.setdefault(identity, f"Cached board {identity}")
-    for identity, name in found.items():
-        checked = "checked" if identity in value.get("boards", []) else ""
-        body += ('<label>' + _input("boards", identity, "checkbox", extra=checked)
-                 + render.esc(name) + "</label>")
-    body += ('</fieldset><p id="weekly-hours-help">Normal Work and Meetings hours are copied '
-             'into new sprints. Work excludes meetings; focus applies only to Work. '
-             'Enter 0 for none; blank means not entered. Work + Meetings must not exceed '
-             '24 hours per day.</p>')
+def _weekly(con, value, members_url, message=""):
+    body = ('<div id="weekly">' + _notice(message) + _hidden(value)
+            + '<p id="weekly-hours-help">Normal Work and Meetings hours are copied '
+              'into new sprints. Work excludes meetings; focus applies only to Work. '
+              'Enter 0 for none; blank means not entered. Work + Meetings must not exceed '
+              '24 hours per day.</p>')
     body += ('<div class="capacity-scroll"><table class="urd capacity-grid">'
              '<thead><tr><th>Person</th>')
     body += "".join(f"<th>{d}</th>" for d in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
@@ -184,10 +187,56 @@ def _team_form(slug, con, value, message=""):
                     extra=f'min="0" max="24" step="any" aria-label="{render.esc(member["name"])} '
                           f'day {index + 1} {label} hours" aria-describedby="weekly-hours-help"')
             body += "</td>"
-        body += "<td>" + _input(f'remove:{member["id"]}', "yes", "checkbox") + "</td></tr>"
-    body += "</tbody></table></div>" + _member_picker(con)
+        remove_url = f"{members_url}?remove={urllib.parse.quote(member['id'], safe='')}"
+        body += ('<td><button type="submit" name="remove" value="' + render.esc(member["id"])
+                 + f'" hx-post="{render.esc(remove_url)}" hx-target="#weekly"'
+                 ' hx-swap="outerHTML" aria-label="Remove ' + render.esc(member["name"])
+                 + '">Remove</button></td></tr>')
+    return body + "</tbody></table></div>" + _member_picker(con, members_url, "#weekly") + "</div>"
+
+
+def _team_form(slug, con, value, message=""):
+    # The off-screen first submit button is disabled, so Enter in a field submits
+    # nothing: it can neither save half a roster nor fire a Remove.
+    body = ('<form id="team" method="post">'
+            '<button type="submit" class="default-submit" tabindex="-1" '
+            'aria-hidden="true" disabled>Save team</button>'
+            + _input("name", value.get("name"), label="Team name")
+            + _input("components", ", ".join(value.get("components", [])),
+                     label="Jira components (comma separated, match any)")
+            + _input("timezone", value.get("timezone"), label="Planning timezone, for example UTC"))
+    body += '<fieldset class="boxes"><legend>Scrum boards for sprint discovery</legend>'
+    found = {b["id"]: b["name"] for b in capacity.boards(con)}
+    for identity in value.get("boards", []):
+        found.setdefault(identity, f"Cached board {identity}")
+    for identity, name in found.items():
+        checked = "checked" if identity in value.get("boards", []) else ""
+        body += ('<label>' + _input("boards", identity, "checkbox", extra=checked)
+                 + render.esc(name) + "</label>")
+    body += "</fieldset>" + _weekly(
+        con, value, f"/{slug}/capacity/teams/{value.get('id') or 'new'}/members")
     body += '<button name="action" value="save">Save team</button></form>'
     return _page(slug, "Team and normal working hours", body, message)
+
+
+def _read_team_inputs(removed=()):
+    form = flask.request.form
+    value = _payload()
+    value.update(name=form.get("name", ""),
+                 components=[c.strip() for c in form.get("components", "").split(",")
+                             if c.strip()],
+                 timezone=form.get("timezone", ""),
+                 boards=[capacity._id(b) for b in form.getlist("boards")])
+    value["members"] = [m for m in value.get("members", []) if m["id"] not in removed]
+    if any(f'weekly:{field}:{member["id"]}:{i}' not in form
+           for member in value["members"] for i in range(7)
+           for field in ("work", "meetings")):
+        raise ValueError("Enter weekly Work and Meetings hours for all seven days.")
+    for member in value["members"]:
+        member["weekly"] = [
+            {field: form[f'weekly:{field}:{member["id"]}:{i}']
+             for field in ("work", "meetings")} for i in range(7)]
+    return value
 
 
 @bp.route("/<slug>/capacity/teams/<team_id>", methods=["GET", "POST"])
@@ -201,22 +250,7 @@ def team_form(slug, team_id):
         if flask.request.method == "GET":
             return _team_form(slug, con, value)
         try:
-            value = _payload()
-            value.update(name=flask.request.form.get("name", ""),
-                         components=[c.strip() for c in flask.request.form.get(
-                             "components", "").split(",") if c.strip()],
-                         timezone=flask.request.form.get("timezone", ""),
-                         boards=[capacity._id(b) for b in flask.request.form.getlist("boards")])
-            value["members"] = [m for m in value.get("members", [])
-                                if not flask.request.form.get(f'remove:{m["id"]}')]
-            if any(f'weekly:{field}:{member["id"]}:{i}' not in flask.request.form
-                   for member in value["members"] for i in range(7)
-                   for field in ("work", "meetings")):
-                raise ValueError("Enter weekly Work and Meetings hours for all seven days.")
-            for member in value["members"]:
-                member["weekly"] = [
-                    {field: flask.request.form[f'weekly:{field}:{member["id"]}:{i}']
-                     for field in ("work", "meetings")} for i in range(7)]
+            value = _read_team_inputs(flask.request.form.getlist("remove"))
             if flask.request.form.get("action") == "add_member":
                 _add_member(con, value, patterns=True)
                 return _team_form(slug, con, value)
@@ -231,6 +265,28 @@ def team_form(slug, team_id):
         except (ValueError, KeyError, TypeError) as exc:
             return _team_form(slug, con, value, str(exc)), (
                 409 if isinstance(exc, capacity.Conflict) else 400)
+
+
+@bp.post("/<slug>/capacity/teams/<team_id>/members")
+def team_members(slug, team_id):
+    """Add or remove a person on the unsaved team form. Writes nothing."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        if team_id != "new" and capacity.get_team(con, team_id) is None:
+            flask.abort(404)
+        url = f"/{slug}/capacity/teams/{team_id}/members"
+        remove = flask.request.args.get("remove")
+        try:
+            value = _read_team_inputs({remove} if remove else ())
+        except (ValueError, KeyError, TypeError) as exc:
+            return f'<div id="weekly">{_notice(str(exc))}</div>', 400
+        message = ""
+        if "add" in flask.request.args:
+            try:
+                _add_member(con, value, patterns=True)
+            except ValueError as exc:
+                message = str(exc)
+        return _weekly(con, value, url, message)
 
 
 def _proposed_dates(sprint, settings):
@@ -251,21 +307,49 @@ def _preview_id(con, value):
     return hashlib.sha256((history.source_id(con) + scope).encode()).hexdigest()
 
 
-def _grid(value):
+def _live(base):
+    return (f' hx-post="{render.esc(base)}/totals" hx-trigger="input delay:400ms"'
+            ' hx-target="#totals" hx-swap="outerHTML"')
+
+
+def _totals_line(value, oob=False):
+    swap = ' hx-swap-oob="true"' if oob else ""
+    try:
+        totals = capacity.totals(value)
+        forecast = capacity.forecast(totals["focus_hours"], value.get("rate", {}))
+    except ValueError as exc:
+        return f'<p id="totals" class="warn" role="alert"{swap}>{render.esc(exc)}</p>'
+    focus = (render.esc(totals["focus_hours"]) if totals["focus_hours"] is not None
+             else "Incomplete")
+    shown = render.esc(forecast) if forecast is not None else "unavailable"
+    return (f'<p id="totals"{swap}><strong>{focus} focus hours</strong>'
+            f" · forecast: {shown} points</p>")
+
+
+def _total_cells(index, row, oob=False):
+    # Spans, not cells: a bare <td> in a fragment is dropped by the HTML parser.
+    swap = ' hx-swap-oob="true"' if oob else ""
+    return (f'<td><span id="available-{index}"{swap}>'
+            f'{render.esc(row.get("available_hours", ""))}</span></td>'
+            f'<td><span id="work-{index}"{swap}>'
+            f'{render.esc(row.get("work_hours", ""))}</span></td>')
+
+
+def _grid(value, base, picker, message=""):
     try:
         calendar = capacity.days(value["dates"]["start"], value["dates"]["end"])
     except ValueError:
         calendar = sorted({d for m in value["members"]
                            for d in m.get("daily", {})})
-    rows = ('<h2>Availability in hours</h2>'
+    rows = (_notice(message) + _hidden(value) + '<h2>Availability in hours</h2>'
             '<p id="daily-hours-help">Enter <strong>Work</strong> hours excluding meetings '
             'and <strong>Meetings</strong> hours for each day. Exclude leave and time allocated '
             'to other teams. Enter 0 for none; blank means not entered. '
             'Work + Meetings must not exceed 24 hours per day.</p>'
             '<p><strong>Calculated totals:</strong> Available adds Work and Meetings. '
             'Focus applies only to Work. Meetings are already excluded from Work. '
-            'Use Preview to update the totals.</p>')
-    rows += ('<div class="capacity-scroll"><table class="urd capacity-grid">'
+            'Totals update as you type; Preview also refreshes the Jira commitment.</p>')
+    rows += (f'<div class="capacity-scroll"{_live(base)}><table class="urd capacity-grid">'
              '<thead><tr><th>Person</th>')
     rows += "".join(f'<th scope="col">{render.esc(d)}</th>' for d in calendar)
     rows += ('<th>Available (h)</th><th>Work (h)</th>'
@@ -274,7 +358,7 @@ def _grid(value):
         by_member = {m["id"]: m for m in capacity.totals(value)["members"]}
     except ValueError:
         by_member = {}
-    for member in value["members"]:
+    for index, member in enumerate(value["members"]):
         identity = member["id"]
         rows += f'<tr><th scope="row">{render.esc(member["name"])}</th>'
         for day in calendar:
@@ -287,10 +371,12 @@ def _grid(value):
                           f'{render.esc(day)} {label} hours" aria-describedby="daily-hours-help"')
             rows += "</td>"
         totals = by_member.get(identity, {})
-        rows += (f'<td>{render.esc(totals.get("available_hours", ""))}</td>'
-                 f'<td>{render.esc(totals.get("work_hours", ""))}</td><td>'
-                 + _input(f"remove:{identity}", "yes", "checkbox",
-                          extra=f'aria-label="Remove {render.esc(member["name"])}"') + "</td></tr>")
+        remove_url = f"{base}/members?remove={urllib.parse.quote(identity, safe='')}"
+        rows += (_total_cells(index, totals)
+                 + '<td><button type="submit" name="remove" value="' + render.esc(identity)
+                 + f'" hx-post="{render.esc(remove_url)}" hx-target="#grid"'
+                 ' hx-swap="outerHTML" aria-label="Remove ' + render.esc(member["name"])
+                 + '">Remove</button></td></tr>')
     rows += "</tbody></table></div>"
     outside = [(m["name"], d, cell) for m in value["members"]
                for d, cell in m.get("daily", {}).items() if d not in calendar]
@@ -301,21 +387,11 @@ def _grid(value):
                         f'Work: {render.esc(cell.get("work"))} h; '
                         f'Meetings: {render.esc(cell.get("meetings"))} h</p>'
                         for n, d, cell in outside) + "</details>"
-    return rows
+    return f'<div id="grid">{rows}{picker}</div>'
 
 
 def _summary(con, value, preview):
-    try:
-        totals = capacity.totals(value)
-        forecast = capacity.forecast(totals["focus_hours"], value.get("rate", {}))
-        focus = (render.esc(totals["focus_hours"]) if totals["focus_hours"] is not None
-                 else "Incomplete")
-        body = (f'<p><strong>{focus}'
-                f' focus hours</strong> · forecast: '
-                f'{render.esc(forecast) if forecast is not None else "unavailable"} points</p>')
-    except ValueError:
-        body = "<p>Correct the highlighted inputs to calculate capacity.</p>"
-    body += "".join(f'<p class="warn">{render.esc(warning)}</p>'
+    body = "".join(f'<p class="warn">{render.esc(warning)}</p>'
                     for warning in capacity._rate_warnings(con, value.get("rate", {})))
     if value.get("confirmation") is not None:
         original = capacity.get_plan(
@@ -383,27 +459,15 @@ def _plan_form(slug, con, value, message="", reason=""):
         con.execute("ROLLBACK")
 
 
-def _render_plan_form(slug, con, value, message="", reason=""):
-    current = capacity.sprint(con, value["sprint_id"])
-    preview = history.baseline(con, value)
-    body = _summary(con, value, preview)
-    body += (f'<p>Team scope: {render.esc(", ".join(value["settings"]["components"]))}. '
-             f'Timezone: {render.esc(value["settings"]["timezone"])}. '
-             f'Jira metadata cached {render.esc(current.get("fetched_at"))}.</p>')
-    body += '<form id="plan" method="post">' + _hidden(value)
-    body += _input("source_id", _preview_id(con, value), "hidden")
-    body += _input("start", value["dates"]["start"], "date", "Planning start date")
-    body += _input("end", value["dates"]["end"], "date", "Planning last date")
-    if _date_mismatch(value, current):
-        dates = _proposed_dates(current, value["settings"])
-        body += (f'<p class="warn">Jira dates changed to {render.esc(dates["start"])} through '
-                 f'{render.esc(dates["end"])}. Review the dates and retained hours.</p>'
-                 '<label>' + _input("reconcile_dates", "yes", "checkbox")
-                 + "I reviewed these date changes and my planning dates</label>")
-    body += _grid(value) + _member_picker(con)
-    body += _input("focus", value.get("focus"), "number", "Focus percentage",
-                   'min="0" max="100" step="any"')
-    form = flask.request.form
+def _saved_rate(con, team_id, sprint_id):
+    """The rate on the saved plan: what "recorded" means, whatever a form carries."""
+    saved = capacity.get_plan(con, team_id, sprint_id)
+    return saved["rate"] if saved else {"kind": "none", "value": None, "sources": []}
+
+
+def _rate(con, value, form, base, recorded, message=""):
+    body = (f'<div id="rate" hx-post="{render.esc(base)}/rate" hx-trigger="change"'
+            ' hx-target="#rate" hx-swap="outerHTML">' + _notice(message))
     body += '<label>Rate source for this save <select name="rate_mode">'
     for mode, label in (("keep", "Keep the recorded rate"), ("none", "No rate"),
                         ("manual", "Manual rate"), ("history", "Selected history")):
@@ -412,8 +476,8 @@ def _render_plan_form(slug, con, value, message="", reason=""):
     body += '</select></label>'
     body += _input("manual_rate", form.get("manual_rate", value.get("rate", {}).get("value")),
                    "number", "Manual points per focus hour", 'min="0" step="any"')
-    body += ('<p>Recorded rate: ' + render.esc(value.get("rate", {}).get("value"))
-             + " (" + render.esc(value.get("rate", {}).get("kind", "none")) + ").</p>")
+    body += ('<p>Recorded rate: ' + render.esc(recorded.get("value"))
+             + " (" + render.esc(recorded.get("kind", "none")) + ").</p>")
     body += '<details><summary>Historical sprints for a weighted rate</summary>'
     selected_history = set(form.getlist("history"))
     for candidate in capacity.history_candidates(con, value):
@@ -425,6 +489,36 @@ def _render_plan_form(slug, con, value, message="", reason=""):
                  + render.esc(candidate["label"]) + " · " + render.esc(candidate["reason"])
                  + "</label>")
     body += "</details>"
+    return body + "</div>"
+
+
+def _render_plan_form(slug, con, value, message="", reason=""):
+    current = capacity.sprint(con, value["sprint_id"])
+    preview = history.baseline(con, value)
+    body = _totals_line(value) + _summary(con, value, preview)
+    body += (f'<p>Team scope: {render.esc(", ".join(value["settings"]["components"]))}. '
+             f'Timezone: {render.esc(value["settings"]["timezone"])}. '
+             f'Jira metadata cached {render.esc(current.get("fetched_at"))}.</p>')
+    base = _plan_path(slug, value)
+    body += (f'<form id="plan" method="post" hx-post="{render.esc(base)}"'
+             ' hx-target="#plan-area" hx-select="#plan-area" hx-swap="outerHTML">')
+    body += _input("source_id", _preview_id(con, value), "hidden")
+    # Enter submits via the first submit button, which must not be a Remove.
+    body += ('<button type="submit" name="action" value="preview" class="default-submit" '
+             'tabindex="-1" aria-hidden="true">Preview</button>')
+    body += _input("start", value["dates"]["start"], "date", "Planning start date")
+    body += _input("end", value["dates"]["end"], "date", "Planning last date")
+    if _date_mismatch(value, current):
+        dates = _proposed_dates(current, value["settings"])
+        body += (f'<p class="warn">Jira dates changed to {render.esc(dates["start"])} through '
+                 f'{render.esc(dates["end"])}. Review the dates and retained hours.</p>'
+                 '<label>' + _input("reconcile_dates", "yes", "checkbox")
+                 + "I reviewed these date changes and my planning dates</label>")
+    body += _grid(value, base, _member_picker(con, base + "/members"))
+    body += _input("focus", value.get("focus"), "number", "Focus percentage",
+                   'min="0" max="100" step="any"' + _live(base))
+    body += _rate(con, value, flask.request.form, base,
+                  _saved_rate(con, value["team_id"], value["sprint_id"]))
     body += _input("reason", reason, label="Reason (required for confirmed changes or voiding)")
     body += ('<div class="capacity-actions"><button name="action" value="preview">Preview</button>'
              '<button name="action" value="save">Save adjustment</button>'
@@ -465,15 +559,37 @@ def _render_plan_form(slug, con, value, message="", reason=""):
                  f'{revision["action"]} · {render.esc(revision["reason"])} · '
                  f'<a href="?version={revision["version"]}">View saved revision</a></p>')
     body += "</details>"
-    return _page(slug, f'{value["settings"]["name"]}: {current["name"]}', body, message)
+    return _page(slug, f'{value["settings"]["name"]}: {current["name"]}',
+                 f'<div id="plan-area">{_notice(message)}{body}</div>')
 
 
-def _read_plan_inputs(value):
+def _chosen_rate(con, value, form, saved):
+    """The rate the form asks for. "keep" means the saved plan's rate, never the
+    submitted one, because the payload is client data."""
+    mode = form.get("rate_mode", "keep")
+    if mode == "manual":
+        return {"kind": "manual", "value": capacity.number(
+            form.get("manual_rate"), "Rate", missing=True), "sources": []}
+    if mode == "none":
+        return {"kind": "none", "value": None, "sources": []}
+    if mode == "history":
+        candidates = {str(c["sprint_id"]): c
+                      for c in capacity.history_candidates(con, value) if c["eligible"]}
+        selected = form.getlist("history")
+        if not selected or any(s not in candidates for s in selected):
+            raise ValueError("Select eligible historical sprints.")
+        return capacity.history_rate([candidates[s] for s in sorted(set(selected))])
+    if mode == "keep":
+        return copy.deepcopy(saved["rate"]) if saved else {
+            "kind": "none", "value": None, "sources": []}
+    raise ValueError("Choose a valid rate source.")
+
+
+def _read_plan_inputs(value, removed=()):
     form = flask.request.form
     value["dates"] = {"start": form.get("start", ""), "end": form.get("end", "")}
     value["focus"] = form.get("focus", "")
-    value["members"] = [m for m in value.get("members", [])
-                        if not form.get(f'remove:{m["id"]}')]
+    value["members"] = [m for m in value.get("members", []) if m["id"] not in removed]
     for member in value["members"]:
         for field in ("work", "meetings"):
             prefix = f'{field}:{member["id"]}:'
@@ -528,7 +644,7 @@ def plan_form(slug, team_id, sprint_id):
             return _plan_form(slug, con, saved)
         value, reason = saved, flask.request.form.get("reason", "")
         try:
-            value = _read_plan_inputs(_payload())
+            value = _read_plan_inputs(_payload(), flask.request.form.getlist("remove"))
             if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
                 raise ValueError("The form belongs to a different team or sprint.")
             action = flask.request.form.get("action", "preview")
@@ -566,25 +682,7 @@ def plan_form(slug, team_id, sprint_id):
                     raise capacity.Conflict("The Jira preview or historical capacity changed. "
                                             "Review the new preview before saving. "
                                             "Your entries are retained.")
-                if mode == "manual":
-                    value["rate"] = {"kind": "manual", "value": capacity.number(
-                        flask.request.form.get("manual_rate"), "Rate", missing=True), "sources": []}
-                elif mode == "none":
-                    value["rate"] = {"kind": "none", "value": None, "sources": []}
-                elif mode == "history":
-                    candidates = {str(c["sprint_id"]): c
-                                  for c in capacity.history_candidates(con, value) if c["eligible"]}
-                    selected = flask.request.form.getlist("history")
-                    if not selected or any(s not in candidates for s in selected):
-                        raise ValueError("Select eligible historical sprints.")
-                    value["rate"] = capacity.history_rate(
-                        [candidates[s] for s in sorted(set(selected))])
-                elif mode == "keep":
-                    # The submitted rate is client data; only the saved plan's rate is recorded.
-                    value["rate"] = copy.deepcopy(saved["rate"]) if saved else {
-                        "kind": "none", "value": None, "sources": []}
-                else:
-                    raise ValueError("Choose a valid rate source.")
+                value["rate"] = _chosen_rate(con, value, flask.request.form, saved)
                 capacity.totals(value)
                 if action == "preview":
                     return _plan_form(slug, con, value, reason=reason)
@@ -600,12 +698,88 @@ def plan_form(slug, team_id, sprint_id):
         except (ValueError, KeyError, TypeError) as exc:
             status = 409 if isinstance(exc, capacity.Conflict) else 400
             if value is None:
-                return _page(slug, "Invalid plan", "", str(exc)), status
+                return _page(slug, "Invalid plan",
+                             f'<div id="plan-area">{_notice(str(exc))}</div>'), status
             try:
                 return _plan_form(slug, con, value, str(exc), reason), status
             except (ValueError, KeyError, TypeError):
-                return _page(slug, "Correct the plan", "<pre>" + render.esc(
-                    json.dumps(value, indent=2)) + "</pre>", str(exc)), status
+                return _page(slug, "Correct the plan",
+                             f'<div id="plan-area">{_notice(str(exc))}<pre>'
+                             + render.esc(json.dumps(value, indent=2)) + "</pre></div>"), status
+
+
+@bp.post("/<slug>/capacity/plan/<team_id>/<int:sprint_id>/members")
+def plan_members(slug, team_id, sprint_id):
+    """Add or remove a person in the unsaved plan. Writes nothing: the roster
+    travels back to the browser in the grid's hidden payload."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        remove = flask.request.args.get("remove")
+        try:
+            value = _read_plan_inputs(_payload(), {remove} if remove else ())
+            if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
+                raise ValueError("The form belongs to a different team or sprint.")
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            return f'<div id="grid">{_notice(str(exc))}</div>', 400
+        message = ""
+        if "add" in flask.request.args:
+            try:
+                _add_member(con, value)
+            except ValueError as exc:
+                message = str(exc)
+        base = _plan_path(slug, value)
+        # The totals line sits outside #grid, so it travels with the grid out of band.
+        return (_grid(value, base, _member_picker(con, base + "/members"), message)
+                + _totals_line(value, oob=True))
+
+
+def _fragment_value(team_id, sprint_id):
+    value = _read_plan_inputs(_payload())
+    if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
+        raise ValueError("The form belongs to a different team or sprint.")
+    return value
+
+
+@bp.post("/<slug>/capacity/plan/<team_id>/<int:sprint_id>/totals")
+def plan_totals(slug, team_id, sprint_id):
+    """Recalculate while typing. Reads the form, writes nothing."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        try:
+            value = _fragment_value(team_id, sprint_id)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            return f'<p id="totals" class="warn" role="alert">{render.esc(exc)}</p>'
+        # The rate box shows its own problem; totals still update.
+        with contextlib.suppress(ValueError):
+            value["rate"] = _chosen_rate(con, value, flask.request.form,
+                                         capacity.get_plan(con, team_id, sprint_id))
+        try:
+            rows = capacity.totals(value)["members"]
+        except ValueError:
+            rows = [{} for _ in value["members"]]
+        cells = "".join(_total_cells(i, row, oob=True) for i, row in enumerate(rows))
+        return _totals_line(value) + cells
+
+
+@bp.post("/<slug>/capacity/plan/<team_id>/<int:sprint_id>/rate")
+def plan_rate(slug, team_id, sprint_id):
+    """Preview a rate choice. Reads the form, writes nothing."""
+    project = _project(slug)
+    with project.con.cursor() as con:
+        try:
+            value = _fragment_value(team_id, sprint_id)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            return f'<div id="rate">{_notice(str(exc))}</div>', 400
+        message = ""
+        try:
+            value["rate"] = _chosen_rate(con, value, flask.request.form,
+                                         capacity.get_plan(con, team_id, sprint_id))
+        except ValueError as exc:
+            message = str(exc)
+        base = _plan_path(slug, value)
+        recorded = _saved_rate(con, team_id, sprint_id)
+        return (_rate(con, value, flask.request.form, base, recorded, message)
+                + _totals_line(value, oob=True))
 
 
 @bp.get("/<slug>/capacity/replace")

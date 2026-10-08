@@ -2,10 +2,11 @@
 
 Flags are read from the query string and applied inside this request's own
 cursor, in a transaction that is always rolled back: the writes never reach
-sync_state, so two browser tabs never fight over each other's window and the
-CLI stays the way a default is changed.
+sync_state, so two browser tabs never fight over each other's window, and
+Save as default is the way a default is changed.
 """
 import threading
+import urllib.parse
 
 import flask
 
@@ -34,7 +35,7 @@ bp = flask.Blueprint("report", __name__)
 _RENDER_LOCK = threading.Lock()
 
 
-def flags_from(request, project, con):
+def flags_from(args, project, con):
     """Query string over stored defaults, with the errors collected, not raised.
 
     urd's validators exit on bad input, which is right for a CLI and a 500 through
@@ -50,13 +51,13 @@ def flags_from(request, project, con):
     """
     problems = []
     stored_window = urd.load_scope(con)["report_since"]
-    since = request.args.get("since", stored_window)
-    epics = request.args.getlist("exclude_epic")
+    since = args.get("since", stored_window)
+    epics = args.getlist("exclude_epic")
     epics = [k.strip() for value in epics for k in value.split(",") if k.strip()]
-    if not epics and "exclude_epic" not in request.args:
+    if not epics and "exclude_epic" not in args:
         epics = urd.stored_excluded_epics(con)
-    components = request.args.getlist("component")
-    if not components and "component" not in request.args:
+    components = args.getlist("component")
+    if not components and "component" not in args:
         components = urd.stored_report_components(con)
     tiers = urd.stored_thresholds(con)
 
@@ -76,22 +77,12 @@ def flags_from(request, project, con):
     # a header that names it.
     urd.set_report_components(con, components)
 
+    # The rendered threshold box has no value, so a browser always sends it empty.
+    blank = [t for t in args.getlist("threshold") if t.strip()]
     try:
-        tiers = urd.parse_thresholds(request.args.getlist("threshold"), base=tiers)
+        tiers = urd.parse_thresholds(blank, base=tiers)
     except SystemExit as exc:
         problems.append(str(exc))
-
-    # The job's own state, not a query-string marker: start_refresh can return
-    # False for three different reasons (already running, no scope, the
-    # database would not open), and collapsing all three onto one marker meant
-    # this text was wrong two times out of three. Reading job.state directly
-    # (projects.job_message, shared with webapp's notice pages) is accurate
-    # for whichever reason applies, and also surfaces a failure that happened
-    # after the redirect already sent the clicker back here, which used to be
-    # reported nowhere at all.
-    message = projects.job_message(project)
-    if message:
-        problems.append(message)
 
     return {"since": since, "epics": epics, "components": components,
             "offered": urd.components_present(con),
@@ -110,7 +101,41 @@ def _component_boxes(flags):
         f' {render.esc(name)}</label>'
         for name in flags["offered"]
     )
-    return f'<span class="boxes">component {boxes}</span>'
+    # An all-unticked form sends no component key, which would read as "keep the
+    # stored slice". The empty value is dropped by set_report_components and makes
+    # "no box ticked" mean every component, for Apply and Save as default alike.
+    return (f'<span class="boxes">component'
+            f'<input type="hidden" name="component" value="">{boxes}</span>')
+
+
+def _section(args):
+    section = args.get("section", "attention")
+    return section if section in urd.SECTION_TITLES else "attention"
+
+
+def _filters_query(args):
+    """The current filters as a query string, without the tab, so a tab switch
+    keeps them. Multi-valued keys keep every value."""
+    return urllib.parse.urlencode(
+        [(k, v) for k, v in args.items(multi=True) if k != "section"])
+
+
+def _tabs(slug, active, query):
+    base = f"/{urllib.parse.quote(slug)}"
+    links = []
+    for key, title in urd.SECTION_TABS:
+        page_url = f"{base}/?" + (f"{query}&" if query else "") + f"section={key}"
+        fragment_url = f"{base}/sections/{key}" + (f"?{query}" if query else "")
+        current = ' aria-current="page"' if key == active else ""
+        links.append(
+            f'<a id="tab-{key}" href="{render.esc(page_url)}" hx-get="{render.esc(fragment_url)}"'
+            f' hx-target="#report" hx-push-url="{render.esc(page_url)}"{current}>'
+            f"{render.esc(title)}</a>")
+    # Inside #report, so a tab swap also updates the tab Apply and Save as default
+    # submit: the controls form sits outside the fragment.
+    links.append(
+        f'<input type="hidden" name="section" value="{render.esc(active)}" form="controls">')
+    return f'<nav class="tabs" aria-label="Report sections">{"".join(links)}</nav>'
 
 
 def _controls(project, flags, others):
@@ -121,15 +146,17 @@ def _controls(project, flags, others):
     problems = "".join(
         f'<p class="warn">{render.esc(p)}</p>' for p in flags["problems"])
     return (
-        f'<p><a href="/{render.esc(project.slug)}/capacity/">Capacity</a></p>'
-        f'<form method="get" action="/{render.esc(project.slug)}/" class="controls">'
+        f'<p><a href="/{render.esc(project.slug)}/capacity/">Plan capacity</a></p>'
+        f'<form method="get" action="/{render.esc(project.slug)}/" class="controls" id="controls">'
         f'<label>since <input name="since" value="{render.esc(flags["since"] or "")}"'
         f' placeholder="YYYY-MM-DD"></label>'
         f'<label>exclude epic <input name="exclude_epic"'
         f' value="{render.esc(",".join(flags["epics"]))}"></label>'
         f'<label>threshold <input name="threshold" placeholder="default=0.40"></label>'
         f'{_component_boxes(flags)}'
-        f'<button type="submit">Apply</button></form>'
+        f'<button type="submit">Apply</button>'
+        f'<button type="submit" formmethod="post"'
+        f' formaction="/{render.esc(project.slug)}/defaults">Save as default</button></form>'
         f'<form method="post" action="/{render.esc(project.slug)}/refresh">'
         f'<button type="submit">Refresh</button></form>'
         f'{problems}'
@@ -165,6 +192,7 @@ def project(slug):
     # on a render that raises, which a bare apply/render/restore sequence
     # would not. None of that stops two overlapping renders from both writing
     # report_window's one row, which is what the lock is for.
+    section = _section(flask.request.args)
     con = found.con.cursor()
     with _RENDER_LOCK:
         con.execute("BEGIN")
@@ -176,8 +204,20 @@ def project(slug):
                 # Refresh button and a since/exclude box that does
                 # nothing without a report under it.
                 return webapp.project_page(found, con=con)
-            flags = flags_from(flask.request, found, con)
-            page = webapp.project_page(found, flags["tiers"], con)
+            flags = flags_from(flask.request.args, found, con)
+            # The job's own state, not a query-string marker: start_refresh can return
+            # False for three different reasons (already running, no scope, the
+            # database would not open), and collapsing all three onto one marker meant
+            # this text was wrong two times out of three. Reading job.state directly
+            # (projects.job_message, shared with webapp's notice pages) is accurate
+            # for whichever reason applies, and also surfaces a failure that happened
+            # after the redirect already sent the clicker back here, which used to be
+            # reported nowhere at all.
+            message = projects.job_message(found)
+            if message:
+                flags["problems"].append(message)
+            tabs = _tabs(slug, section, _filters_query(flask.request.args))
+            page = webapp.project_page(found, flags["tiers"], con, section, tabs)
         finally:
             con.execute("ROLLBACK")
 
@@ -185,3 +225,48 @@ def project(slug):
     # Injected after <body> so the controls precede the report without the report
     # needing to know they exist.
     return page.replace("<body>", "<body>" + controls, 1)
+
+
+@bp.get("/<slug>/sections/<section>")
+def section_fragment(slug, section):
+    registry = flask.current_app.config["REGISTRY"]
+    found = webapp.slug_or_404(registry, slug)
+    if section not in urd.SECTION_TITLES or found.con is None or not found.configured():
+        flask.abort(404)
+    con = found.con.cursor()
+    with _RENDER_LOCK:
+        con.execute("BEGIN")
+        try:
+            if not webapp.report_ready(found, con):
+                flask.abort(404)
+            flags = flags_from(flask.request.args, found, con)
+            tabs = _tabs(slug, section, _filters_query(flask.request.args))
+            return urd.report_body(con, flags["tiers"], section, tabs)
+        finally:
+            con.execute("ROLLBACK")
+
+
+@bp.post("/<slug>/defaults")
+def save_defaults(slug):
+    """The one write path for report defaults.
+    Every value is applied or none is."""
+    registry = flask.current_app.config["REGISTRY"]
+    found = webapp.slug_or_404(registry, slug)
+    if found.con is None or not found.configured():
+        flask.abort(404)
+    form = flask.request.form
+    con = found.con.cursor()
+    with _RENDER_LOCK:
+        con.execute("BEGIN")
+        try:
+            flags = flags_from(form, found, con)
+            saved = not flags["problems"]
+            if saved:
+                urd.save_scope(con, thresholds=urd.format_thresholds(flags["tiers"]))
+            con.execute("COMMIT" if saved else "ROLLBACK")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+    if not saved:
+        return flask.redirect(f"/{slug}/?{urllib.parse.urlencode(list(form.items(multi=True)))}")
+    return flask.redirect(f"/{slug}/?section={_section(form)}")
