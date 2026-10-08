@@ -674,6 +674,40 @@ def test_removing_a_person_refreshes_the_totals():
     assert oob.group(1) == line, (oob.group(1), line)
 
 
+def _cache_boards(con, names):
+    for identity, name in enumerate(names, 1):
+        con.execute("INSERT INTO capacity_boards VALUES (?, ?, ?)", [
+            identity, json.dumps({"id": identity, "name": name, "type": "scrum"}),
+            "2026-10-08T14:32:54.646590+00:00"])
+
+
+def test_index_says_when_no_boards_are_cached():
+    reg = registry()
+    synced(reg)
+    body = client(reg).get("/alpha/capacity/").get_data(as_text=True)
+    assert "No Scrum boards cached yet." in body
+
+
+def test_index_names_cached_boards_and_points_a_new_user_to_team_setup():
+    reg = registry()
+    project = synced(reg)
+    _cache_boards(project.con, ["Alpha board", "Beta <board>"])
+    body = client(reg).get("/alpha/capacity/").get_data(as_text=True)
+    assert "2 Scrum boards cached (fetched 2026-10-08 14:32 UTC)" in body, body
+    assert "Alpha board" in body and "Beta &lt;board&gt;" in body
+    assert "Beta <board>" not in body
+    assert "Select them in a team's setup" in body
+    assert body.count('href="/alpha/capacity/teams/new"') == 2, "no Add team prompt"
+
+
+def test_index_drops_the_add_team_prompt_once_a_team_exists():
+    project, browser, _ = setup()
+    _cache_boards(project.con, ["Alpha board"])
+    body = browser.get("/alpha/capacity/").get_data(as_text=True)
+    assert "1 Scrum board cached (fetched 2026-10-08 14:32 UTC): Alpha board." in body, body
+    assert "Select them in a team" not in body
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_") and callable(fn):
