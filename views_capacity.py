@@ -27,6 +27,8 @@ GRID_CSS = """
 .capacity-grid td label { display: flex; align-items: center; gap: 6px;
     justify-content: space-between; white-space: nowrap; }
 .capacity-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.default-submit { position: absolute; left: -10000px; width: 1px; height: 1px;
+    overflow: hidden; }
 """
 
 
@@ -408,6 +410,9 @@ def _render_plan_form(slug, con, value, message="", reason=""):
     body += (f'<form id="plan" method="post" hx-post="{render.esc(base)}"'
              ' hx-target="#plan-area" hx-select="#plan-area" hx-swap="outerHTML">')
     body += _input("source_id", _preview_id(con, value), "hidden")
+    # Enter submits via the first submit button, which must not be a Remove.
+    body += ('<button type="submit" name="action" value="preview" class="default-submit" '
+             'tabindex="-1" aria-hidden="true">Preview</button>')
     body += _input("start", value["dates"]["start"], "date", "Planning start date")
     body += _input("end", value["dates"]["end"], "date", "Planning last date")
     if _date_mismatch(value, current):

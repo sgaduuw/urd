@@ -454,6 +454,62 @@ def test_a_save_error_renders_its_message_inside_plan_area():
     assert 'role="alert"' in area
 
 
+class _Buttons(HTMLParser):
+    def __init__(self, html):
+        super().__init__()
+        self.in_plan, self.found = False, []
+        self.feed(html)
+
+    def handle_starttag(self, tag, attributes):
+        attrs = dict(attributes)
+        if tag == "form":
+            self.in_plan = attrs.get("id") == "plan"
+        if self.in_plan and tag == "button" and attrs.get("type", "submit") == "submit":
+            self.found.append(attrs)
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.in_plan = False
+
+
+def test_the_first_submit_button_is_preview_not_remove():
+    # Enter in a field fires the form's first submit button, so it must not be a Remove.
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    body = browser.get(path + "?start=2026-10-05&end=2026-10-08").get_data(as_text=True)
+    first = _Buttons(body).found[0]
+    assert (first.get("name"), first.get("value")) == ("action", "preview"), first
+
+
+def test_invalid_plan_error_renders_inside_plan_area():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    response = browser.post(path, data={"payload": "{not json"})
+    assert response.status_code == 400
+    body = response.get_data(as_text=True)
+    area = body[body.index('<div id="plan-area">'):]
+    assert 'role="alert"' in area
+
+
+def test_correct_the_plan_error_renders_inside_plan_area():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    form.update(action="confirm", focus="")
+
+    def broken(*args, **kwargs):
+        raise ValueError("cannot render")
+    original, views_capacity._plan_form = views_capacity._plan_form, broken
+    try:
+        response = browser.post(path, data=form)
+    finally:
+        views_capacity._plan_form = original
+    assert response.status_code == 400
+    body = response.get_data(as_text=True)
+    area = body[body.index('<div id="plan-area">'):]
+    assert 'role="alert"' in area and "<pre>" in area
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_") and callable(fn):
