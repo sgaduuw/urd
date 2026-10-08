@@ -117,6 +117,20 @@ def _member_picker(con, members_url=None, target="#grid"):
             + f'<button name="action" value="add_member"{htmx}>Add person</button></fieldset>')
 
 
+def _cached_boards(slug, boards, has_teams):
+    """Always shown, so discovery visibly did something and the next step is named."""
+    if not boards:
+        return "<p>No Scrum boards cached yet. Discover them to plan sprints.</p>"
+    fetched = (boards[0].get("fetched_at") or "")[:16].replace("T", " ")
+    count = f'{len(boards)} Scrum board{"s" if len(boards) != 1 else ""}'
+    names = ", ".join(render.esc(b["name"]) for b in boards)
+    line = f"<p>{count} cached (fetched {render.esc(fetched)} UTC): {names}."
+    if not has_teams:
+        line += (" Select them in a team's setup: "
+                 f'<a href="/{slug}/capacity/teams/new">Add team</a>.')
+    return line + "</p>"
+
+
 @bp.get("/<slug>/capacity/")
 def index(slug):
     project = _project(slug)
@@ -125,7 +139,9 @@ def index(slug):
                 f'<p><a href="/{slug}/capacity/teams/new">Add team</a></p>'
                 f'<form method="post" action="/{slug}/capacity/catalogue">'
                 '<button>Discover Scrum boards</button></form>')
-        for team in capacity.teams(con):
+        teams = capacity.teams(con)
+        body += _cached_boards(slug, capacity.boards(con), bool(teams))
+        for team in teams:
             tid = team["id"]
             body += (f'<h2>{render.esc(team["name"])}</h2>'
                      f'<p><a href="/{slug}/capacity/teams/{tid}">Team and normal hours</a></p>'
