@@ -561,7 +561,7 @@ MIT. See `LICENSE`.
 
 ## Sprint capacity
 
-Open **Capacity** on a configured project's page. Discover Scrum boards, add a
+Open **Plan capacity** on a configured project's page. Discover Scrum boards, add a
 team with component mappings and a timezone, and enter each person's normal
 seven-day Work and Meeting hours. Choose the team's boards and refresh their sprint catalogue.
 Empty future sprints are supported; undated sprints need local planning dates.
@@ -608,7 +608,8 @@ and reports work offline. A stale tab or busy refresh retains entered values
 and asks for review or retry. Changed Jira dates require explicit reconciliation;
 hours outside the revised range remain available for inspection.
 
-The ordinary HTML report includes aggregate capacity. A plan's **Export HTML**
+The report shows one section at a time as tabs. Aggregate capacity lives in its
+Capacity tab. A plan's **Export HTML**
 action includes individual availability only when its checkbox is selected.
 Free-text revision reasons stay in the local application. Exported files remain
 read only. Spreadsheet import and Jira writes are not supported.

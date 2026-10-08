@@ -54,8 +54,9 @@ Two things slow down everyday use of `urd serve`:
   The fragment includes the tab bar, so the active tab is always the selected
   one. Back and forward work through the pushed URL.
 - The header and the filter controls stay outside `#report`. The controls
-  remain a normal GET form that reloads the page. The page keeps the selected
-  tab through a hidden `section` input.
+  remain a normal GET form that reloads the page (`id="controls"`). The
+  selected tab reaches it through a hidden `section` input inside the tab bar,
+  with `form="controls"`, so every tab swap updates it.
 - Filters live in the query string (`since`, `exclude_epic`, `component`,
   `threshold`). `flags_from` applies them inside a transaction that is always
   rolled back, so reading never changes the stored defaults, as today. Every
@@ -108,7 +109,7 @@ with it.
 | Element | Render function | Contents |
 | --- | --- | --- |
 | `#totals` | new `_totals_line` | focus hours and forecast, the part that updates while typing |
-| `#summary` | `_summary` | commitment preview and delivery review once confirmed; refreshed on Preview and save, because it reads the whole mirror |
+| summary (no element id of its own) | `_summary` | commitment preview and delivery review once confirmed; refreshed through `#plan-area` on Preview and save, because it reads the whole mirror |
 | `#grid` | `_grid` | the roster and day cells, the person picker, the hidden `payload` |
 | `#rate` | new `_rate` | rate mode, manual rate, history candidates |
 | `#plan-area` | `_render_plan_form` | the above plus the form, actions, messages and revision history |
@@ -117,7 +118,7 @@ with it.
 
 | Trigger | Request | Swaps | Writes |
 | --- | --- | --- | --- |
-| Typing in a grid cell or the focus field | `POST …/plan/<team>/<sprint>/totals`, `hx-trigger="input changed delay:400ms"`, whole form included | per-person totals (out of band) and `#totals` | none |
+| Typing in a grid cell or the focus field | `POST …/plan/<team>/<sprint>/totals`, `hx-trigger="input delay:400ms"`, whole form included | per-person totals (out of band) and `#totals` | none |
 | Add person, Remove (a button per row, applied immediately to the working copy) | `POST …/plan/<team>/<sprint>/members` | `#grid` including its new `payload` | none |
 | Rate mode, manual rate, history selection | `POST …/plan/<team>/<sprint>/rate` | `#rate` and `#totals` (out of band) | none |
 | Save, Confirm, Void, Review latest, Use team setup | the existing `POST` to the plan URL, `hx-select="#plan-area"` | `#plan-area` | unchanged |
@@ -136,7 +137,8 @@ with it.
 Same pattern: `#weekly` holds the weekly grid, the person picker and the
 hidden `payload`. `POST /<slug>/capacity/teams/<id>/members` adds or removes a
 person in the working copy without writing. Save stays a normal form submit:
-it is rare, and it ends on the capacity index anyway.
+it is rare, and it ends on the capacity index anyway. The off-screen default
+submit button in the team form is disabled, so Enter in a field submits nothing.
 
 ## Errors
 
@@ -169,6 +171,10 @@ it is rare, and it ends on the capacity index anyway.
   `new Function` needs `'unsafe-eval'`. So a markup injection that got past
   escaping still could not run a script. HTML escaping stays the first
   defence.
+- The scripts load from `<head>` with `defer`. A history restore swaps
+  `document.body`, which re-creates every `<script>` in it, so a script in the
+  body would run again on each Back or Forward. `static/urd.js` also marks what
+  it has set up, so a second pass over the same element does nothing.
 - The existing app-wide same-origin and Host checks in `before_request` cover
   the new POST routes.
 - The vendor audit test changes: uPlot must still make no network requests.
