@@ -565,6 +565,44 @@ def test_rate_previews_a_manual_rate_without_saving():
     assert _capacity_tables(project.con) == before
 
 
+def test_totals_and_rate_never_500_on_a_tampered_rate():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    payload = json.loads(form["payload"])
+    payload["rate"] = {"kind": "zzz", "value": 1}
+    form.update(payload=json.dumps(payload), rate_mode="bogus")
+    totals = browser.post(path + "/totals", data=form)
+    assert totals.status_code == 200
+    assert 'class="warn" role="alert"' in totals.get_data(as_text=True)
+    assert browser.post(path + "/rate", data=form).status_code != 500
+
+
+def test_totals_never_500_on_a_non_object_daily():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    payload = json.loads(form["payload"])
+    payload["members"][0]["daily"] = "x"
+    form["payload"] = json.dumps(payload)
+    assert browser.post(path + "/totals", data=form).status_code == 200
+    assert browser.post(path + "/rate", data=form).status_code == 400
+    assert browser.post(path + "/members", data=form).status_code == 400
+
+
+def test_rate_box_after_a_preview_still_shows_the_saved_rate():
+    project, browser, saved_team = setup()
+    path = f"/alpha/capacity/plan/{saved_team['id']}/11"
+    form = plan_form(browser, path)
+    preview = browser.post(path, data=dict(form, action="preview", rate_mode="manual",
+                                           manual_rate="0.25"))
+    again = Form(preview.get_data(as_text=True)).values
+    assert "(none).</p>" in preview.get_data(as_text=True), "the page shows the saved rate"
+    again.update(rate_mode="manual", manual_rate="0.5")
+    body = browser.post(path + "/rate", data=again).get_data(as_text=True)
+    assert "(none).</p>" in body, "recorded rate must be the saved one, not the 0.25 preview"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_") and callable(fn):

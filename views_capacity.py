@@ -274,9 +274,9 @@ def _totals_line(value, oob=False):
     swap = ' hx-swap-oob="true"' if oob else ""
     try:
         totals = capacity.totals(value)
+        forecast = capacity.forecast(totals["focus_hours"], value.get("rate", {}))
     except ValueError as exc:
         return f'<p id="totals" class="warn" role="alert"{swap}>{render.esc(exc)}</p>'
-    forecast = capacity.forecast(totals["focus_hours"], value.get("rate", {}))
     focus = (render.esc(totals["focus_hours"]) if totals["focus_hours"] is not None
              else "Incomplete")
     shown = render.esc(forecast) if forecast is not None else "unavailable"
@@ -417,8 +417,13 @@ def _plan_form(slug, con, value, message="", reason=""):
         con.execute("ROLLBACK")
 
 
-def _rate(con, value, form, base, message="", recorded=None):
-    recorded = value.get("rate", {}) if recorded is None else recorded
+def _saved_rate(con, team_id, sprint_id):
+    """The rate on the saved plan: what "recorded" means, whatever a form carries."""
+    saved = capacity.get_plan(con, team_id, sprint_id)
+    return saved["rate"] if saved else {"kind": "none", "value": None, "sources": []}
+
+
+def _rate(con, value, form, base, recorded, message=""):
     body = (f'<div id="rate" hx-post="{render.esc(base)}/rate" hx-trigger="change"'
             ' hx-target="#rate" hx-swap="outerHTML">' + _notice(message))
     body += '<label>Rate source for this save <select name="rate_mode">'
@@ -470,7 +475,8 @@ def _render_plan_form(slug, con, value, message="", reason=""):
     body += _grid(value, base, _member_picker(con, base + "/members"))
     body += _input("focus", value.get("focus"), "number", "Focus percentage",
                    'min="0" max="100" step="any"' + _live(base))
-    body += _rate(con, value, flask.request.form, base)
+    body += _rate(con, value, flask.request.form, base,
+                  _saved_rate(con, value["team_id"], value["sprint_id"]))
     body += _input("reason", reason, label="Reason (required for confirmed changes or voiding)")
     body += ('<div class="capacity-actions"><button name="action" value="preview">Preview</button>'
              '<button name="action" value="save">Save adjustment</button>'
@@ -671,7 +677,7 @@ def plan_members(slug, team_id, sprint_id):
             value = _read_plan_inputs(_payload(), {remove} if remove else ())
             if value.get("team_id") != team_id or value.get("sprint_id") != sprint_id:
                 raise ValueError("The form belongs to a different team or sprint.")
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             return f'<div id="grid">{_notice(str(exc))}</div>', 400
         message = ""
         if "add" in flask.request.args:
@@ -697,7 +703,7 @@ def plan_totals(slug, team_id, sprint_id):
     with project.con.cursor() as con:
         try:
             value = _fragment_value(team_id, sprint_id)
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             return f'<p id="totals" class="warn" role="alert">{render.esc(exc)}</p>'
         # The rate box shows its own problem; totals still update.
         with contextlib.suppress(ValueError):
@@ -718,16 +724,17 @@ def plan_rate(slug, team_id, sprint_id):
     with project.con.cursor() as con:
         try:
             value = _fragment_value(team_id, sprint_id)
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             return f'<div id="rate">{_notice(str(exc))}</div>', 400
-        recorded, message = value.get("rate", {}), ""
+        message = ""
         try:
             value["rate"] = _chosen_rate(con, value, flask.request.form,
                                          capacity.get_plan(con, team_id, sprint_id))
         except ValueError as exc:
             message = str(exc)
         base = _plan_path(slug, value)
-        return (_rate(con, value, flask.request.form, base, message, recorded)
+        recorded = _saved_rate(con, team_id, sprint_id)
+        return (_rate(con, value, flask.request.form, base, recorded, message)
                 + _totals_line(value, oob=True))
 
 
